@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project data (ignore all inside dataset and models, keep folder structure)
+dataset/*
+!dataset/.gitkeep
+models/*
+!models/.gitkeep
+
+# Processed outputs (in case dataset/processed is not fully ignored)
+dataset/processed/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment
+.env
+
+# Logs
+*.log
