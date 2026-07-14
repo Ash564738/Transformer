@@ -17,8 +17,6 @@ INPUT_FILE = DATA_DIR / "DGA of Main Tank only KT 11022026_09062026.xlsx"
 OUTPUT_DIR = DATA_DIR / "processed"
 
 KEEP_NB = True
-MIN_YEAR = 1900
-MAX_YEAR = 2100
 
 COLUMN_ALIASES = {
     "sample day": "sample_day",
@@ -138,8 +136,6 @@ def clean_year_energized(x: Any) -> float:
     if pd.isna(val):
         return np.nan
     val = int(round(val))
-    if val < MIN_YEAR or val > MAX_YEAR:
-        return np.nan
     return float(val)
 
 def clean_temp(x: Any) -> float:
