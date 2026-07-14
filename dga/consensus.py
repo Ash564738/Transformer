@@ -18,7 +18,6 @@ from . import (
 # ==========================================================
 
 FAULT_GROUP = {
-
     "PD": "electrical",
     "D1": "electrical",
     "D2": "electrical",
@@ -27,46 +26,34 @@ FAULT_GROUP = {
     "T2": "thermal",
     "T3": "thermal",
     "T3-H": "thermal",
-
-    "O": "thermal",
+    "THERMAL": "thermal",
+    "THERMAL_OIL": "thermal",
 
     "C": "cellulose",
     "Cellulose": "cellulose",
+    "THERMAL_CELLULOSE": "cellulose",
 
-    "Normal": "normal",
-
+    "NORMAL": "normal",
 }
-
-
 
 # ==========================================================
 # Normalize fault label
 # ==========================================================
 
 def normalize_fault(label):
-
     if label is None:
-        return "Uncertain"
-
+        return "UNCERTAIN"
 
     label = str(label).strip()
 
-
+    # Chỉ chuyển về UNCERTAIN với các trường hợp thực sự không xác định
     invalid = {
-
         "",
-        "INVALID",
-        "INVALID_LOW_GAS",
-        "INCONCLUSIVE",
-        "OUTSIDE",
-        "Uncertain"
-
+        "UNCERTAIN",
     }
 
-
     if label in invalid:
-        return "Uncertain"
-
+        return "UNCERTAIN"
 
     return label
 
@@ -79,13 +66,9 @@ def normalize_fault(label):
 def confidence(votes: Dict[str,str]) -> float:
 
     valid = [
-
         normalize_fault(v)
-
         for v in votes.values()
-
-        if normalize_fault(v) != "Uncertain"
-
+        if normalize_fault(v) != "INVALID_LOW_GAS"
     ]
 
 
@@ -129,18 +112,14 @@ def aggregate_votes(votes: Dict[str,str]):
 
 
     valid = [
-
         v
-
         for v in cleaned.values()
-
-        if v != "Uncertain"
-
+        if v != "INVALID_LOW_GAS"
     ]
 
 
     if not valid:
-        return "Uncertain"
+        return "UNCERTAIN"
 
 
 
@@ -175,7 +154,7 @@ def aggregate_votes(votes: Dict[str,str]):
 
         if "normal" not in groups:
 
-            return "Mixed"
+            return "MIXED"
 
 
 
@@ -201,13 +180,13 @@ def aggregate_votes(votes: Dict[str,str]):
         fault = cleaned.get(p)
 
 
-        if fault != "Uncertain":
+        if fault != "UNCERTAIN":
 
             return fault
 
 
 
-    return "Uncertain"
+    return "UNCERTAIN"
 
 
 
@@ -242,35 +221,35 @@ def apply_consensus(df):
             "keygas_fault":
                 row.get(
                     "keygas_fault",
-                    "Uncertain"
+                    "UNCERTAIN"
                 ),
 
 
             "iec_fault":
                 row.get(
                     "iec_fault",
-                    "Uncertain"
+                    "UNCERTAIN"
                 ),
 
 
             "rogers_fault":
                 row.get(
                     "rogers_fault",
-                    "Uncertain"
+                    "UNCERTAIN"
                 ),
 
 
             "duval_triangle_fault":
                 row.get(
                     "duval_triangle_fault",
-                    "Uncertain"
+                    "UNCERTAIN"
                 ),
 
 
             "duval_pentagon_fault":
                 row.get(
                     "duval_pentagon_fault",
-                    "Uncertain"
+                    "UNCERTAIN"
                 )
 
         }

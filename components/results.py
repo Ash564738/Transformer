@@ -246,7 +246,25 @@ def render_results(payload, selected_transformer=None):
     )
     selected_pred = predictions[sel_idx]
     raw_row = rows[sel_idx] if sel_idx < len(rows) else {}
+    # Trong render_results, sau khi lấy selected_pred và raw_row
     gas_dict = raw_row if isinstance(raw_row, dict) else {}
+
+    # Trong render_results, sau khi có gas_dict
+    co2_co = gas_dict.get("ratio_co2_co")
+    if co2_co is None:
+        # fallback nếu không có ratio
+        co_val = gas_dict.get("co")
+        co2_val = gas_dict.get("co2")
+        if co_val and co2_val and co_val > 0:
+            co2_co = co2_val / co_val
+
+    roc_h2 = gas_dict.get("h2_rate_per_day")
+    roc_c2h2 = gas_dict.get("c2h2_rate_per_day")
+    roc_tcg = gas_dict.get("tdcg_rate_per_day")
+
+    # Định dạng hiển thị
+    def fmt_rate(val, unit="ppm/d"):
+        return f"{val:.2f} {unit}" if val is not None else "—"
 
     _log_debug(
         "sample_selected",
@@ -255,24 +273,15 @@ def render_results(payload, selected_transformer=None):
         raw_row_keys=list(gas_dict.keys()) if gas_dict else [],
     )
 
-    co2_co = (
-        gas_dict.get("CO2_CO")
-        or (gas_dict.get("CO2", 0) / max(gas_dict.get("CO", 1), 1e-6))
-        if gas_dict else None
-    )
-    roc_h2 = gas_dict.get("roc_H2", None)
-    roc_c2h2 = gas_dict.get("roc_C2H2", None)
-    roc_tcg = gas_dict.get("roc_TCG", None)
-
     kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
     with kpi_col1:
         _render_card("CO₂/CO Ratio", f"{co2_co:.2f}" if co2_co is not None else "—", "Lower suggests cellulose stress", "blue")
     with kpi_col2:
-        _render_card("roc H₂", f"{roc_h2:.2f} ppm/d" if roc_h2 is not None else "—", "Hydrogen rate-of-change", "blue")
+        _render_card("roc H₂", fmt_rate(roc_h2), "Hydrogen rate-of-change", "blue")
     with kpi_col3:
-        _render_card("roc C₂H₂", f"{roc_c2h2:.2f} ppm/d" if roc_c2h2 is not None else "—", "Acetylene rate-of-change", "blue")
+        _render_card("roc C₂H₂", fmt_rate(roc_c2h2), "Acetylene rate-of-change", "blue")
     with kpi_col4:
-        _render_card("roc TCG", f"{roc_tcg:.2f} ppm/d" if roc_tcg is not None else "—", "Total combustible gas trend", "blue")
+        _render_card("roc TCG", fmt_rate(roc_tcg), "Total combustible gas trend", "blue")
 
     interpretation = _build_score_interpretation(gas_dict) if gas_dict else ""
     if interpretation:
@@ -285,7 +294,15 @@ def render_results(payload, selected_transformer=None):
             """,
             unsafe_allow_html=True,
         )
-
+    if gas_dict:
+        votes = gas_dict.get("diagnostic_votes")
+        if votes and isinstance(votes, dict):
+            with st.expander("🔬 Diagnostic breakdown (why MIXED?)"):
+                st.json(votes)
+                # Liệt kê rõ ràng hơn
+                st.markdown("**Individual methods:**")
+                for method, fault in votes.items():
+                    st.write(f"- {method}: {fault}")
     if not summary_df.empty:
         st.subheader("Transformer Ranking")
         ranking_cols = [

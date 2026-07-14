@@ -255,7 +255,14 @@ def generate_chat_answer(question: str, context=None) -> str:
                 f"{matched_transformer.get('severity', 'Unknown')} with fault type "
                 f"{matched_transformer.get('fault_type', 'Unknown')}. {reason}"
             )
-
+    if ("mixed" in q) and matched_transformer:
+        ft = matched_transformer.get("fault_type", "")
+        if ft.lower() == "mixed":
+            return (
+                "MIXED means the five diagnostic methods (Key Gas, IEC, Rogers, Duval Triangle, Duval Pentagon) "
+                "disagree on the fault type. This often occurs when gas concentrations are borderline or incomplete. "
+                "Ask for a specific transformer to see the detailed votes."
+            )
     _log_debug("branch:fallback")
     return (
         "I can answer questions about DGA gas interpretation, transformer degradation ranking, "

@@ -15,38 +15,27 @@ THRESHOLDS = {
 }
 
 FAULT_SEVERITY_POINTS = {
+    "NORMAL": 0,
 
-    "Normal":0,
+    "PD": 2,
+    "D1": 3,
+    "D2": 5,
 
-    "PD":2,
+    "T1": 2,
+    "T2": 3,
+    "T3": 5,
+    "T3-H": 5,
 
-    "D1":3,
+    "THERMAL": 3,
+    "THERMAL_OIL": 3,
 
-    "D2":5,
+    "C": 5,
+    "Cellulose": 4,
+    "THERMAL_CELLULOSE": 4,
 
-
-    "T1":2,
-
-    "T2":3,
-
-    "T3":5,
-
-    "T3-H":5,
-
-
-    "O":3,
-
-
-    "C":5,
-
-
-    "Cellulose":4,
-
-
-    "Mixed":5,
-
-
-    "Uncertain":1
+    "MIXED": 5,
+    "UNCERTAIN": 1,
+    "INVALID_LOW_GAS": 0,
 }
 
 def score_by_threshold(value: float, thresholds: list) -> int:
@@ -117,7 +106,7 @@ def compute_aging_score(row: pd.Series) -> int:
     return score
 
 def severity_class_from_score(score: float) -> str:
-    if pd.isna(score): return "Uncertain"
+    if pd.isna(score): return "UNCERTAIN"
     if score < 4: return "Normal"
     if score < 8: return "Watchlist"
     if score < 13: return "Warning"

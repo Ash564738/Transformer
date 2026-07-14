@@ -92,7 +92,7 @@ def rogers_ratio_method(row: pd.Series) -> str:
     ):
         return "T3"
 
-    return "NA"
+    return "UNCERTAIN"
 
 
 def apply_rogers(df: pd.DataFrame) -> pd.DataFrame:

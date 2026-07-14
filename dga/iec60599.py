@@ -23,25 +23,33 @@ def _safe_ratio(num: float, den: float) -> float:
 
 def iec_ratio_method(row) -> str:
     """
-    IEC 60599 Ratio Method
+    IEC 60599 Basic Gas Ratio Method
 
-    Ratios:
-        R1 = CH4 / H2
-        R2 = C2H2 / C2H4
-        R3 = C2H4 / C2H6
+    Ratios
+    ------
+    R1 = CH4 / H2
+    R2 = C2H2 / C2H4
+    R3 = C2H4 / C2H6
 
-    Returns:
-        PD, D1, D2, T1, T2, T3, NORMAL, NA
+    Returns
+    -------
+    PD
+    D1
+    D2
+    T1
+    T2
+    T3
+    INVALID_LOW_GAS
+    UNCERTAIN
     """
 
-    h2 = float(row.get("H2", 0))
-    ch4 = float(row.get("CH4", 0))
-    c2h2 = float(row.get("C2H2", 0))
-    c2h4 = float(row.get("C2H4", 0))
-    c2h6 = float(row.get("C2H6", 0))
+    h2 = float(row.get("h2", 0))
+    ch4 = float(row.get("ch4", 0))
+    c2h2 = float(row.get("c2h2", 0))
+    c2h4 = float(row.get("c2h4", 0))
+    c2h6 = float(row.get("c2h6", 0))
 
-    # IEC: ratio method should only be applied if
-    # at least one key gas exceeds its characteristic level.
+    # IEC ratio method validity
     valid = (
         h2 >= MIN_H2
         or ch4 >= MIN_CH4
@@ -51,41 +59,59 @@ def iec_ratio_method(row) -> str:
     )
 
     if not valid:
-        return "NORMAL"
+        return "INVALID_LOW_GAS"
 
     r1 = _safe_ratio(ch4, h2)
     r2 = _safe_ratio(c2h2, c2h4)
     r3 = _safe_ratio(c2h4, c2h6)
 
-    # --------------------------
-    # IEC 60599 Decision Table
-    # --------------------------
-
     # PD
-    if r1 < 0.1 and r3 < 0.2:
+    if (
+        r1 < 0.1
+        and r3 < 0.2
+    ):
         return "PD"
 
     # D1
-    if 0.1 <= r1 <= 0.5 and r2 > 1.0 and r3 > 1.0:
+    if (
+        r2 > 1.0
+        and 0.1 <= r1 <= 0.5
+        and r3 > 1.0
+    ):
         return "D1"
 
     # D2
-    if 0.1 <= r1 <= 1.0 and 0.6 <= r2 <= 2.5 and r3 > 2.0:
+    if (
+        0.6 <= r2 <= 2.5
+        and 0.1 <= r1 <= 1.0
+        and r3 > 2.0
+    ):
         return "D2"
 
-    # T1 (<300°C)
-    if r1 > 1.0 and r3 < 1.0:
+    # T1
+    if (
+        r1 > 1.0
+        and r3 < 1.0
+    ):
         return "T1"
 
-    # T2 (300–700°C)
-    if r1 > 1.0 and r2 < 0.1 and 1.0 <= r3 <= 4.0:
+    # T2
+    if (
+        r2 < 0.1
+        and r1 > 1.0
+        and 1.0 <= r3 <= 4.0
+    ):
         return "T2"
 
-    # T3 (>700°C)
-    if r1 > 1.0 and r2 < 0.2 and r3 > 4.0:
+    # T3
+    if (
+        r2 < 0.2
+        and r1 > 1.0
+        and r3 > 4.0
+    ):
         return "T3"
 
-    return "NA"
+    return "UNCERTAIN"
 
 
 def apply_iec(df: pd.DataFrame) -> pd.DataFrame:
@@ -96,15 +122,18 @@ def apply_iec(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     df["IEC_R1_CH4_H2"] = df.apply(
-        lambda r: _safe_ratio(r["ch4"], r["h2"]), axis=1
+        lambda r: _safe_ratio(r["ch4"], r["h2"]),
+        axis=1,
     )
 
     df["IEC_R2_C2H2_C2H4"] = df.apply(
-        lambda r: _safe_ratio(r["c2h2"], r["c2h4"]), axis=1
+        lambda r: _safe_ratio(r["c2h2"], r["c2h4"]),
+        axis=1,
     )
 
     df["IEC_R3_C2H4_C2H6"] = df.apply(
-        lambda r: _safe_ratio(r["c2h4"], r["c2h6"]), axis=1
+        lambda r: _safe_ratio(r["c2h4"], r["c2h6"]),
+        axis=1,
     )
 
     df["iec_fault"] = df.apply(iec_ratio_method, axis=1)

@@ -19,7 +19,7 @@ LABELED_PATH = Path("dataset/processed/dga_labeled.parquet")
 MODEL_DIR = Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
 
-FAULT_LABELS = ["Normal", "PD", "D1", "D2", "T1", "T2", "T3", "Cellulose", "Mixed", "Uncertain"]
+FAULT_LABELS = ["Normal", "PD", "D1", "D2", "T1", "T2", "T3", "Cellulose", "MIXED", "UNCERTAIN"]
 SEVERITY_LABELS = ["Normal", "Watchlist", "Warning", "Critical"]
 
 ID_LIKE_COLS = [
