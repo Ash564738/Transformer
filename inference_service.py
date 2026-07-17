@@ -3,6 +3,7 @@ import tempfile, shutil, json
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import logging
 
 from clean_dataset import clean_dataset
 from feature_engineering import (
@@ -14,11 +15,11 @@ from feature_engineering import (
     add_rolling_features, add_ewm_features, add_cross_gas_trend_features,
     add_quality_flags
 )
-from dga.consensus import apply_consensus
-from dga.severity import apply_severity
-from dga.ranking import build_transformer_ranking
+from consensus import apply_consensus
+from severity import apply_severity
+from ranking import build_transformer_ranking
+from evaluation import evaluate_agreement_with_weak_labels, evaluate_diagnostic_performance
 
-import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ CORE_GASES = ["h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2"]
 OPTIONAL_NUMERIC = ["o2", "n2", "water", "temp"]
 
 def build_features_from_clean(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("=== Bắt đầu feature engineering ===")
     df = preprocess_types(df)
     df = sort_and_deduplicate(df)
     df = filter_rows_for_model(df, max_missing_core=3)
@@ -50,9 +52,21 @@ def build_features_from_clean(df: pd.DataFrame) -> pd.DataFrame:
     df = add_ewm_features(df, temporal_value_cols)
     df = add_cross_gas_trend_features(df)
     df = add_quality_flags(df)
+
+    # Debug: số lượng cột và vài dòng đầu
+    logger.info(f"Feature engineering hoàn tất: {df.shape} - {len(df.columns)} cột")
+    print(f"\n=== FEATURE ENGINEERING SUMMARY ===")
+    print(f"Shape: {df.shape}")
+    print("First row keys (các cột chứa 'ratio' hoặc 'rate'):")
+    first_row = df.iloc[0]
+    for k in first_row.index:
+        if 'ratio' in k or 'rate' in k:
+            print(f"  {k}: {first_row[k]}")
+    print("===================================\n")
     return df
 
 def create_payload(df, ranking_df):
+    logger.info("Tạo payload...")
     predictions = []
     rows = []
     for idx, row in df.iterrows():
@@ -61,7 +75,7 @@ def create_payload(df, ranking_df):
             "row_index": idx,
             "transformer_id": row["transformer_id"],
             "pred_ensemble": float(row["severity_score"] / 20.0),
-            "severity": ui_severity,          # sử dụng nhãn UI
+            "severity": ui_severity,
             "fault_type": row.get("consensus_fault", "UNCERTAIN"),
             "reason": f"Severity score = {row['severity_score']:.2f}",
             "top_features": []
@@ -87,7 +101,6 @@ def create_payload(df, ranking_df):
             "features": {}
         }
         transformer_summary.append(ts)
-    # ... phần còn lại giữ nguyên
 
     timeseries = {}
     for tid, grp in df.groupby("transformer_id"):
@@ -110,7 +123,7 @@ def create_payload(df, ranking_df):
         "total_rows": len(df),
     }
 
-    return {
+    payload = {
         "predictions": predictions,
         "rows": rows,
         "preview_rows": rows[:20],
@@ -122,6 +135,8 @@ def create_payload(df, ranking_df):
             "dataset_summary": dataset_summary
         }
     }
+    logger.info("Payload hoàn tất.")
+    return payload
 
 def process_dataframe(uploaded_df):
     tmp_dir = tempfile.mkdtemp()
@@ -131,20 +146,20 @@ def process_dataframe(uploaded_df):
         logger.info("Bắt đầu clean dataset...")
         df_clean, _ = clean_dataset(input_file=excel_path, output_dir=Path(tmp_dir))
         logger.info(f"Clean xong: {df_clean.shape}")
-        
+
         logger.info("Bắt đầu feature engineering...")
         df_features = build_features_from_clean(df_clean)
-        logger.info(f"Features: {df_features.shape}, số cột: {len(df_features.columns)}")
-        
+
         logger.info("Chạy consensus DGA...")
         df_labeled = apply_consensus(df_features)
+
         logger.info("Chạy severity scoring...")
         df_labeled = apply_severity(df_labeled)
+
         logger.info("Tạo ranking...")
         ranking_df = build_transformer_ranking(df_labeled)
-        
+
         payload = create_payload(df_labeled, ranking_df)
-        logger.info("Payload đã sẵn sàng.")
         return payload
     except Exception as e:
         logger.exception("Lỗi trong process_dataframe")

@@ -1,13 +1,9 @@
 # components/sidebar.py
-
 import json
 import logging
 from typing import Any
-
 import streamlit as st
-
 logger = logging.getLogger(__name__)
-
 
 def _debug_enabled() -> bool:
     return bool(st.session_state.get("debug_mode", False))
@@ -151,7 +147,7 @@ def render_sidebar(
             st.markdown("### Inference")
             run_clicked = st.button(
                 "Run prediction",
-                type="primary",
+                type="secondary",
                 use_container_width=True,
                 key="sidebar_run_prediction",
             )

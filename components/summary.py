@@ -1,13 +1,9 @@
 # components/summary.py
-
 import logging
 from typing import Any
-
 import pandas as pd
 import streamlit as st
-
 logger = logging.getLogger(__name__)
-
 
 def _debug_enabled() -> bool:
     return bool(st.session_state.get("debug_mode", False))

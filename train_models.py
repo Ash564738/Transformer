@@ -11,16 +11,13 @@ from torch.utils.data import DataLoader, Dataset
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.metrics import accuracy_score, f1_score, classification_report, mean_squared_error
-
+from config import FAULT_LABELS, SEVERITY_LABELS
 # ------------------------------
 # Config
 # ------------------------------
 LABELED_PATH = Path("dataset/processed/dga_labeled.parquet")
 MODEL_DIR = Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
-
-FAULT_LABELS = ["Normal", "PD", "D1", "D2", "T1", "T2", "T3", "Cellulose", "MIXED", "UNCERTAIN"]
-SEVERITY_LABELS = ["Normal", "Watchlist", "Warning", "Critical"]
 
 ID_LIKE_COLS = [
     "transformer_id", "sample_day", "loc", "name", "ser", "codetx", "mfg",
@@ -39,20 +36,30 @@ ID_LIKE_COLS = [
 # ------------------------------
 # Data loading
 # ------------------------------
-def load_data():
+def load_data(conf_threshold=70):
     df = pd.read_parquet(LABELED_PATH)
     df["sample_day"] = pd.to_datetime(df["sample_day"])
     df = df.dropna(subset=["transformer_id", "sample_day"])
+    if "diagnostic_confidence" in df.columns:
+        df = df[df["diagnostic_confidence"] >= conf_threshold]
     return df
 
 def prepare_static_data(df):
-    # Feature columns
     feature_cols = [c for c in df.columns if c not in ID_LIKE_COLS
                     and not c.startswith("target_")
                     and df[c].dtype in ['float64','int64','int32','float32']]
     X = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
-    y_fault = df["fault_type_label"].map({v:i for i,v in enumerate(FAULT_LABELS)}).values.astype(int)
-    y_sev_cls = df["severity_label"].map({v:i for i,v in enumerate(SEVERITY_LABELS)}).values.astype(int)
+
+    # Dòng cũ gây lỗi:
+    # y_fault = df["fault_type_label"].map({v:i for i,v in enumerate(FAULT_LABELS)}).values.astype(int)
+    # Sửa thành: dùng trực tiếp cột đã là số
+    y_fault = df["fault_type_label"].astype(int).values
+
+    # Dòng cũ:
+    # y_sev_cls = df["severity_label"].map({v:i for i,v in enumerate(SEVERITY_LABELS)}).values.astype(int)
+    # Sửa thành:
+    y_sev_cls = df["severity_label"].astype(int).values
+
     y_sev_score = df["severity_score"].values.astype(float)
     groups = df["transformer_id"].values
     return X, y_fault, y_sev_cls, y_sev_score, groups, feature_cols

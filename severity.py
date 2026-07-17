@@ -1,41 +1,21 @@
 # severity.py
 import numpy as np
 import pandas as pd
+import logging
+from config import FAULT_SEVERITY_POINTS, SEVERITY_BY_GROUP
 
-# Ngưỡng IEEE
+logger = logging.getLogger(__name__)
+
 THRESHOLDS = {
-    "h2": [100, 200, 500],
+    "h2": [100, 500, 1000],
     "ch4": [120, 400, 1000],
     "c2h6": [65, 100, 150],
     "c2h4": [50, 100, 200],
-    "c2h2": [3, 35, 80],
+    "c2h2": [1, 9, 35],
     "co": [350, 700, 1400],
     "co2": [2500, 5000, 10000],
+    "tcg": [720, 1920, 4630],
     "tdcg": [720, 1920, 4630],
-}
-
-FAULT_SEVERITY_POINTS = {
-    "NORMAL": 0,
-
-    "PD": 2,
-    "D1": 3,
-    "D2": 5,
-
-    "T1": 2,
-    "T2": 3,
-    "T3": 5,
-    "T3-H": 5,
-
-    "THERMAL": 3,
-    "THERMAL_OIL": 3,
-
-    "C": 5,
-    "Cellulose": 4,
-    "THERMAL_CELLULOSE": 4,
-
-    "MIXED": 5,
-    "UNCERTAIN": 1,
-    "INVALID_LOW_GAS": 0,
 }
 
 def score_by_threshold(value: float, thresholds: list) -> int:
@@ -106,22 +86,63 @@ def compute_aging_score(row: pd.Series) -> int:
     return score
 
 def severity_class_from_score(score: float) -> str:
-    if pd.isna(score): return "UNCERTAIN"
-    if score < 4: return "Normal"
-    if score < 8: return "Watchlist"
-    if score < 13: return "Warning"
-    return "Critical"
+    if pd.isna(score): 
+        return "UNCERTAIN"
+    if score < 4: 
+        return "NORMAL"
+    if score < 8: 
+        return "WATCHLIST"
+    if score < 13: 
+        return "WARNING"
+    return "CRITICAL"
+
+def get_fault_points(row: pd.Series) -> int:
+    """
+    Tính điểm severity từ consensus fault.
+    Nếu MIXED, dùng max severity của các nhóm thành phần.
+    """
+    fault_label = row.get("consensus_fault")
+    if pd.isna(fault_label):
+        return 1
+    fl = str(fault_label).strip().upper()
+
+    if fl == "MIXED":
+        components = row.get("mixed_components", [])
+        if not components:
+            return SEVERITY_BY_GROUP.get("MIXED", 5)
+        max_sev = 0
+        for comp in components:
+            sev = SEVERITY_BY_GROUP.get(comp, 1)
+            if sev > max_sev:
+                max_sev = sev
+        return max_sev
+
+    # Xử lý các fault thông thường
+    if fl == "T3-H":
+        fl = "T3_H"
+    return FAULT_SEVERITY_POINTS.get(fl, 1)
 
 def apply_severity(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Bắt đầu tính severity scores...")
     df["severity_gas_score"] = df.apply(compute_gas_level_score, axis=1)
     df["severity_trend_score"] = df.apply(compute_trend_score, axis=1)
     df["severity_aging_score"] = df.apply(compute_aging_score, axis=1)
-    df["severity_fault_score"] = df["consensus_fault"].map(FAULT_SEVERITY_POINTS).fillna(1).astype(int)
+    df["severity_fault_score"] = df.apply(get_fault_points, axis=1)
+
     df["severity_score"] = (
         1.0 * df["severity_gas_score"] +
         1.2 * df["severity_trend_score"] +
         1.0 * df["severity_fault_score"] +
         0.8 * df["severity_aging_score"]
     )
+
     df["severity_label"] = df["severity_score"].apply(severity_class_from_score)
+
+    # Debug
+    sample = df[["transformer_id", "severity_gas_score", "severity_trend_score", "severity_fault_score", "severity_score", "severity_label"]].head(5)
+    logger.info("Mẫu severity (5 dòng đầu):\n" + sample.to_string())
+    print("=== DEBUG SEVERITY (5 first rows) ===")
+    print(sample.to_string())
+    print("====================================")
+
     return df

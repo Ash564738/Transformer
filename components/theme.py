@@ -1,7 +1,5 @@
 # components/theme.py
-
 import streamlit as st
-
 
 def apply_theme():
     st.set_page_config(
