@@ -296,6 +296,7 @@ def clean_dataset(
         if canon in COLUMN_ALIASES:
             rename_map[c] = COLUMN_ALIASES[canon]
     df = df.rename(columns=rename_map)
+    df.columns = df.columns.str.lower()
 
     # 4) DATE PARSING & SWAP
     if "sample_day" not in df.columns:

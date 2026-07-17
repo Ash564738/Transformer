@@ -23,7 +23,7 @@ from evaluation import evaluate_agreement_with_weak_labels, evaluate_diagnostic_
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from config import SEVERITY_TO_UI
+from config import config as cfg
 
 CORE_GASES = ["h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2"]
 OPTIONAL_NUMERIC = ["o2", "n2", "water", "temp"]
@@ -69,8 +69,9 @@ def create_payload(df, ranking_df):
     logger.info("Tạo payload...")
     predictions = []
     rows = []
+    df = df.sort_values(["transformer_id", "sample_day"], ascending=[True, False])
     for idx, row in df.iterrows():
-        ui_severity = SEVERITY_TO_UI.get(row["severity_label"], row["severity_label"])
+        ui_severity = cfg.SEVERITY_TO_UI.get(row["severity_label"], row["severity_label"])
         pred = {
             "row_index": idx,
             "transformer_id": row["transformer_id"],
@@ -85,7 +86,7 @@ def create_payload(df, ranking_df):
 
     transformer_summary = []
     for _, rrow in ranking_df.iterrows():
-        ui_severity = SEVERITY_TO_UI.get(rrow["severity_label"], rrow["severity_label"])
+        ui_severity = cfg.SEVERITY_TO_UI.get(rrow["severity_label"], rrow["severity_label"])
         ts = {
             "rank": int(rrow["rank"]),
             "transformer_id": rrow["transformer_id"],

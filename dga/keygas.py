@@ -2,25 +2,25 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+import logging
+from config import config as cfg
 
-MIN_TDCG = 100.0  # ppm
+logger = logging.getLogger(__name__)
 
 def key_gas_method(row: pd.Series) -> str:
-    row_lower = row.copy()
-    row_lower.index = row_lower.index.str.lower()
+    # Dựa vào tên cột đã được chuẩn hóa lowercase từ trước
+    h2 = float(row.get("h2", 0.0)) if not pd.isna(row.get("h2")) else 0.0
+    ch4 = float(row.get("ch4", 0.0)) if not pd.isna(row.get("ch4")) else 0.0
+    c2h6 = float(row.get("c2h6", 0.0)) if not pd.isna(row.get("c2h6")) else 0.0
+    c2h4 = float(row.get("c2h4", 0.0)) if not pd.isna(row.get("c2h4")) else 0.0
+    c2h2 = float(row.get("c2h2", 0.0)) if not pd.isna(row.get("c2h2")) else 0.0
+    co = float(row.get("co", 0.0)) if not pd.isna(row.get("co")) else 0.0
 
-    h2 = float(row_lower.get("h2", 0.0)) if not pd.isna(row_lower.get("h2")) else 0.0
-    ch4 = float(row_lower.get("ch4", 0.0)) if not pd.isna(row_lower.get("ch4")) else 0.0
-    c2h6 = float(row_lower.get("c2h6", 0.0)) if not pd.isna(row_lower.get("c2h6")) else 0.0
-    c2h4 = float(row_lower.get("c2h4", 0.0)) if not pd.isna(row_lower.get("c2h4")) else 0.0
-    c2h2 = float(row_lower.get("c2h2", 0.0)) if not pd.isna(row_lower.get("c2h2")) else 0.0
-    co = float(row_lower.get("co", 0.0)) if not pd.isna(row_lower.get("co")) else 0.0
-
-    tdcg = row_lower.get("tdcg", np.nan)
+    tdcg = row.get("tdcg", np.nan)
     if pd.isna(tdcg):
         tdcg = h2 + ch4 + c2h6 + c2h4 + c2h2 + co
 
-    if tdcg < MIN_TDCG:
+    if tdcg < cfg.MIN_TDCG:
         return "NORMAL"
 
     gases = {
@@ -46,12 +46,10 @@ def key_gas_method(row: pd.Series) -> str:
 
 def apply_key_gas(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df.columns = df.columns.str.lower()
     df["keygas_fault"] = df.apply(key_gas_method, axis=1)
 
-    # Debug: in 5 dòng đầu
-    print("=== DEBUG KEY GAS (first 5 rows) ===")
-    sample = df[["h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "tdcg", "keygas_fault"]].head(5)
-    print(sample.to_string())
-    print("=====================================\n")
+    logger.debug("Key gas fault applied.")
+    if logger.isEnabledFor(logging.DEBUG):
+        sample_cols = ["h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "tdcg", "keygas_fault"]
+        logger.debug("Sample Key Gas results:\n" + df[sample_cols].head(5).to_string())
     return df

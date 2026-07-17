@@ -4,6 +4,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.path import Path
 from matplotlib.patches import PathPatch, FancyArrowPatch
+import logging
+
+logger = logging.getLogger(__name__)
 
 SQRT3 = np.sqrt(3)
 h = SQRT3 / 2.0
@@ -107,11 +110,10 @@ def apply_duval_triangle(df: pd.DataFrame) -> pd.DataFrame:
     df["t_y"] = ys
     df["duval_triangle_fault"] = faults
 
-    # Debug
-    print("=== DEBUG DUVAL TRIANGLE (first 5 rows) ===")
-    cols = ["ch4", "c2h4", "c2h2", "t_x", "t_y", "duval_triangle_fault"]
-    print(df[cols].head(5).to_string())
-    print("============================================\n")
+    logger.debug("Duval Triangle fault applied.")
+    if logger.isEnabledFor(logging.DEBUG):
+        cols = ["ch4", "c2h4", "c2h2", "t_x", "t_y", "duval_triangle_fault"]
+        logger.debug("Sample Duval Triangle results:\n" + df[cols].head(5).to_string())
     return df
 
 # ========== 5. VẼ BIỂU ĐỒ ĐẸP ==========

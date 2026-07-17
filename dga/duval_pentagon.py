@@ -4,6 +4,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.path import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 SCALE = 0.75
 PENTAGON_VERTICES_RAW = {
@@ -110,12 +113,10 @@ def apply_duval_pentagon_dual(df):
     df["p_x"] = xs; df["p_y"] = ys
     df["fault_p1"] = faults_p1; df["fault_p2"] = faults_p2
 
-    # DEBUG
-    print("=== DEBUG DUVAL PENTAGON (first 5 rows) ===")
-    debug_cols = ["h2", "ch4", "c2h6", "c2h4", "c2h2", "p_x", "p_y", "fault_p1", "fault_p2"]
-    print(df[debug_cols].head(5).to_string())
-    print("============================================\n")
-
+    logger.debug("Duval Pentagon dual fault applied.")
+    if logger.isEnabledFor(logging.DEBUG):
+        debug_cols = ["h2", "ch4", "c2h6", "c2h4", "c2h2", "p_x", "p_y", "fault_p1", "fault_p2"]
+        logger.debug("Sample Pentagon results:\n" + df[debug_cols].head(5).to_string())
     return df
 
 def apply_duval_pentagon(df: pd.DataFrame, pentagon: str = "P2") -> pd.DataFrame:

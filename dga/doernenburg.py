@@ -2,14 +2,10 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+import logging
+from config import config as cfg
 
-L1_DOERNENBURG = {
-    "h2": 100,
-    "ch4": 120,
-    "c2h2": 35,
-    "c2h4": 50,
-    "c2h6": 65,
-}
+logger = logging.getLogger(__name__)
 
 def _safe_ratio(num: float, den: float) -> float:
     if pd.isna(num) or pd.isna(den) or den <= 0:
@@ -17,6 +13,7 @@ def _safe_ratio(num: float, den: float) -> float:
     return num / den
 
 def doernenburg_method(row: pd.Series) -> str:
+    l1 = cfg.L1_DOERNENBURG
     h2 = float(row.get("h2", 0))
     ch4 = float(row.get("ch4", 0))
     c2h2 = float(row.get("c2h2", 0))
@@ -24,10 +21,10 @@ def doernenburg_method(row: pd.Series) -> str:
     c2h6 = float(row.get("c2h6", 0))
 
     if not any([
-        h2 >= L1_DOERNENBURG["h2"],
-        ch4 >= L1_DOERNENBURG["ch4"],
-        c2h2 >= L1_DOERNENBURG["c2h2"],
-        c2h4 >= L1_DOERNENBURG["c2h4"]
+        h2 >= l1["h2"],
+        ch4 >= l1["ch4"],
+        c2h2 >= l1["c2h2"],
+        c2h4 >= l1["c2h4"]
     ]):
         return "NORMAL"
 
@@ -36,10 +33,10 @@ def doernenburg_method(row: pd.Series) -> str:
     r3 = _safe_ratio(c2h2, ch4)
     r4 = _safe_ratio(c2h6, c2h2)
 
-    r1_valid = (ch4 > 0 and h2 > 0) and (ch4 >= L1_DOERNENBURG["ch4"] or h2 >= L1_DOERNENBURG["h2"])
-    r2_valid = (c2h2 > 0 and c2h4 > 0) and (c2h2 >= L1_DOERNENBURG["c2h2"] or c2h4 >= L1_DOERNENBURG["c2h4"])
-    r3_valid = (c2h2 > 0 and ch4 > 0) and (c2h2 >= L1_DOERNENBURG["c2h2"] or ch4 >= L1_DOERNENBURG["ch4"])
-    r4_valid = (c2h6 > 0 and c2h2 > 0) and (c2h6 >= L1_DOERNENBURG["c2h6"] or c2h2 >= L1_DOERNENBURG["c2h2"])
+    r1_valid = (ch4 > 0 and h2 > 0) and (ch4 >= l1["ch4"] or h2 >= l1["h2"])
+    r2_valid = (c2h2 > 0 and c2h4 > 0) and (c2h2 >= l1["c2h2"] or c2h4 >= l1["c2h4"])
+    r3_valid = (c2h2 > 0 and ch4 > 0) and (c2h2 >= l1["c2h2"] or ch4 >= l1["ch4"])
+    r4_valid = (c2h6 > 0 and c2h2 > 0) and (c2h6 >= l1["c2h6"] or c2h2 >= l1["c2h2"])
 
     if not any([r1_valid, r2_valid, r3_valid, r4_valid]):
         return "UNCERTAIN"
@@ -68,10 +65,10 @@ def apply_doernenburg(df: pd.DataFrame) -> pd.DataFrame:
     df["dr_r4_c2h6_c2h2"] = df.apply(lambda r: _safe_ratio(r["c2h6"], r["c2h2"]), axis=1)
     df["doernenburg_fault"] = df.apply(doernenburg_method, axis=1)
 
-    print("=== DEBUG DOERNENBURG (first 5 rows) ===")
-    cols = ["h2", "ch4", "c2h2", "c2h4", "c2h6",
-            "dr_r1_ch4_h2", "dr_r2_c2h2_c2h4", "dr_r3_c2h2_ch4", "dr_r4_c2h6_c2h2",
-            "doernenburg_fault"]
-    print(df[cols].head(5).to_string())
-    print("==========================================\n")
+    logger.debug("Doernenburg fault applied.")
+    if logger.isEnabledFor(logging.DEBUG):
+        cols = ["h2", "ch4", "c2h2", "c2h4", "c2h6",
+                "dr_r1_ch4_h2", "dr_r2_c2h2_c2h4", "dr_r3_c2h2_ch4", "dr_r4_c2h6_c2h2",
+                "doernenburg_fault"]
+        logger.debug("Sample Doernenburg results:\n" + df[cols].head(5).to_string())
     return df
