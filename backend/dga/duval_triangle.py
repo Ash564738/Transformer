@@ -212,7 +212,7 @@ def plot_duval_triangle(ch4, c2h4, c2h2, fault=None):
                 arrowprops=dict(arrowstyle='->', color='darkred'),
                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='darkred', alpha=0.9))
 
-    ax.set_xlim(-0.2, 1.45)
+    ax.set_xlim(-0.2, 1.2)
     ax.set_ylim(-0.15, h + 0.18)
     ax.set_aspect('equal')
     ax.axis('off')
