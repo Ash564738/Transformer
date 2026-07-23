@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-python -m pip install -r requirements.txt
-python train_transformer_degradation.py
+cd "$(dirname "$0")/backend"
 
-echo "Training complete. Run 'python api.py' to start the Flask API."
+python -m pip install -r requirements.txt
+python train_models.py
+
+echo "Training complete. Run 'python app.py' (from backend/) to start the Flask API."

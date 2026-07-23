@@ -33,5 +33,9 @@ dataset/processed/
 # Environment
 .env
 
+# Local auth DB (contains real password hashes) and confirmation records
+backend/data/
+frontend/data/
+
 # Logs
 *.log

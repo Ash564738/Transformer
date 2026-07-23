@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+/*
+  "Copper & Teal" design system — derived from UI-SPEC-DGA-DASHBOARD-01.
+  Brand: light cream background, deep petrol-teal primary, copper/amber accent.
+  Status colors (Normal/Watch/High/Critical) are intentionally a separate,
+  fixed palette from the brand colors so risk state is never ambiguous.
+*/
+@theme {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  /* Brand: teal */
+  --color-teal-50: #eef6f4;
+  --color-teal-100: #d6e9e5;
+  --color-teal-200: #adcfc8;
+  --color-teal-300: #7db0a6;
+  --color-teal-400: #4f8f83;
+  --color-teal-500: #316f64;
+  --color-teal-600: #205850;
+  --color-teal-700: #184843;
+  --color-teal-800: #133b37;
+  --color-teal-900: #0f2f2c;
+  --color-teal-950: #081b19;
+
+  /* Brand: copper / amber accent */
+  --color-copper-50: #fdf3ea;
+  --color-copper-100: #fbe3cc;
+  --color-copper-200: #f5c393;
+  --color-copper-300: #eda661;
+  --color-copper-400: #e08a3c;
+  --color-copper-500: #c96f28;
+  --color-copper-600: #a8571c;
+  --color-copper-700: #854318;
+  --color-copper-800: #63321a;
+  --color-copper-900: #482619;
+
+  /* Neutral cream surface */
+  --color-cream-50: #f8f7f2;
+  --color-cream-100: #f2f0e8;
+  --color-cream-200: #e8e5d9;
+  --color-cream-300: #d9d5c4;
+
+  /* Fixed status palette — do not alias to brand colors */
+  --color-status-normal: #1f7a4d;
+  --color-status-normal-soft: #e3f3e8;
+  --color-status-normal-border: #bfe2cb;
+
+  --color-status-watch: #a16a07;
+  --color-status-watch-soft: #faf0d7;
+  --color-status-watch-border: #f0dba3;
+
+  --color-status-high: #9a4a1f;
+  --color-status-high-soft: #f8e6da;
+  --color-status-high-border: #ecc4a6;
+
+  --color-status-critical: #c62828;
+  --color-status-critical-soft: #fbe3e2;
+  --color-status-critical-border: #f2b8b5;
+
+  --shadow-card: 0 1px 2px rgba(15, 47, 44, 0.06), 0 8px 24px -12px rgba(15, 47, 44, 0.18);
+  --shadow-panel: 0 20px 50px -20px rgba(15, 47, 44, 0.35);
+}
+
+:root {
+  --background: var(--color-cream-50);
+  --foreground: var(--color-teal-950);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+@layer utilities {
+  .card-surface {
+    background: #ffffff;
+    border: 1px solid var(--color-cream-300);
+    border-radius: 1rem;
+    box-shadow: var(--shadow-card);
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-teal-300) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: var(--color-teal-300);
+    border-radius: 999px;
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: white !important;
+  }
+}

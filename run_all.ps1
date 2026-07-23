@@ -3,6 +3,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Set-Location -Path (Join-Path $PSScriptRoot 'backend')
+
 Write-Host 'Installing Python dependencies...'
 python -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) {
@@ -11,7 +13,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host 'Training transformer degradation models...'
-python train_transformer_degradation.py
+python train_models.py
 if ($LASTEXITCODE -ne 0) {
     Write-Error 'Model training failed.'
     exit $LASTEXITCODE
@@ -19,7 +21,7 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($StartApi) {
     Write-Host 'Starting Flask API at http://localhost:5000'
-    python api.py
+    python app.py
 } else {
-    Write-Host 'Training complete. Run "python api.py" to start the Flask API.'
+    Write-Host 'Training complete. Run "python app.py" (from backend/) to start the Flask API.'
 }

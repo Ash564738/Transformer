@@ -1,0 +1,16 @@
+# Single requirements file for the whole backend: the live dashboard API
+# (app.py -> /predict, /chat, /chart/*, /auth/*) and the offline training
+# pipeline (train_models.py). Installing this once covers both.
+numpy
+pandas
+matplotlib
+openpyxl
+flask
+scikit-learn
+lightgbm
+xgboost
+lifelines
+torch
+joblib
+scipy
+shap
