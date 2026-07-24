@@ -4,7 +4,7 @@ import React, { useMemo, useState } from "react";
 
 // ---------- SVG constants ----------
 const SVG_W = 600;
-const SVG_H = 540;
+const SVG_H = 600;
 const MARGIN = 45;
 const TRI_W = SVG_W - 2 * MARGIN;
 const TRI_H = TRI_W * Math.sqrt(3) / 2;
@@ -304,36 +304,45 @@ export function DuvalTriangleSvg({
 
         {/* Sample point */}
         <g onMouseEnter={() => setShowSampleTooltip(true)} onMouseLeave={() => setShowSampleTooltip(false)}>
-          <circle cx={samplePos.x} cy={samplePos.y} r="8" fill="red" stroke="black" strokeWidth="2" className="cursor-pointer" />
-            {showSampleTooltip && (
-              <g transform={`translate(${samplePos.x + 18}, ${samplePos.y - 35})`}>
-                <rect x="-62" y="-28" width="124" height="52" rx="6" fill="white" stroke="darkred" strokeWidth="1.5" opacity="0.95" />
-                <text x="0" y="-16" textAnchor="middle" fontSize="9" fill="darkred" fontWeight="bold">CH₄: {pCH4.toFixed(1)}%</text>
-                <text x="0" y="-4" textAnchor="middle" fontSize="9" fill="darkred" fontWeight="bold">C₂H₄: {pC2H4.toFixed(1)}%</text>
-                <text x="0" y="8" textAnchor="middle" fontSize="9" fill="darkred" fontWeight="bold">C₂H₂: {pC2H2.toFixed(1)}%</text>
-                <text x="0" y="20" textAnchor="middle" fontSize="9" fill="red" fontWeight="bold">
-                  Fault: {backendFault || fault || "UNCERTAIN"}
-                </text>
-              </g>
-            )}
+          {/* Pulse ring (lớp ngoài cùng, mờ dần và lan rộng) */}
+          <circle cx={samplePos.x} cy={samplePos.y} r="8" fill="none" stroke="#c62828" strokeWidth="1" opacity="0.6">
+            <animate attributeName="r" values="6;14;6" dur="2.4s" repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0.6;0;0.6" dur="2.4s" repeatCount="indefinite" />
+          </circle>
+          {/* Điểm đỏ chính */}
+          <circle cx={samplePos.x} cy={samplePos.y} r="6" fill="red" stroke="#c62828" strokeWidth="2" className="cursor-pointer" />
+          
+          {showSampleTooltip && (
+            <g transform={`translate(${samplePos.x + 18}, ${samplePos.y - 35})`}>
+              <rect x="-62" y="-28" width="124" height="52" rx="6" fill="white" stroke="darkred" strokeWidth="1.5" opacity="0.95" />
+              <text x="0" y="-16" textAnchor="middle" fontSize="9" fill="darkred" fontWeight="bold">CH₄: {pCH4.toFixed(1)}%</text>
+              <text x="0" y="-4" textAnchor="middle" fontSize="9" fill="darkred" fontWeight="bold">C₂H₄: {pC2H4.toFixed(1)}%</text>
+              <text x="0" y="8" textAnchor="middle" fontSize="9" fill="darkred" fontWeight="bold">C₂H₂: {pC2H2.toFixed(1)}%</text>
+              <text x="0" y="20" textAnchor="middle" fontSize="9" fill="red" fontWeight="bold">
+                Fault: {backendFault || fault || "UNCERTAIN"}
+              </text>
+            </g>
+          )}
         </g>
 
         {/* Hover zone tooltip (auto-size with foreignObject) */}
         {hoveredZone && (
-          <foreignObject x={SVG_W / 2 - 120} y={SVG_H - 55} width="240" height="40">
+          <foreignObject x={SVG_W / 2 - 140} y={SVG_H - 55} width="280" height="50">
             <div
               style={{
                 background: "rgba(0,0,0,0.8)",
                 color: "white",
                 borderRadius: "8px",
-                padding: "4px 12px",
-                textAlign: "center",
                 fontSize: "12px",
                 fontWeight: "bold",
-                lineHeight: "1.3",
-                maxWidth: "220px",
-                margin: "0 auto",
+                textAlign: "center",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                height: "80%",
+                lineHeight: 1.3,
                 wordBreak: "break-word",
+                overflow: "hidden",
               }}
             >
               {faultText}

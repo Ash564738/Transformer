@@ -2,28 +2,38 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Search } from "lucide-react";
+import { Search, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import type { DgaPayload } from "@/types/dga";
 import { StatusBadge } from "@/components/ui/badge";
 import { scoreToRisk, scoreToStatus, STATUS_STYLES } from "@/lib/severity";
 import { getStations, latestRowFor, stationOf, topGasLabel } from "@/lib/transformer-helpers";
 import { formatDate } from "@/lib/utils";
 
-type SortMode = "risk-desc" | "risk-asc" | "id-asc" | "recent";
+type SortColumn = "id" | "station" | "score" | "status" | "date" | "gas";
+type SortDirection = "asc" | "desc";
+
+interface RowData {
+  summary: DgaPayload["transformer_summary"][number];
+  row: any;
+}
 
 export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: number }) {
   const [query, setQuery] = useState("");
   const [station, setStation] = useState("All Stations");
-  const [sort, setSort] = useState<SortMode>("risk-desc");
+  const [sortColumn, setSortColumn] = useState<SortColumn>("score");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
 
   const stations = useMemo(() => ["All Stations", ...getStations(payload)], [payload]);
 
-  const rows = useMemo(() => {
-    let list = payload.transformer_summary.map((s) => ({
+  const allRows = useMemo<RowData[]>(() => {
+    return payload.transformer_summary.map((s) => ({
       summary: s,
       row: latestRowFor(payload, s.transformer_id),
     }));
+  }, [payload]);
 
+  const filteredRows = useMemo(() => {
+    let list = allRows;
     if (query.trim()) {
       const q = query.trim().toLowerCase();
       list = list.filter((r) => r.summary.transformer_id.toLowerCase().includes(q));
@@ -31,27 +41,66 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
     if (station !== "All Stations") {
       list = list.filter((r) => stationOf(r.summary) === station);
     }
-    switch (sort) {
-      case "risk-desc":
-        list.sort((a, b) => b.summary.latest_score - a.summary.latest_score);
-        break;
-      case "risk-asc":
-        list.sort((a, b) => a.summary.latest_score - b.summary.latest_score);
-        break;
-      case "id-asc":
-        list.sort((a, b) => a.summary.transformer_id.localeCompare(b.summary.transformer_id));
-        break;
-      case "recent":
-        list.sort(
-          (a, b) => new Date(b.summary.latest_sample_day).getTime() - new Date(a.summary.latest_sample_day).getTime()
-        );
-        break;
+    return list;
+  }, [allRows, query, station]);
+
+  const sortedRows = useMemo(() => {
+    const list = [...filteredRows];
+    const dir = sortDirection === "asc" ? 1 : -1;
+
+    const compare = (a: RowData, b: RowData) => {
+      switch (sortColumn) {
+        case "id":
+          return a.summary.transformer_id.localeCompare(b.summary.transformer_id) * dir;
+        case "station":
+          return (stationOf(a.summary) || "").localeCompare(stationOf(b.summary) || "") * dir;
+        case "score":
+          return (a.summary.latest_score - b.summary.latest_score) * dir;
+        case "status": {
+          const statusOrder: Record<string, number> = { NORMAL: 0, WATCH: 1, HIGH: 2, CRITICAL: 3 };
+          const sa = scoreToStatus(a.summary.latest_score);
+          const sb = scoreToStatus(b.summary.latest_score);
+          return ((statusOrder[sa] ?? 0) - (statusOrder[sb] ?? 0)) * dir;
+        }
+        case "date":
+          return (new Date(a.summary.latest_sample_day).getTime() - new Date(b.summary.latest_sample_day).getTime()) * dir;
+        case "gas":
+          return (topGasLabel(a.row, scoreToStatus(a.summary.latest_score)) || "").localeCompare(
+            topGasLabel(b.row, scoreToStatus(b.summary.latest_score)) || ""
+          ) * dir;
+        default:
+          return 0;
+      }
+    };
+
+    return list.sort(compare);
+  }, [filteredRows, sortColumn, sortDirection]);
+
+  const displayRows = limit ? sortedRows.slice(0, limit) : sortedRows;
+
+  const handleSort = (column: SortColumn) => {
+    if (sortColumn === column) {
+      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setSortColumn(column);
+      setSortDirection("asc");
     }
-    return limit ? list.slice(0, limit) : list;
-  }, [payload, query, station, sort, limit]);
+  };
+
+  const renderSortIcon = (column: SortColumn) => {
+    if (sortColumn !== column) {
+      return <ArrowUpDown className="h-3 w-3 text-teal-300 group-hover:text-teal-500" />;
+    }
+    return sortDirection === "asc" ? (
+      <ArrowUp className="h-3 w-3 text-teal-700" />
+    ) : (
+      <ArrowDown className="h-3 w-3 text-teal-700" />
+    );
+  };
 
   return (
     <div className="space-y-4">
+      {/* Bộ lọc bên ngoài: Search + Station */}
       {!limit && (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
           <div className="relative flex-1 sm:max-w-xs">
@@ -72,16 +121,6 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
               <option key={s}>{s}</option>
             ))}
           </select>
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as SortMode)}
-            className="h-10 rounded-lg border border-teal-200 bg-white px-3 text-sm text-teal-800 outline-none focus:border-teal-500"
-          >
-            <option value="risk-desc">Highest risk first</option>
-            <option value="risk-asc">Lowest risk first</option>
-            <option value="id-asc">Transformer code (A–Z)</option>
-            <option value="recent">Most recently tested</option>
-          </select>
         </div>
       )}
 
@@ -90,17 +129,65 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
           <table className="w-full min-w-[720px] text-left text-sm">
             <thead>
               <tr className="border-b border-cream-300 text-xs font-semibold uppercase tracking-wide text-teal-400">
-                <th className="px-4 py-3 font-semibold">#</th>
-                <th className="px-4 py-3 font-semibold">Transformer Code</th>
-                <th className="px-4 py-3 font-semibold">Station</th>
-                <th className="px-4 py-3 font-semibold">Risk Score</th>
-                <th className="px-4 py-3 font-semibold">Status</th>
-                <th className="px-4 py-3 font-semibold">Last Test Date</th>
-                <th className="px-4 py-3 font-semibold">Top Gas</th>
+                <th className="px-4 py-3">#</th>
+                <th className="px-4 py-3">
+                  <button
+                    onClick={() => handleSort("id")}
+                    className="group inline-flex items-center gap-1 hover:text-teal-700 transition-colors"
+                  >
+                    Transformer Code
+                    {renderSortIcon("id")}
+                  </button>
+                </th>
+                <th className="px-4 py-3">
+                  <button
+                    onClick={() => handleSort("station")}
+                    className="group inline-flex items-center gap-1 hover:text-teal-700 transition-colors"
+                  >
+                    Station
+                    {renderSortIcon("station")}
+                  </button>
+                </th>
+                <th className="px-4 py-3">
+                  <button
+                    onClick={() => handleSort("score")}
+                    className="group inline-flex items-center gap-1 hover:text-teal-700 transition-colors"
+                  >
+                    Risk Score
+                    {renderSortIcon("score")}
+                  </button>
+                </th>
+                <th className="px-4 py-3">
+                  <button
+                    onClick={() => handleSort("status")}
+                    className="group inline-flex items-center gap-1 hover:text-teal-700 transition-colors"
+                  >
+                    Status
+                    {renderSortIcon("status")}
+                  </button>
+                </th>
+                <th className="px-4 py-3">
+                  <button
+                    onClick={() => handleSort("date")}
+                    className="group inline-flex items-center gap-1 hover:text-teal-700 transition-colors"
+                  >
+                    Last Test Date
+                    {renderSortIcon("date")}
+                  </button>
+                </th>
+                <th className="px-4 py-3">
+                  <button
+                    onClick={() => handleSort("gas")}
+                    className="group inline-flex items-center gap-1 hover:text-teal-700 transition-colors"
+                  >
+                    Top Gas
+                    {renderSortIcon("gas")}
+                  </button>
+                </th>
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ summary, row }, i) => {
+              {displayRows.map(({ summary, row }, i) => {
                 const status = scoreToStatus(summary.latest_score);
                 const risk = scoreToRisk(summary.latest_score);
                 const style = STATUS_STYLES[status];
@@ -132,7 +219,7 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
                   </tr>
                 );
               })}
-              {rows.length === 0 && (
+              {displayRows.length === 0 && (
                 <tr>
                   <td colSpan={7} className="px-4 py-10 text-center text-sm text-teal-400">
                     No transformers match the current filters.

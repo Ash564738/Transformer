@@ -125,19 +125,23 @@ export function DuvalPentagon2Svg({
     return lines;
   }, []);
 
-  const tooltipW = 16, tooltipH = 9;
-  const rawX = cent ? cent.x + 1.5 : 0;
-  const rawY = cent ? -cent.y - tooltipH - 0.5 : 0;
-  const tx = clamp(rawX, -36, 36 - tooltipW);
-  const ty = clamp(rawY, -36, 36 - tooltipH);
+  const tooltipW = 14;   // trước là 20
+  const tooltipH = 10;   // trước là 15
+  const rawX = cent ? cent.x + 4 : 0;        // lệch sang phải một chút
+  const rawY = cent ? -cent.y - tooltipH - 2 : 0; // lên trên (giảm khoảng cách)
+  const tx = clamp(rawX, -37, 37 - tooltipW);   // điều chỉnh biên cho vừa viewBox 38
+  const ty = clamp(rawY, -37, 37 - tooltipH);
 
-  const hoverZoneY = 30; // nâng lên để không bị cắt
-  const hoverZoneW = 28, hoverZoneH = 4;
+  const hoverZoneY = 32;      // nâng lên (cũ: 30)
+  const hoverZoneW = 26;      // thu hẹp một chút (cũ 28)
+  const hoverZoneH = 4;
 
   const hoverText = hoveredZone ? FAULT_EXPLANATIONS[hoveredZone] || hoveredZone : "";
+
   return (
     <div className="relative w-full max-w-md mx-auto">
       <svg viewBox="-38 -38 76 76" className="w-full">
+        {/* Vùng màu và nhãn zone */}
         {zoneEls.map(({ zone, pts, centroid }) => (
           <g key={zone} onMouseEnter={() => setHoveredZone(zone)} onMouseLeave={() => setHoveredZone(null)} className="cursor-pointer">
             <polygon points={pts} fill={ZONE_COLORS[zone] || "#ccc"} stroke={hoveredZone === zone ? "#000" : "none"} strokeWidth={0.3} opacity={0.85} />
@@ -152,25 +156,30 @@ export function DuvalPentagon2Svg({
 
         {cent && (
           <g onMouseEnter={() => setShowTooltip(true)} onMouseLeave={() => setShowTooltip(false)}>
-            <circle cx={cent.x} cy={-cent.y} r="0.8" fill="red" stroke="black" strokeWidth={0.2} className="cursor-pointer" />
+            <circle cx={cent.x} cy={-cent.y} r="0.8" fill="none" stroke="#c62828" strokeWidth={0.2} opacity={0.6}>
+              <animate attributeName="r" values="0.8;1.6;0.8" dur="2.4s" repeatCount="indefinite" />
+              <animate attributeName="opacity" values="0.6;0;0.6" dur="2.4s" repeatCount="indefinite" />
+            </circle>
+            <circle cx={cent.x} cy={-cent.y} r="0.8" fill="red" stroke="#c62828" strokeWidth={0.2} className="cursor-pointer" />
             {showTooltip && (
-              <>
-                <rect x={tx} y={ty} width={tooltipW} height={tooltipH} rx={1} fill="white" stroke="darkred" strokeWidth={0.3} opacity={0.95} />
-                <text x={tx + tooltipW/2} y={ty + 1.8} textAnchor="middle" fontSize="1.2" fill="darkred" fontWeight="bold">H₂: {pH2.toFixed(1)}%</text>
-                <text x={tx + tooltipW/2} y={ty + 2.8} textAnchor="middle" fontSize="1.2" fill="darkred" fontWeight="bold">CH₄: {pCH4.toFixed(1)}%</text>
-                <text x={tx + tooltipW/2} y={ty + 3.8} textAnchor="middle" fontSize="1.2" fill="darkred" fontWeight="bold">C₂H₆: {pC2H6.toFixed(1)}%</text>
-                <text x={tx + tooltipW/2} y={ty + 4.8} textAnchor="middle" fontSize="1.2" fill="darkred" fontWeight="bold">C₂H₄: {pC2H4.toFixed(1)}%</text>
-                <text x={tx + tooltipW/2} y={ty + 5.8} textAnchor="middle" fontSize="1.2" fill="darkred" fontWeight="bold">C₂H₂: {pC2H2.toFixed(1)}%</text>
-                <text x={tx + tooltipW/2} y={ty + 7} textAnchor="middle" fontSize="1.2" fill="red" fontWeight="bold">Fault: {backendFault || fault}</text>
-              </>
+              <g transform={`translate(${tx}, ${ty})`}>
+                <rect x="0" y="0" width={tooltipW} height={tooltipH} rx="1" fill="white" stroke="darkred" strokeWidth={0.2} opacity={0.95} />
+                <text x={tooltipW / 2} y="1.8" textAnchor="middle" fontSize="1" fill="darkred" fontWeight="bold">H₂: {pH2.toFixed(1)}%</text>
+                <text x={tooltipW / 2} y="3.2" textAnchor="middle" fontSize="1" fill="darkred" fontWeight="bold">CH₄: {pCH4.toFixed(1)}%</text>
+                <text x={tooltipW / 2} y="4.6" textAnchor="middle" fontSize="1" fill="darkred" fontWeight="bold">C₂H₆: {pC2H6.toFixed(1)}%</text>
+                <text x={tooltipW / 2} y="6.0" textAnchor="middle" fontSize="1" fill="darkred" fontWeight="bold">C₂H₄: {pC2H4.toFixed(1)}%</text>
+                <text x={tooltipW / 2} y="7.4" textAnchor="middle" fontSize="1" fill="darkred" fontWeight="bold">C₂H₂: {pC2H2.toFixed(1)}%</text>
+                <text x={tooltipW / 2} y="9.0" textAnchor="middle" fontSize="1" fill="red" fontWeight="bold">Fault: {backendFault || fault}</text>
+              </g>
             )}
           </g>
         )}
 
+        {/* Hover zone tooltip */}
         {hoveredZone && (
           <>
-            <rect x={-hoverZoneW/2} y={hoverZoneY} width={hoverZoneW} height={hoverZoneH} rx={1} fill="rgba(0,0,0,0.8)" />
-            <text x={0} y={hoverZoneY + hoverZoneH/2} textAnchor="middle" fontSize="1.5" fill="white" fontWeight="bold" dominantBaseline="middle">
+            <rect x={-hoverZoneW / 2} y={hoverZoneY} width={hoverZoneW} height={hoverZoneH} rx={1} fill="rgba(0,0,0,0.8)" />
+            <text x={0} y={hoverZoneY + hoverZoneH / 2} textAnchor="middle" fontSize="1.4" fill="white" fontWeight="bold" dominantBaseline="middle">
               {hoverText}
             </text>
           </>
