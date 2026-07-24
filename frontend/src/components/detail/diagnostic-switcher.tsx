@@ -6,6 +6,9 @@ import { FAULT_EXPLANATIONS } from "@/lib/dga-methods";
 import { duvalTriangleImageUrl, duvalPentagonImageUrl } from "@/lib/api";
 import { cn, formatNumber } from "@/lib/utils";
 import { BackendChartImage } from "@/components/charts/backend-chart-image";
+import { DuvalTriangleSvg } from "../charts/duval-triangle";
+import { DuvalPentagon1Svg } from "../charts/duval-pentagon1";
+import { DuvalPentagon2Svg } from "../charts/duval-pentagon2";
 
 type MethodKey = "triangle" | "pentagon1" | "pentagon2" | "doernenburg" | "iec" | "rogers" | "keygas";
 
@@ -34,7 +37,10 @@ export function DiagnosticSwitcher({ row }: { row: DgaRow }) {
     c2h4: Number(row.c2h4 ?? 0),
     c2h2: Number(row.c2h2 ?? 0),
   };
-
+  const faultCode = row.duval_triangle_fault;
+  const faultDisplay = faultCode 
+    ? (FAULT_EXPLANATIONS[faultCode] || faultCode) 
+    : "UNCERTAIN";
   return (
     <div>
       <div className="flex flex-wrap gap-1.5">
@@ -55,23 +61,37 @@ export function DiagnosticSwitcher({ row }: { row: DgaRow }) {
       <div className="mt-4 rounded-xl bg-cream-50 p-4">
         {active === "triangle" && (
           <div className="space-y-2">
-            <BackendChartImage src={duvalTriangleImageUrl(row)} alt="Duval Triangle 1" />
+            <DuvalTriangleSvg
+              ch4={Number(row.ch4 ?? 0)}
+              c2h4={Number(row.c2h4 ?? 0)}
+              c2h2={Number(row.c2h2 ?? 0)}
+              backendFault={row.duval_triangle_fault}
+            />
             <p className="text-center text-sm font-extrabold text-status-critical">
-              RESULT: {resultLabel(row.duval_triangle_fault)}
+              RESULT: {row.duval_triangle_fault 
+                ? (FAULT_EXPLANATIONS[row.duval_triangle_fault] || row.duval_triangle_fault) 
+                : "UNCERTAIN"}
             </p>
           </div>
         )}
         {active === "pentagon1" && (
           <div className="space-y-2">
-            <BackendChartImage src={duvalPentagonImageUrl(row)} alt="Duval Pentagon 1 & 2" />
+            <DuvalPentagon1Svg
+              h2={g.h2} ch4={g.ch4} c2h6={g.c2h6} c2h4={g.c2h4} c2h2={g.c2h2}
+              backendFault={row.fault_p1}
+            />
             <p className="text-center text-sm font-extrabold text-status-critical">
               RESULT: {resultLabel(row.fault_p1)}
             </p>
           </div>
         )}
+
         {active === "pentagon2" && (
           <div className="space-y-2">
-            <BackendChartImage src={duvalPentagonImageUrl(row)} alt="Duval Pentagon 1 & 2" />
+            <DuvalPentagon2Svg
+              h2={g.h2} ch4={g.ch4} c2h6={g.c2h6} c2h4={g.c2h4} c2h2={g.c2h2}
+              backendFault={row.duval_pentagon_fault}
+            />
             <p className="text-center text-sm font-extrabold text-status-critical">
               RESULT: {resultLabel(row.duval_pentagon_fault)}
             </p>
