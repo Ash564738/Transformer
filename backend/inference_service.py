@@ -210,6 +210,11 @@ def process_dataframe(uploaded_df):
         df_clean, _ = clean_dataset(input_file=excel_path, output_dir=Path(tmp_dir))
         logger.info(f"Clean xong: {df_clean.shape}")
 
+        logger.info("Gộp với dữ liệu đã tích lũy từ các lần upload trước...")
+        from dataset_accumulator import merge_with_accumulated
+        df_clean = merge_with_accumulated(df_clean)
+        logger.info(f"Sau khi gộp: {df_clean.shape}")
+
         logger.info("Bắt đầu feature engineering...")
         df_features = build_features_from_clean(df_clean)
 
@@ -223,6 +228,11 @@ def process_dataframe(uploaded_df):
         ranking_df = build_transformer_ranking(df_labeled)
 
         payload = create_payload(df_labeled, ranking_df)
+
+        logger.info("Lưu kết quả vào SQLite cho chatbot Text2SQL...")
+        from data_store import save_payload_to_db
+        save_payload_to_db(payload)
+
         return payload
     except Exception as e:
         logger.exception("Lỗi trong process_dataframe")

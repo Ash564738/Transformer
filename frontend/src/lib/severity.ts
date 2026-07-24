@@ -62,6 +62,16 @@ export function scoreToRisk(score: number): number {
 
 export const STATUS_ORDER: RiskStatus[] = ["Normal", "Watch", "High", "Critical"];
 
+// Raw hex twins of the --color-status-* CSS variables (globals.css) — SVG
+// chart libraries (recharts) need real color values for fill/stroke, not
+// Tailwind class names, so this can't just reuse STATUS_STYLES below.
+export const STATUS_HEX: Record<RiskStatus, string> = {
+  Normal: "#1f7a4d",
+  Watch: "#a16a07",
+  High: "#9a4a1f",
+  Critical: "#c62828",
+};
+
 export const STATUS_STYLES: Record<
   RiskStatus,
   {

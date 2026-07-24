@@ -9,6 +9,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
+from dotenv import load_dotenv
+load_dotenv()  # backend/.env — OPENROUTER_API_KEY for text2sql_chat.py, gitignored
+
 import matplotlib
 matplotlib.use("Agg")  # headless backend — must be set before any pyplot import
 
@@ -16,9 +19,9 @@ import numpy as np
 import pandas as pd
 from flask import Flask, jsonify, request, Response
 
-from chat import generate_chat_answer
 from inference_service import MODEL_DIR, process_dataframe
 from dga import duval_triangle, duval_pentagon
+from text2sql_chat import answer_question
 import auth
 
 app = Flask(__name__)
@@ -50,6 +53,7 @@ def _add_cors_headers(response):
 @app.route('/auth/login', methods=['OPTIONS'])
 @app.route('/auth/me', methods=['OPTIONS'])
 @app.route('/auth/logout', methods=['OPTIONS'])
+@app.route('/dataset/reset', methods=['OPTIONS'])
 def _cors_preflight():
     return ('', 204)
 
@@ -122,7 +126,7 @@ def root():
     return jsonify(
         service='Transformer Degradation Ranking API',
         endpoints=[
-            '/health', '/predict', '/chat', '/chart/duval-triangle', '/chart/duval-pentagon',
+            '/health', '/predict', '/chat', '/dataset/reset', '/chart/duval-triangle', '/chart/duval-pentagon',
             '/auth/login', '/auth/me', '/auth/logout',
         ],
     )
@@ -171,15 +175,30 @@ def predict():
         return jsonify(error=str(exc)), 400
 
 
+@app.route('/dataset/reset', methods=['POST'])
+@auth.require_auth
+def dataset_reset():
+    """Wipes the accumulated dataset (dataset_accumulator.py) and its SQLite
+    mirror (data_store.py) — pairs with the frontend's "Clear data" action so
+    clearing the dashboard also stops the next upload from merging into
+    whatever was loaded before."""
+    from dataset_accumulator import reset_accumulated_dataset
+    from data_store import reset_db
+    reset_accumulated_dataset()
+    reset_db()
+    return jsonify(ok=True)
+
+
 @app.route('/chat', methods=['POST'])
 @auth.require_auth
 def chat():
     payload = request.get_json(force=True)
     question = payload.get('question', '').strip() if isinstance(payload, dict) else ''
     context = payload.get('context') if isinstance(payload, dict) else None
+    history = payload.get('history') if isinstance(payload, dict) else None
     if not question:
         return jsonify(error='Question is required.'), 400
-    return jsonify(answer=generate_chat_answer(question, context))
+    return jsonify(answer=answer_question(question, context, history))
 
 
 @app.route('/chart/duval-triangle', methods=['GET'])

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Bot, X, Info, Mic, Send, Trash2 } from "lucide-react";
+import { Bot, X, Info, Mic, Send, Trash2, ChevronDown, GripVertical } from "lucide-react";
 import { useDashboardStore } from "@/store/use-dashboard-store";
 import { cn } from "@/lib/utils";
 
@@ -13,6 +13,24 @@ const SUGGESTIONS = [
   "How is the ensemble score calculated?",
   "Compare two transformers",
 ];
+
+const DEFAULT_WIDTH = 384; // 24rem, matches the panel's old fixed w-[24rem]
+const MIN_WIDTH = 320;
+const MAX_WIDTH = 640;
+const WIDTH_STORAGE_KEY = "dga-chat-width";
+const SUGGESTIONS_OPEN_STORAGE_KEY = "dga-chat-suggestions-open";
+
+function readStoredWidth(): number {
+  if (typeof window === "undefined") return DEFAULT_WIDTH;
+  const raw = Number(window.localStorage.getItem(WIDTH_STORAGE_KEY));
+  return raw >= MIN_WIDTH && raw <= MAX_WIDTH ? raw : DEFAULT_WIDTH;
+}
+
+function readStoredSuggestionsOpen(): boolean {
+  if (typeof window === "undefined") return true;
+  const raw = window.localStorage.getItem(SUGGESTIONS_OPEN_STORAGE_KEY);
+  return raw === null ? true : raw === "1";
+}
 
 export function FloatingChat() {
   const open = useDashboardStore((s) => s.chatOpen);
@@ -28,9 +46,56 @@ export function FloatingChat() {
   const [listening, setListening] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Lazy initializers, not an effect+setState: this panel only ever mounts
+  // client-side (it's inside `{open && ...}` and `open` starts false, so
+  // there's nothing rendered during SSR for a post-mount read to "fix up"
+  // — reading localStorage straight away is safe here.
+  const [width, setWidth] = useState(readStoredWidth);
+  const [resizing, setResizing] = useState(false);
+  const resizeStartRef = useRef<{ x: number; width: number } | null>(null);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(readStoredSuggestionsOpen);
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, sending]);
+
+  useEffect(() => {
+    if (!resizing) return;
+    function onMove(e: MouseEvent) {
+      if (!resizeStartRef.current) return;
+      // Panel is anchored to the right edge, so dragging the left-edge
+      // handle further LEFT should make it wider.
+      const delta = resizeStartRef.current.x - e.clientX;
+      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, resizeStartRef.current.width + delta));
+      setWidth(next);
+    }
+    function onUp() {
+      setResizing(false);
+      resizeStartRef.current = null;
+      setWidth((w) => {
+        window.localStorage.setItem(WIDTH_STORAGE_KEY, String(w));
+        return w;
+      });
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [resizing]);
+
+  function toggleSuggestions() {
+    setSuggestionsOpen((v) => {
+      const next = !v;
+      window.localStorage.setItem(SUGGESTIONS_OPEN_STORAGE_KEY, next ? "1" : "0");
+      return next;
+    });
+  }
 
   function submit(text: string) {
     if (!text.trim()) return;
@@ -89,9 +154,24 @@ export function FloatingChat() {
             initial={{ opacity: 0, y: 24, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 24, scale: 0.97 }}
-            transition={{ type: "spring", damping: 26, stiffness: 300 }}
-            className="fixed bottom-24 right-6 z-50 flex h-[32rem] w-[24rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-teal-800/10 bg-white shadow-2xl"
+            transition={resizing ? { duration: 0 } : { type: "spring", damping: 26, stiffness: 300 }}
+            style={{ width }}
+            className="fixed bottom-24 right-6 z-50 flex h-[32rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-teal-800/10 bg-white shadow-2xl"
           >
+            <div
+              onMouseDown={(e) => {
+                resizeStartRef.current = { x: e.clientX, width };
+                setResizing(true);
+              }}
+              className={cn(
+                "group absolute bottom-0 left-0 top-0 z-10 flex w-2 cursor-ew-resize items-center justify-center hover:bg-teal-500/15",
+                resizing && "bg-teal-500/20"
+              )}
+              aria-hidden
+            >
+              <GripVertical className="h-4 w-4 text-teal-800/0 group-hover:text-teal-800/40" />
+            </div>
+
             <div className="flex items-start justify-between gap-3 bg-gradient-to-b from-teal-900 to-teal-800 px-4 py-3.5 text-white">
               <div className="flex items-center gap-2.5">
                 <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-copper-500/90">
@@ -166,17 +246,26 @@ export function FloatingChat() {
                   <Trash2 className="h-3 w-3" /> Clear
                 </button>
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                {SUGGESTIONS.map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => submit(s)}
-                    className="rounded-full border border-teal-200 bg-white px-2.5 py-1 text-[11px] text-teal-700 hover:bg-teal-50 cursor-pointer"
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
+              <button
+                onClick={toggleSuggestions}
+                className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-teal-400 hover:text-teal-600 cursor-pointer"
+              >
+                <ChevronDown className={cn("h-3 w-3 transition-transform", !suggestionsOpen && "-rotate-90")} />
+                Quick suggestions
+              </button>
+              {suggestionsOpen && (
+                <div className="flex flex-wrap gap-1.5">
+                  {SUGGESTIONS.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => submit(s)}
+                      className="rounded-full border border-teal-200 bg-white px-2.5 py-1 text-[11px] text-teal-700 hover:bg-teal-50 cursor-pointer"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             <form

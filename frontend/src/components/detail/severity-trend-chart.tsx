@@ -11,9 +11,34 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { DgaRow } from "@/types/dga";
-import { classifyScore, nativeToStatus, scoreToRisk, STATUS_STYLES } from "@/lib/severity";
+import type { DgaRow, RiskStatus } from "@/types/dga";
+import { classifyScore, nativeToStatus, scoreToRisk, STATUS_HEX, STATUS_STYLES } from "@/lib/severity";
 import { formatDate } from "@/lib/utils";
+
+interface SeverityPoint {
+  day: string;
+  risk: number;
+  status: RiskStatus;
+  fault: string;
+}
+
+/** Colors each point by its own status (Normal/Watch/High/Critical) instead
+ * of a single line color — the whole point of this chart is seeing WHEN a
+ * transformer crossed into a worse band, which a uniform dot color hides. */
+function StatusDot(props: { cx?: number; cy?: number; payload?: SeverityPoint; singlePoint?: boolean }) {
+  const { cx, cy, payload, singlePoint } = props;
+  if (cx == null || cy == null || !payload) return null;
+  return (
+    <circle
+      cx={cx}
+      cy={cy}
+      r={singlePoint ? 7 : 4}
+      fill={STATUS_HEX[payload.status]}
+      stroke="white"
+      strokeWidth={singlePoint ? 2.5 : 1.5}
+    />
+  );
+}
 
 /** Each transformer's own severity trajectory over time — one point per
  * sample record, not the raw gas concentrations. This is what lets an
@@ -41,20 +66,7 @@ export function SeverityTrendChart({ rows }: { rows: DgaRow[] }) {
     return <p className="py-14 text-center text-sm text-teal-400">No severity history available.</p>;
   }
 
-  if (data.length === 1) {
-    const only = data[0];
-    const style = STATUS_STYLES[only.status];
-    return (
-      <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
-        <div className={`rounded-full px-4 py-2 text-2xl font-extrabold ${style.bg} ${style.text}`}>
-          {only.risk}
-        </div>
-        <p className="text-xs text-teal-500">
-          Only one record for this transformer ({formatDate(only.day)}) — a trend needs at least 2 samples.
-        </p>
-      </div>
-    );
-  }
+  const singlePoint = data.length === 1;
 
   return (
     <div>
@@ -92,12 +104,20 @@ export function SeverityTrendChart({ rows }: { rows: DgaRow[] }) {
             dataKey="risk"
             stroke="#184843"
             strokeWidth={2.5}
-            dot={{ r: 3.5, fill: "#184843" }}
-            activeDot={{ r: 5 }}
+            dot={(props: { cx?: number; cy?: number; payload?: SeverityPoint; index?: number }) => (
+              <StatusDot key={props.index} cx={props.cx} cy={props.cy} payload={props.payload} singlePoint={singlePoint} />
+            )}
+            activeDot={{ r: singlePoint ? 9 : 6, stroke: "white", strokeWidth: 2 }}
             name="Severity"
+            isAnimationActive={!singlePoint}
           />
         </LineChart>
       </ResponsiveContainer>
+      {singlePoint && (
+        <p className="mt-1 text-center text-[11px] text-teal-400">
+          Only one record in this range ({formatDate(data[0].day)}) — a trend line needs at least 2 samples.
+        </p>
+      )}
       <div className="mt-1 flex flex-wrap justify-center gap-3 text-[11px] text-teal-500">
         {(["Normal", "Watch", "High", "Critical"] as const).map((s) => (
           <span key={s} className="flex items-center gap-1">

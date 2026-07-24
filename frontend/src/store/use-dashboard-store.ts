@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import type { DgaPayload, ChatMessage } from "@/types/dga";
-import { runPredictionFromFile, runPredictionFromJson, askChatBackend } from "@/lib/api";
+import { runPredictionFromFile, runPredictionFromJson, askChatBackend, resetDataset, type ChatHistoryTurn } from "@/lib/api";
+
+// How many prior turns to send as conversation memory — enough for
+// pronoun/follow-up resolution ("what about that one?", "compare it with
+// the previous transformer") without letting the prompt grow unbounded.
+const CHAT_HISTORY_TURNS = 8;
 
 interface DashboardState {
   payload: DgaPayload | null;
@@ -18,7 +23,7 @@ interface DashboardState {
 
   uploadFile: (file: File) => Promise<void>;
   uploadJson: (rows: unknown[]) => Promise<void>;
-  clearData: () => void;
+  clearData: () => Promise<void>;
   setSelectedTransformer: (id: string | null) => void;
   dismissBanner: () => void;
 
@@ -71,7 +76,13 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     }
   },
 
-  clearData: () => set({ payload: null, selectedTransformerId: null }),
+  clearData: async () => {
+    set({ payload: null, selectedTransformerId: null });
+    // Also wipes the backend's accumulated dataset (dataset_accumulator.py)
+    // — otherwise the next upload would silently merge into whatever was
+    // cleared here, which isn't what "Clear data" implies.
+    await resetDataset();
+  },
 
   setSelectedTransformer: (id) => set({ selectedTransformerId: id }),
   dismissBanner: () => set({ bannerDismissed: true }),
@@ -81,6 +92,15 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   sendChatMessage: async (question: string) => {
     const trimmed = question.trim();
     if (!trimmed) return;
+
+    // Snapshot the conversation so far (before adding this new question) as
+    // memory for the backend — lets follow-ups like "what about that one?"
+    // resolve against what was actually discussed in this session.
+    const history: ChatHistoryTurn[] = get()
+      .chatMessages.filter((m) => m.id !== "welcome")
+      .slice(-CHAT_HISTORY_TURNS)
+      .map((m) => ({ role: m.role, content: m.content }));
+
     const userMsg: ChatMessage = {
       id: `u-${Date.now()}`,
       role: "user",
@@ -117,7 +137,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     };
 
     try {
-      const answer = await askChatBackend(trimmed, context);
+      const answer = await askChatBackend(trimmed, context, history);
       const sourceChip = extractSourceChip(trimmed, context);
       const assistantMsg: ChatMessage = {
         id: `a-${Date.now()}`,

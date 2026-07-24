@@ -64,6 +64,16 @@ export async function logoutAccount(): Promise<void> {
   }
 }
 
+export async function resetDataset(): Promise<void> {
+  try {
+    await fetch(`${BACKEND_PREFIX}/dataset/reset`, { method: "POST", headers: authHeaders() });
+  } catch {
+    // best-effort — the client clears its own view regardless; worst case
+    // the next upload merges into leftover server-side history instead of
+    // starting fresh, which the user can just clear again.
+  }
+}
+
 export async function checkBackendHealth(): Promise<boolean> {
   try {
     const res = await fetch(`${BACKEND_PREFIX}/health`, { cache: "no-store" });
@@ -124,14 +134,20 @@ export function duvalPentagonImageUrl(row: DgaRow): string {
   return `${BACKEND_PREFIX}/chart/duval-pentagon?${params.toString()}`;
 }
 
+export interface ChatHistoryTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export async function askChatBackend(
   question: string,
-  context: unknown
+  context: unknown,
+  history?: ChatHistoryTurn[]
 ): Promise<string> {
   const res = await fetch(`${BACKEND_PREFIX}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ question, context }),
+    body: JSON.stringify({ question, context, history }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));

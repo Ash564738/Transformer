@@ -22,7 +22,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} h-full antialiased`}>
+    // suppressHydrationWarning on <html>: browser auto-translate (Chrome/Edge
+    // offering to translate an English page when the browser's locale is
+    // Vietnamese) rewrites `lang` and adds a `translated-ltr` class right
+    // after React hydrates, which otherwise logs a harmless but noisy
+    // hydration-mismatch warning. This is the fix React/Next.js documents
+    // for exactly this class of DOM interference (translate extensions,
+    // etc.) — it does not suppress real hydration bugs in children.
+    <html lang="en" className={`${inter.variable} h-full antialiased`} suppressHydrationWarning>
       <body className="min-h-full flex flex-col bg-cream-50 text-teal-950">
         <AppShell>{children}</AppShell>
         <Toaster />

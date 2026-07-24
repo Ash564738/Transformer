@@ -14,8 +14,7 @@ import { WhyFlagged } from "@/components/detail/why-flagged";
 import { RankingBreakdownPanel } from "@/components/detail/ranking-breakdown-panel";
 import { TechnicalNotes } from "@/components/detail/technical-notes";
 import { GasIndicatorCards } from "@/components/detail/gas-indicator-cards";
-import { FaultTypeHistoryTable } from "@/components/detail/fault-type-history-table";
-import { SampleHistoryTable } from "@/components/detail/sample-history-table";
+import { HistoryTable } from "@/components/detail/history-table";
 import { ConfirmInspectionDialog } from "@/components/detail/confirm-inspection-dialog";
 import { latestRowFor, rowsForTransformer } from "@/lib/transformer-helpers";
 import { CheckCircle2 } from "lucide-react";
@@ -110,19 +109,10 @@ export default function TransformerDetailPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Fault Type History ({rows.length} record{rows.length === 1 ? "" : "s"})</CardTitle>
+          <CardTitle>Sample &amp; Fault History ({rows.length} record{rows.length === 1 ? "" : "s"})</CardTitle>
         </CardHeader>
         <CardContent>
-          <FaultTypeHistoryTable rows={rows} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Sample History ({rows.length} record{rows.length === 1 ? "" : "s"})</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <SampleHistoryTable rows={rows} />
+          <HistoryTable rows={rows} />
         </CardContent>
       </Card>
 

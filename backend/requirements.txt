@@ -6,6 +6,8 @@ pandas
 matplotlib
 openpyxl
 flask
+python-dotenv
+openai  # OpenAI-compatible SDK, pointed at OpenRouter (text2sql_chat.py) — see README "DGA Assistant chatbot"
 scikit-learn
 lightgbm
 xgboost
