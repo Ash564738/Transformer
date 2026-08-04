@@ -1,5 +1,7 @@
 # train_models.py
 from pathlib import Path
+import argparse
+import logging
 import numpy as np
 import pandas as pd
 import joblib
@@ -12,6 +14,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.metrics import accuracy_score, f1_score, classification_report, mean_squared_error
 from config import FAULT_LABELS, SEVERITY_LABELS
+from weak_supervision import weak_supervision_pipeline, create_student_training_targets
 # ------------------------------
 # Config
 # ------------------------------
@@ -187,23 +190,140 @@ def train_temporal(X_seq, y_seq, train_idx, val_idx, feature_dim):
     return model, scaler
 
 # ------------------------------
+# Weak supervision helpers
+# ------------------------------
+
+UNLABELED_PATH = Path("dataset/processed/dga_unlabeled.parquet")
+
+
+def load_unlabeled_data() -> pd.DataFrame:
+    if not UNLABELED_PATH.exists():
+        raise FileNotFoundError(
+            f"Unlabeled dataset not found: {UNLABELED_PATH}. "
+            "Place a cleaned yet unlabeled Parquet dataset at this path to run weak supervision."
+        )
+    df = pd.read_parquet(UNLABELED_PATH)
+    df["sample_day"] = pd.to_datetime(df["sample_day"])
+    return df
+
+
+def generate_weak_labels(df: pd.DataFrame, use_snorkel: bool = True) -> pd.DataFrame:
+    df, label_model, groups = weak_supervision_pipeline(df, use_snorkel=use_snorkel)
+    logger = logging.getLogger(__name__)
+    logger.info("Weak supervision labels generated: %s", ", ".join(groups))
+    return df
+
+
+def prepare_weak_labeled_data(df: pd.DataFrame):
+    if "weak_fault_group" not in df.columns:
+        raise ValueError("Weak supervision labels are missing. Run generate_weak_labels first.")
+    df = df[df["weak_fault_group"] != "UNCERTAIN"].copy()
+    y, weights = create_student_training_targets(df)
+    feature_cols = [c for c in df.columns if c not in ID_LIKE_COLS
+                    and not c.startswith("target_")
+                    and not c.startswith("weak_prob_")
+                    and df[c].dtype in ['float64','int64','int32','float32']]
+    X = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
+    return X, y, weights, feature_cols
+
+
+# ------------------------------
 # Main
 # ------------------------------
-def main():
+def train_student_fault_classifier(
+    X, y, weights, X_val, y_val, w_val,
+):
+    dtrain = lgb.Dataset(X, label=y, weight=weights)
+    dval = lgb.Dataset(X_val, label=y_val, weight=w_val, reference=dtrain)
+    params = {
+        "objective": "multiclass",
+        "num_class": len(FAULT_LABELS),
+        "metric": "multi_logloss",
+        "learning_rate": 0.03,
+        "num_leaves": 63,
+        "min_data_in_leaf": 20,
+        "feature_fraction": 0.85,
+        "bagging_fraction": 0.85,
+        "bagging_freq": 5,
+        "verbosity": -1,
+        "seed": 42,
+    }
+    model = lgb.train(
+        params,
+        dtrain,
+        num_boost_round=600,
+        valid_sets=[dtrain, dval],
+        valid_names=["train", "val"],
+        callbacks=[lgb.early_stopping(40), lgb.log_evaluation(False)],
+    )
+    return model
+
+def main(args=None):
+    parser = argparse.ArgumentParser(description="Train DGA models with optional weak supervision.")
+    parser.add_argument(
+        "--weak-supervision",
+        action="store_true",
+        help="Generate probabilistic target labels from traditional diagnostics before training.",
+    )
+    parser.add_argument(
+        "--use-snorkel",
+        action="store_true",
+        help="Use Snorkel's LabelModel to estimate weak supervision probabilistic labels.",
+    )
+    parser.add_argument(
+        "--weak-only",
+        action="store_true",
+        help="Create weak supervision labels only; do not train the standard models.",
+    )
+    parsed = parser.parse_args(args=args)
+
+    if parsed.weak_supervision:
+        print("Loading unlabeled data for weak supervision...")
+        unlabeled = load_unlabeled_data()
+        weak_df = generate_weak_labels(unlabeled, use_snorkel=parsed.use_snorkel)
+        weak_df.to_parquet(Path("dataset/processed/dga_weak_labels.parquet"))
+        print("Weak supervision labels saved to dataset/processed/dga_weak_labels.parquet")
+        if parsed.weak_only:
+            return
+
     df = load_data()
     X, y_fault, y_sev_cls, y_sev_score, groups, feature_cols = prepare_static_data(df)
 
+    weak_training = None
+    if parsed.weak_supervision:
+        weak_df = pd.read_parquet(Path("dataset/processed/dga_weak_labels.parquet"))
+        if "weak_fault_group" in weak_df.columns:
+            X_weak, y_fault_weak, sample_weights, weak_feature_cols = prepare_weak_labeled_data(weak_df)
+            weak_training = (X_weak, y_fault_weak, sample_weights, weak_feature_cols)
+            print("Training fault classifier on weak supervision pseudo-labels with sample weights.")
+        else:
+            raise RuntimeError("Weak supervision file exists but weak fault labels are missing.")
+
+    if weak_training is not None:
+        X_weak, y_fault_weak, sample_weights, weak_feature_cols = weak_training
+        weak_splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        weak_train_idx, weak_test_idx = next(weak_splitter.split(X_weak, y_fault_weak, groups=None))
+        X_train_fault, X_test_fault = X_weak.iloc[weak_train_idx], X_weak.iloc[weak_test_idx]
+        y_fault_train, y_fault_test = y_fault_weak[weak_train_idx], y_fault_weak[weak_test_idx]
+        weight_train, weight_test = sample_weights[weak_train_idx], sample_weights[weak_test_idx]
+        fault_model = train_student_fault_classifier(
+            X_train_fault, y_fault_train, weight_train, X_test_fault, y_fault_test, weight_test
+        )
+    else:
+        splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        train_idx, test_idx = next(splitter.split(X, y_sev_score, groups))
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_fault_train, y_fault_test = y_fault[train_idx], y_fault[test_idx]
+        weight_train = None
+        weight_test = None
+        fault_model = train_fault_cls(X_train, y_fault_train, X_test, y_fault_test)
+
+    # 2. Severity classifier
     splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
     train_idx, test_idx = next(splitter.split(X, y_sev_score, groups))
-
     X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
-    y_fault_train, y_fault_test = y_fault[train_idx], y_fault[test_idx]
     y_sev_cls_train, y_sev_cls_test = y_sev_cls[train_idx], y_sev_cls[test_idx]
     y_score_train, y_score_test = y_sev_score[train_idx], y_sev_score[test_idx]
-
-    # 1. Fault classifier
-    fault_model = train_fault_cls(X_train, y_fault_train, X_test, y_fault_test)
-    # 2. Severity classifier
     sev_cls_model = train_severity_cls(X_train, y_sev_cls_train, X_test, y_sev_cls_test)
     # 3. Severity regressor
     sev_reg_model = train_severity_reg(X_train, y_score_train, X_test, y_score_test)
@@ -220,6 +340,7 @@ def main():
     torch.save(temp_model.state_dict(), MODEL_DIR / "temporal_model_state_dict.pt")
     joblib.dump(scaler, MODEL_DIR / "temporal_scaler.joblib")
     print("Models saved to", MODEL_DIR)
+
 
 if __name__ == "__main__":
     main()
