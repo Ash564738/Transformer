@@ -166,3 +166,15 @@ docker run -p 5000:5000 dga-backend
 
 Builds and runs `backend/` behind Flask's dev server (see `Dockerfile`). The frontend
 isn't containerized here â€” run it with `npm run dev` / `npm run build && npm start`.
+
+## K?t lu?n ng?n
+
+Chi?n lu?c dùng Snorkel + student classifier là h?p lý cho DGA không nhãn. Ð? có k?t qu? tin c?y c?n:
+
+1. Thi?t k? labeling functions (LFs) c?n tr?ng và ghi nh?n ABSTAIN khi m?t LF không th? quy?t d?nh.
+2. Dùng label model (Snorkel n?u có) ho?c fallback generative model d? u?c lu?ng d? chính xác c?a t?ng LF và h?p nh?t votes thành probabilistic labels.
+3. Hu?n luy?n student model v?i soft labels và/ho?c sample weights d?a trên confidence t? label model (ví d? LightGBM v?i sample weights, ho?c MLP v?i soft targets).
+4. Tích h?p temporal features + EWMA d? t?ng h?p per-transformer ranking (hi?n t?i tr?ng s? l?n nhung v?n gi? s? d?ng l?ch s?).
+5. Thêm active learning / expert review cho các m?u có d? không ch?c ch?n (low confidence) d? c?i thi?n LF và label model theo vòng l?p.
+6. B? sung unsupervised anomaly detection và clustering d? phát hi?n fault types chua có trong các phuong pháp truy?n th?ng.
+
