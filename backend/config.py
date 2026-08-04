@@ -20,7 +20,7 @@ class DiagnosticConfig:
         "C": "CELLULOSE",
         "O": "THERMAL",
         "S": "STRAY_GASSING",
-        "UNCERTAIN": "UNCERTAIN",
+        "ABSTAIN": "ABSTAIN",
         "MIXED": "MIXED"
     })
 
@@ -75,7 +75,7 @@ class DiagnosticConfig:
         "C": 5,
         "O": 2,
         "S": 1,
-        "UNCERTAIN": 1,
+        "ABSTAIN": 1,
         "MIXED": 5
     })
 
@@ -86,7 +86,7 @@ class DiagnosticConfig:
         "CELLULOSE": 5,
         "STRAY_GASSING": 1,
         "MIXED": 5,
-        "UNCERTAIN": 1,
+        "ABSTAIN": 1,
     })
 
     # Ranking

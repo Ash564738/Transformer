@@ -97,7 +97,7 @@ def compute_aging_score(row: pd.Series) -> int:
 def severity_class_from_score(score: float) -> str:
     """Phân loại mức độ nghiêm trọng dựa trên điểm tổng."""
     if pd.isna(score):
-        return "UNCERTAIN"
+        return "ABSTAIN"
     boundaries = cfg.SEVERITY_CLASS_BOUNDARIES
     if score < boundaries[0]:
         return "NORMAL"
@@ -114,7 +114,7 @@ def get_fault_points(row: pd.Series) -> int:
     """
     fault_label = row.get("consensus_fault")
     if pd.isna(fault_label):
-        return cfg.FAULT_SEVERITY_POINTS["UNCERTAIN"]
+        return cfg.FAULT_SEVERITY_POINTS["ABSTAIN"]
 
     fl = str(fault_label).strip().upper()
 

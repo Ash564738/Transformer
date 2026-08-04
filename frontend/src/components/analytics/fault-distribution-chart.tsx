@@ -8,7 +8,7 @@ const PALETTE = ["#184843", "#316f64", "#4f8f83", "#c96f28", "#e08a3c", "#854318
 export function FaultDistributionChart({ summaries }: { summaries: TransformerSummary[] }) {
   const counts = new Map<string, number>();
   for (const s of summaries) {
-    const key = s.fault_type || "UNCERTAIN";
+    const key = s.fault_type || "ABSTAIN";
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const data = Array.from(counts.entries())
@@ -43,3 +43,4 @@ export function FaultDistributionChart({ summaries }: { summaries: TransformerSu
     </ResponsiveContainer>
   );
 }
+

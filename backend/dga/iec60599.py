@@ -47,7 +47,7 @@ def iec_ratio_method(row: pd.Series) -> str:
         return "T1"
     if (r1 < 0.1) and (r2 < 0.1) and (r3 < 0.2):
         return "PD"
-    return "UNCERTAIN"
+    return "ABSTAIN"
 
 def apply_iec(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()

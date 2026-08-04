@@ -60,23 +60,23 @@ zone_short_labels = {"PD": "PD", "T1": "T1", "T2": "T2", "T3": "T3", "D1": "D1",
 # ========== 3. CHẨN ĐOÁN ==========
 def duval_triangle_1(ch4, c2h4, c2h2):
     if any(np.isnan(x) or x < 0 for x in [ch4, c2h4, c2h2]):
-        return "UNCERTAIN"
+        return "ABSTAIN"
     total = ch4 + c2h4 + c2h2
     if total < 0.1:
         return "NORMAL"
     if total == 0:
-        return "UNCERTAIN"
+        return "ABSTAIN"
     pCH4  = ch4  / total * 100
     pC2H4 = c2h4 / total * 100
     pC2H2 = c2h2 / total * 100
     xy = ternary_to_xy(pCH4, pC2H2, pC2H4)
     if xy is None:
-        return "UNCERTAIN"
+        return "ABSTAIN"
     x, y = xy
     for zone, path in PATHS_T1.items():
         if path.contains_point((x, y), radius=1e-6):
             return zone
-    return "UNCERTAIN"
+    return "ABSTAIN"
 
 # ========== 4. ÁP DỤNG CHO DATAFRAME ==========
 def apply_duval_triangle(df: pd.DataFrame) -> pd.DataFrame:
@@ -96,10 +96,10 @@ def apply_duval_triangle(df: pd.DataFrame) -> pd.DataFrame:
                 xs.append(xy[0]); ys.append(xy[1])
                 faults.append(duval_triangle_1(ch4, c2h4, c2h2))
             else:
-                xs.append(np.nan); ys.append(np.nan); faults.append("UNCERTAIN")
+                xs.append(np.nan); ys.append(np.nan); faults.append("ABSTAIN")
         else:
             xs.append(np.nan); ys.append(np.nan)
-            faults.append("NORMAL" if total < 0.1 else "UNCERTAIN")
+            faults.append("NORMAL" if total < 0.1 else "ABSTAIN")
     df["t_x"] = xs
     df["t_y"] = ys
     df["duval_triangle_fault"] = faults

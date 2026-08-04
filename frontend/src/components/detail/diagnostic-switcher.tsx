@@ -26,7 +26,7 @@ const METHODS: { key: MethodKey; label: string }[] = [
 ];
 
 function resultLabel(code?: string) {
-  if (!code) return "UNCERTAIN";
+  if (!code) return "ABSTAIN";
   const explanation = FAULT_EXPLANATIONS[code];
   return explanation ? `${explanation.toUpperCase()} (${code})` : code;
 }
@@ -217,7 +217,7 @@ function KeyGasView({ g, co, tdcg, fault }: {
           Dominant gas: <span className="font-bold text-teal-800">{dominantGas}</span>
         </p>
         <p className="text-sm font-extrabold text-status-critical">
-          RESULT: {fault ?? "UNCERTAIN"}
+          RESULT: {fault ?? "ABSTAIN"}
         </p>
       </div>
     </div>

@@ -58,7 +58,7 @@ const FAULT_EXPLANATIONS: Record<string, string> = {
   D1: "Low energy electrical discharge",
   D2: "High energy electrical discharge (arc)",
   DT: "Mixed discharge + thermal fault",
-  UNCERTAIN: "Uncertain diagnosis",
+  ABSTAIN: "ABSTAIN diagnosis",
   NORMAL: "Normal",
 };
 
@@ -79,7 +79,7 @@ function diagnose(ch4Pct: number, c2h2Pct: number, c2h4Pct: number): string {
     const vertices = coords.a.map((_, i) => ternaryToSvg(coords.a[i], coords.b[i], coords.c[i]));
     if (pointInPolygon(point, vertices)) return zone;
   }
-  return "UNCERTAIN";
+  return "ABSTAIN";
 }
 
 function pointInPolygon(p: { x: number; y: number }, polygon: { x: number; y: number }[]) {
@@ -319,7 +319,7 @@ export function DuvalTriangleSvg({
               <text x="0" y="-4" textAnchor="middle" fontSize="9" fill="darkred" fontWeight="bold">C₂H₄: {pC2H4.toFixed(1)}%</text>
               <text x="0" y="8" textAnchor="middle" fontSize="9" fill="darkred" fontWeight="bold">C₂H₂: {pC2H2.toFixed(1)}%</text>
               <text x="0" y="20" textAnchor="middle" fontSize="9" fill="red" fontWeight="bold">
-                Fault: {backendFault || fault || "UNCERTAIN"}
+                Fault: {backendFault || fault || "ABSTAIN"}
               </text>
             </g>
           )}

@@ -39,7 +39,7 @@ def doernenburg_method(row: pd.Series) -> str:
     r4_valid = (c2h6 > 0 and c2h2 > 0) and (c2h6 >= l1["c2h6"] or c2h2 >= l1["c2h2"])
 
     if not any([r1_valid, r2_valid, r3_valid, r4_valid]):
-        return "UNCERTAIN"
+        return "ABSTAIN"
 
     if r1_valid and r2_valid and r4_valid:
         if r1 > 1.0 and r2 < 0.75 and r4 > 0.4:
@@ -55,7 +55,7 @@ def doernenburg_method(row: pd.Series) -> str:
         if 0.1 <= r1 <= 1.0 and r2 > 0.75 and r3 > 0.3 and r4 < 0.4:
             return "D2"
 
-    return "UNCERTAIN"
+    return "ABSTAIN"
 
 def apply_doernenburg(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()

@@ -106,7 +106,7 @@ def create_payload(df, ranking_df):
             "transformer_id": row["transformer_id"],
             "pred_ensemble": float(row["severity_score"] / 20.0),
             "severity": ui_severity,
-            "fault_type": row.get("consensus_fault", "UNCERTAIN"),
+            "fault_type": row.get("consensus_fault", "ABSTAIN"),
             "reason": f"Severity score = {row['severity_score']:.2f}",
             "top_features": []
         }
@@ -176,7 +176,7 @@ def create_payload(df, ranking_df):
                 "C2H2": float(trow.get("c2h2", 0)),
                 "TCG": float(trow.get("tdcg", 0)),
                 "pred_ensemble": float(trow["severity_score"] / 20.0),
-                "fault_type": trow.get("consensus_fault", "UNCERTAIN"),
+                "fault_type": trow.get("consensus_fault", "ABSTAIN"),
                 "severity": trow["severity_label"],
             })
         timeseries[str(tid)] = series

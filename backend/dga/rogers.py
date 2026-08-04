@@ -49,7 +49,7 @@ def rogers_ratio_method(row: pd.Series) -> str:
         return "PD"
     if (0.1 <= r1 <= 1.0) and (r2 < 0.1) and (r3 < 1.0):
         return "NORMAL"
-    return "UNCERTAIN"
+    return "ABSTAIN"
 
 def apply_rogers(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()

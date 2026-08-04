@@ -42,7 +42,7 @@ def key_gas_method(row: pd.Series) -> str:
     elif dominant in ["c2h4", "ch4", "c2h6"]:
         return "THERMAL_OIL"
     else:
-        return "UNCERTAIN"
+        return "ABSTAIN"
 
 def apply_key_gas(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
