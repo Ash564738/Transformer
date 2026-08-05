@@ -51,10 +51,16 @@ export function Ratio3DChart({ r1, r2, r3, fault }: Props) {
   const tickTexts = ["0.001", "0.01", "0.1", "1", "10"];
 
   const layout = {
-    margin: { l: 0, r: 0, b: 0, t: 30 },  // giữ khoảng cho title
+    // t:10 not t:30 — there's no layout.title text using that space, so the
+    // extra 20px was just blank white above the cube. Matches Iec3DChart.tsx.
+    margin: { l: 0, r: 0, b: 0, t: 10 },
     paper_bgcolor: "white",
     plot_bgcolor: "#f8fafc",
     scene: {
+      // Fixed camera so both 3D charts render the cube at the same size/
+      // angle regardless of which zones happen to be active — otherwise
+      // Plotly's auto camera can vary slightly between the two.
+      camera: { eye: { x: 1.5, y: 1.5, z: 1.3 } },
       xaxis: {
         type: "log",
         tickmode: "array",

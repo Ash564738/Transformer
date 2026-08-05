@@ -1,4 +1,11 @@
 // rogers3d-zones.ts
+//
+// These boxes must match backend/dga/rogers.py's rogers_ratio_method()
+// exactly. r1 = CH4/H2 (x), r2 = C2H2/C2H4 (y), r3 = C2H4/C2H6 (z). Verified
+// against every branch of that function — unlike IEC 60599, Rogers genuinely
+// does have a ratio-space "quiet" reading (0.1<=r1<=1.0, r2<0.1, r3<1.0) that
+// the backend itself maps to NORMAL, which is why this array (unlike
+// iec3d-zones.ts) legitimately includes a NORMAL box.
 import { Ratio3DZone } from "./ratio3d-config";
 
 export const ROGERS_3D_ZONES: Ratio3DZone[] = [

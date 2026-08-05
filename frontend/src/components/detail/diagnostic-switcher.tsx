@@ -9,7 +9,6 @@ import { BackendChartImage } from "@/components/charts/backend-chart-image";
 import { DuvalTriangleSvg } from "../charts/duval-triangle";
 import { DuvalPentagon1Svg } from "../charts/duval-pentagon1";
 import { DuvalPentagon2Svg } from "../charts/duval-pentagon2";
-import { RatioZoneChart } from "../charts/ratio-zone-chart";
 import { Ratio3DChart } from "../charts/ratio3d-chart";
 import { Iec3DChart } from "../charts/Iec3DChart";
 
@@ -108,7 +107,7 @@ export function DiagnosticSwitcher({ row }: { row: DgaRow }) {
         {active === "iec" && (
           <Iec3DChart
             r1={Number(row.iec_r1_c2h2_c2h4 ?? 0)}
-            r2={Number(row.r1_ch4_h2 ?? 0)}   // tạm dùng R2 của Rogers, vì backend chưa có iec_r2
+            r2={Number(row.iec_r2_ch4_h2 ?? 0)}
             r3={Number(row.iec_r3_c2h4_c2h6 ?? 0)}
             fault={resultLabel(row.iec_fault)}
           />

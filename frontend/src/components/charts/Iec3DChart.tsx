@@ -51,10 +51,16 @@ export function Iec3DChart({ r1, r2, r3, fault }: Props) {
   const tickTexts = ["0.001", "0.01", "0.1", "1", "10"];
 
   const layout = {
-    margin: { l: 0, r: 0, b: 0, t: 30 },
+    // t:10 not t:30 — there's no layout.title text using that space, so the
+    // extra 20px was just blank white above the cube. Matches Ratio3DChart.tsx.
+    margin: { l: 0, r: 0, b: 0, t: 10 },
     paper_bgcolor: "white",
     plot_bgcolor: "#f8fafc",
     scene: {
+      // Fixed camera so both 3D charts render the cube at the same size/
+      // angle regardless of which zones happen to be active — otherwise
+      // Plotly's auto camera can vary slightly between the two.
+      camera: { eye: { x: 1.5, y: 1.5, z: 1.3 } },
       xaxis: {
         type: "log",
         tickmode: "array",
@@ -145,6 +151,12 @@ export function Iec3DChart({ r1, r2, r3, fault }: Props) {
           </div>
         ))}
       </div>
+
+      <p className="px-1 text-[11px] italic text-teal-400">
+        No NORMAL zone shown: IEC 60599 decides Normal from absolute gas concentrations
+        (below the L1 screening limits) before these ratios are even computed — it has no
+        ratio-space region the way the other zones above do.
+      </p>
 
       {fault && (
         <p className="text-center text-sm font-extrabold text-status-critical pt-1">

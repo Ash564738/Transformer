@@ -1,11 +1,17 @@
 // build-iec-traces.ts
 import { Iec3DZone } from "./iec3d-config";
 
+// react-plotly.js ships no first-party type defs; trace objects are plain
+// data records passed straight through to Plotly, so a loose shape (not
+// `any`, which disables checking on every use of the array) is the
+// pragmatic option here.
+type PlotlyTrace = Record<string, unknown>;
+
 export function buildIecTraces(
   zones: Iec3DZone[],
   activeFault?: string
-): any[] {
-  const traces: any[] = [];
+): PlotlyTrace[] {
+  const traces: PlotlyTrace[] = [];
 
   for (const zone of zones) {
     const isActive = zone.name === activeFault;
@@ -49,17 +55,19 @@ export function buildIecTraces(
         [4,5], [5,6], [6,7], [7,4],
         [0,4], [1,5], [2,6], [3,7]
       ];
-      let wireX: number[] = [], wireY: number[] = [], wireZ: number[] = [];
+      const wireX: (number | null)[] = [], wireY: (number | null)[] = [], wireZ: (number | null)[] = [];
       for (const [a,b] of edges) {
-        wireX.push(x[a], x[b], null as any);
-        wireY.push(y[a], y[b], null as any);
-        wireZ.push(z[a], z[b], null as any);
+        wireX.push(x[a], x[b], null);
+        wireY.push(y[a], y[b], null);
+        wireZ.push(z[a], z[b], null);
       }
       traces.push({
         type: "scatter3d",
         mode: "lines",
         x: wireX, y: wireY, z: wireZ,
-        line: { color: "#ffffff", width: 4 },
+        // Thin black outline, matching build-zone-traces.ts (Rogers) — was
+        // a thick white line here, inconsistent with the other chart.
+        line: { color: "#000000", width: 2 },
         showlegend: false,
         hoverinfo: "none",
       });
