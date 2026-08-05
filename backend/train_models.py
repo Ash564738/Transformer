@@ -1,5 +1,7 @@
 # train_models.py
 from pathlib import Path
+import argparse
+import logging
 import numpy as np
 import pandas as pd
 import joblib
@@ -11,13 +13,34 @@ from torch.utils.data import DataLoader, Dataset
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.metrics import accuracy_score, f1_score, classification_report, mean_squared_error
+from logging_config import init_logging
+init_logging()
+logger = logging.getLogger(__name__)
+
 from config import FAULT_LABELS, SEVERITY_LABELS
+from weak_supervision import WEAK_GROUPS, weak_supervision_pipeline, create_student_training_targets
+from consensus import apply_consensus
+from feature_engineering import (
+    preprocess_types, sort_and_deduplicate, filter_rows_for_model,
+    add_missingness_flags, impute_optional_context_by_transformer,
+    add_tdcg, add_rating_features, add_metadata_features,
+    add_ratio_features, add_duval_input_features,
+    add_calendar_and_sequence_features, add_lag_delta_rate_features,
+    add_rolling_features, add_ewm_features, add_cross_gas_trend_features,
+    add_quality_flags
+)
 # ------------------------------
 # Config
 # ------------------------------
-LABELED_PATH = Path("dataset/processed/dga_labeled.parquet")
-MODEL_DIR = Path("models")
-MODEL_DIR.mkdir(exist_ok=True)
+from config import FAULT_LABELS, SEVERITY_LABELS, BACKEND_DATA_DIR, BACKEND_ROOT
+
+LABELED_PATH = Path(BACKEND_DATA_DIR) / "dga_labeled.parquet"
+UNLABELED_PATH = Path(BACKEND_DATA_DIR) / "dga_unlabeled.parquet"
+WEAK_LABEL_PATH = Path(BACKEND_DATA_DIR) / "dga_weak_labels.parquet"
+MODEL_DIR = Path(BACKEND_ROOT) / "models"
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+# Ensure backend dataset dir exists
+Path(BACKEND_DATA_DIR).mkdir(parents=True, exist_ok=True)
 
 ID_LIKE_COLS = [
     "transformer_id", "sample_day", "loc", "name", "ser", "codetx", "mfg",
@@ -33,11 +56,62 @@ ID_LIKE_COLS = [
     "target_severity_score"
 ]
 
+CORE_GASES = ["h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2"]
+OPTIONAL_NUMERIC = ["o2", "n2", "water", "temp"]
+REQUIRED_WEAK_VOTE_COLS = [
+    "keygas_fault", "iec_fault", "rogers_fault", "doernenburg_fault",
+    "duval_triangle_fault", "fault_p1", "duval_pentagon_fault",
+]
+
+
+def build_training_features_from_clean(df: pd.DataFrame) -> pd.DataFrame:
+    """Mirror inference feature engineering before weak-label generation."""
+    df = preprocess_types(df)
+    df = sort_and_deduplicate(df)
+    df = filter_rows_for_model(df, max_missing_core=3)
+    df = add_missingness_flags(df, OPTIONAL_NUMERIC + ["year_energized", "tdcg_raw"])
+    df = impute_optional_context_by_transformer(df)
+    df = add_tdcg(df)
+    df = add_rating_features(df)
+    df = add_metadata_features(df)
+    df = add_ratio_features(df)
+    df = add_duval_input_features(df)
+    df = add_calendar_and_sequence_features(df)
+
+    temporal_value_cols = [c for c in CORE_GASES + ["tdcg"] if c in df.columns]
+    for c in ["water", "temp"]:
+        if c in df.columns:
+            temporal_value_cols.append(c)
+
+    df = add_lag_delta_rate_features(df, temporal_value_cols)
+    df = add_rolling_features(df, temporal_value_cols)
+    df = add_ewm_features(df, temporal_value_cols)
+    df = add_cross_gas_trend_features(df)
+    df = add_quality_flags(df)
+    return df
+
+
+def ensure_consensus_inputs(df: pd.DataFrame) -> pd.DataFrame:
+    if all(c in df.columns for c in REQUIRED_WEAK_VOTE_COLS):
+        return df
+    logger.info("Weak-label input has no traditional DGA votes; building features and consensus first.")
+    return apply_consensus(build_training_features_from_clean(df))
+
 # ------------------------------
 # Data loading
 # ------------------------------
 def load_data(conf_threshold=70):
-    df = pd.read_parquet(LABELED_PATH)
+    """Load labeled data if available, otherwise fall back to weak-labeled pseudo labels.
+    The weak label file produced by the weak_supervision pipeline contains
+    probabilistic labels and argmax/confidence fields that can be used to train
+    the student when no hand-labeled dataset is present.
+    """
+    if LABELED_PATH.exists():
+        df = pd.read_parquet(LABELED_PATH)
+    elif WEAK_LABEL_PATH.exists():
+        df = pd.read_parquet(WEAK_LABEL_PATH)
+    else:
+        raise FileNotFoundError(f"Labeled dataset not found: {LABELED_PATH}. If you intended to train from weak labels, run the weak supervision step first to generate {WEAK_LABEL_PATH}.")
     df["sample_day"] = pd.to_datetime(df["sample_day"])
     df = df.dropna(subset=["transformer_id", "sample_day"])
     if "diagnostic_confidence" in df.columns:
@@ -45,10 +119,37 @@ def load_data(conf_threshold=70):
     return df
 
 def prepare_static_data(df):
+    # If the DataFrame only has weak supervision outputs (weak_prob_*, weak_fault_group),
+    # synthesize the standard target columns expected by the training pipeline.
+    from config import FAULT_LABELS, SEVERITY_LABELS, config as cfg
+    if "fault_type_label" not in df.columns and "weak_fault_group" in df.columns:
+        logger.info("Synthesizing fault_type_label and severity targets from weak labels...")
+        # Map weak_fault_group string to FAULT_LABELS index (fallback to ABSTAIN if missing)
+        grp_to_idx = {v: i for i, v in enumerate(FAULT_LABELS)}
+        df["fault_type_label"] = df["weak_fault_group"].map(lambda x: grp_to_idx.get(x, grp_to_idx.get("ABSTAIN"))).astype(int)
+        # Map group to severity score via config.SEVERITY_BY_GROUP
+        df["severity_score"] = df["weak_fault_group"].map(lambda x: cfg.SEVERITY_BY_GROUP.get(x, cfg.SEVERITY_BY_GROUP.get("ABSTAIN", 1))).astype(float)
+        # Convert numeric severity_score to severity_label using boundaries
+        b = cfg.SEVERITY_CLASS_BOUNDARIES
+        def score_to_label(s):
+            if s < b[0]:
+                return 0
+            if s < b[1]:
+                return 1
+            if s < b[2]:
+                return 2
+            return 3
+        df["severity_label"] = df["severity_score"].map(score_to_label).astype(int)
+
     feature_cols = [c for c in df.columns if c not in ID_LIKE_COLS
                     and not c.startswith("target_")
                     and df[c].dtype in ['float64','int64','int32','float32']]
-    X = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
+    X = (
+        df[feature_cols]
+        .apply(pd.to_numeric, errors='coerce')
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0)
+    )
 
     # Dòng cũ gây lỗi:
     # y_fault = df["fault_type_label"].map({v:i for i,v in enumerate(FAULT_LABELS)}).values.astype(int)
@@ -94,7 +195,13 @@ def build_sequences(df, feature_cols, seq_len=5, target_col="severity_score"):
     seqs, tgts, grps = [], [], []
     for tid, grp in df.groupby("transformer_id"):
         grp = grp.sort_values("sample_day")
-        feat = grp[feature_cols].fillna(0).values.astype(np.float32)
+        feat = (
+            grp[feature_cols]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0)
+            .values
+            .astype(np.float32)
+        )
         targ = grp[target_col].values.astype(np.float32)
         for i in range(len(grp)):
             start = max(0, i - seq_len + 1)
@@ -187,23 +294,168 @@ def train_temporal(X_seq, y_seq, train_idx, val_idx, feature_dim):
     return model, scaler
 
 # ------------------------------
+# Weak supervision helpers
+# ------------------------------
+
+def load_unlabeled_data() -> pd.DataFrame:
+    if not UNLABELED_PATH.exists():
+        raise FileNotFoundError(
+            f"Unlabeled dataset không tìm thấy tại {UNLABELED_PATH}.\n"
+            "Vui lòng chạy 'python backend/prepare_unlabeled_data.py' để tạo file này từ dữ liệu tích lũy."
+        )
+    df = pd.read_parquet(UNLABELED_PATH)
+    df["sample_day"] = pd.to_datetime(df["sample_day"])
+    return df
+
+
+def generate_weak_labels(df: pd.DataFrame, use_snorkel: bool = True) -> pd.DataFrame:
+    df = ensure_consensus_inputs(df)
+    df, label_model, groups = weak_supervision_pipeline(df, use_snorkel=use_snorkel)
+    logger = logging.getLogger(__name__)
+    logger.info("Weak supervision labels generated: %s", ", ".join(groups))
+    return df
+
+
+def prepare_weak_labeled_data(df: pd.DataFrame):
+    if "weak_fault_group" not in df.columns:
+        raise ValueError("Weak supervision labels are missing. Run generate_weak_labels first.")
+    # Keep only samples where weak label didn't abstain
+    df = df[df["weak_fault_group"] != "ABSTAIN"].copy()
+    y, weights = create_student_training_targets(df)
+    feature_cols = [c for c in df.columns if c not in ID_LIKE_COLS
+                    and not c.startswith("target_")
+                    and not c.startswith("weak_prob_")
+                    and df[c].dtype in ['float64','int64','int32','float32']]
+    X = (
+        df[feature_cols]
+        .apply(pd.to_numeric, errors='coerce')
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0)
+    )
+    return X, y, weights, feature_cols
+
+
+# ------------------------------
 # Main
 # ------------------------------
-def main():
-    df = load_data()
+def train_student_fault_classifier(
+    X, y, weights, X_val, y_val, w_val, labels=None,
+):
+    labels = labels or FAULT_LABELS
+    dtrain = lgb.Dataset(X, label=y, weight=weights)
+    dval = lgb.Dataset(X_val, label=y_val, weight=w_val, reference=dtrain)
+    params = {
+        "objective": "multiclass",
+        "num_class": len(labels),
+        "metric": "multi_logloss",
+        "learning_rate": 0.03,
+        "num_leaves": 63,
+        "min_data_in_leaf": 20,
+        "feature_fraction": 0.85,
+        "bagging_fraction": 0.85,
+        "bagging_freq": 5,
+        "verbosity": -1,
+        "seed": 42,
+    }
+    model = lgb.train(
+        params,
+        dtrain,
+        num_boost_round=600,
+        valid_sets=[dtrain, dval],
+        valid_names=["train", "val"],
+        callbacks=[lgb.early_stopping(40), lgb.log_evaluation(False)],
+    )
+    return model
+
+def main(args=None):
+    parser = argparse.ArgumentParser(description="Train DGA models with optional weak supervision.")
+    parser.add_argument(
+        "--weak-supervision",
+        action="store_true",
+        help="Generate probabilistic target labels from traditional diagnostics before training.",
+    )
+    parser.add_argument(
+        "--use-snorkel",
+        action="store_true",
+        help="Use Snorkel's LabelModel to estimate weak supervision probabilistic labels.",
+    )
+    parser.add_argument(
+        "--weak-only",
+        action="store_true",
+        help="Create weak supervision labels only; do not train the standard models.",
+    )
+    parsed = parser.parse_args(args=args)
+
+    generated_weak_df = None
+    if parsed.weak_supervision:
+        logger.info("Loading unlabeled data for weak supervision...")
+        unlabeled = load_unlabeled_data()
+        weak_df = generate_weak_labels(unlabeled, use_snorkel=parsed.use_snorkel)
+        generated_weak_df = weak_df
+        WEAK_LABEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        weak_df.to_parquet(WEAK_LABEL_PATH)
+        logger.info("Weak supervision labels saved to %s", WEAK_LABEL_PATH)
+        if parsed.weak_only:
+            return
+
+    if parsed.weak_supervision and generated_weak_df is not None and not LABELED_PATH.exists():
+        logger.info("Using in-memory weak-labeled dataframe for training (no labeled dataset found at %s).", LABELED_PATH)
+        df = generated_weak_df.copy()
+    else:
+        df = load_data()
     X, y_fault, y_sev_cls, y_sev_score, groups, feature_cols = prepare_static_data(df)
 
+    weak_training = None
+    fault_labels_for_artifact = FAULT_LABELS
+    if parsed.weak_supervision:
+        weak_df = generated_weak_df if generated_weak_df is not None else pd.read_parquet(WEAK_LABEL_PATH)
+        if "weak_fault_group" in weak_df.columns:
+            X_weak, y_fault_weak, sample_weights, weak_feature_cols = prepare_weak_labeled_data(weak_df)
+            weak_training = (X_weak, y_fault_weak, sample_weights, weak_feature_cols)
+            fault_labels_for_artifact = WEAK_GROUPS
+            logger.info("Training fault classifier on weak supervision pseudo-labels with sample weights.")
+        else:
+            raise RuntimeError("Weak supervision file exists but weak fault labels are missing.")
+
+    fault_feature_names = feature_cols
+    if weak_training is not None:
+        X_weak, y_fault_weak, sample_weights, weak_feature_cols = weak_training
+        fault_feature_names = weak_feature_cols
+        weak_splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        # Use transformer_id as groups for a group-aware split when available
+        try:
+            groups_weak = weak_df.loc[X_weak.index, "transformer_id"].values
+        except Exception:
+            groups_weak = None
+        if groups_weak is None:
+            # Fallback to stratified split on pseudo-labels if transformer groups aren't available
+            from sklearn.model_selection import StratifiedShuffleSplit
+            ssplit = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+            weak_train_idx, weak_test_idx = next(ssplit.split(X_weak, y_fault_weak))
+        else:
+            weak_train_idx, weak_test_idx = next(weak_splitter.split(X_weak, y_fault_weak, groups=groups_weak))
+        X_train_fault, X_test_fault = X_weak.iloc[weak_train_idx], X_weak.iloc[weak_test_idx]
+        y_fault_train, y_fault_test = y_fault_weak[weak_train_idx], y_fault_weak[weak_test_idx]
+        weight_train, weight_test = sample_weights[weak_train_idx], sample_weights[weak_test_idx]
+        fault_model = train_student_fault_classifier(
+            X_train_fault, y_fault_train, weight_train, X_test_fault, y_fault_test, weight_test,
+            labels=fault_labels_for_artifact,
+        )
+    else:
+        splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        train_idx, test_idx = next(splitter.split(X, y_sev_score, groups))
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_fault_train, y_fault_test = y_fault[train_idx], y_fault[test_idx]
+        weight_train = None
+        weight_test = None
+        fault_model = train_fault_cls(X_train, y_fault_train, X_test, y_fault_test)
+
+    # 2. Severity classifier
     splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
     train_idx, test_idx = next(splitter.split(X, y_sev_score, groups))
-
     X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
-    y_fault_train, y_fault_test = y_fault[train_idx], y_fault[test_idx]
     y_sev_cls_train, y_sev_cls_test = y_sev_cls[train_idx], y_sev_cls[test_idx]
     y_score_train, y_score_test = y_sev_score[train_idx], y_sev_score[test_idx]
-
-    # 1. Fault classifier
-    fault_model = train_fault_cls(X_train, y_fault_train, X_test, y_fault_test)
-    # 2. Severity classifier
     sev_cls_model = train_severity_cls(X_train, y_sev_cls_train, X_test, y_sev_cls_test)
     # 3. Severity regressor
     sev_reg_model = train_severity_reg(X_train, y_score_train, X_test, y_score_test)
@@ -214,12 +466,18 @@ def main():
     temp_model, scaler = train_temporal(X_seq, y_seq, train_idx_seq, test_idx_seq, X_seq.shape[2])
 
     # Save
-    joblib.dump({"model": fault_model, "features": feature_cols, "labels": FAULT_LABELS}, MODEL_DIR / "fault_classifier.joblib")
+    joblib.dump({
+        "model": fault_model,
+        "features": fault_feature_names,
+        "labels": fault_labels_for_artifact,
+        "target_type": "weak_group" if fault_labels_for_artifact == WEAK_GROUPS else "fault_detail",
+    }, MODEL_DIR / "fault_classifier.joblib")
     joblib.dump({"model": sev_cls_model, "features": feature_cols, "labels": SEVERITY_LABELS}, MODEL_DIR / "severity_classifier.joblib")
     joblib.dump({"model": sev_reg_model, "features": feature_cols}, MODEL_DIR / "severity_regressor.joblib")
     torch.save(temp_model.state_dict(), MODEL_DIR / "temporal_model_state_dict.pt")
     joblib.dump(scaler, MODEL_DIR / "temporal_scaler.joblib")
-    print("Models saved to", MODEL_DIR)
+    logger.info("Models saved to %s", MODEL_DIR)
+
 
 if __name__ == "__main__":
     main()

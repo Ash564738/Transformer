@@ -81,11 +81,11 @@ def duval_pentagon_centroid(h2, ch4, c2h6, c2h4, c2h2):
 
 def _find_pentagon_zone(xy, paths):
     if xy is None:
-        return "UNCERTAIN"
+        return "ABSTAIN"
     for zone, path in paths.items():
         if path.contains_point(xy):
             return zone
-    return "UNCERTAIN"
+    return "ABSTAIN"
 
 def apply_duval_pentagon_dual(df):
     df = df.copy()
@@ -109,7 +109,7 @@ def apply_duval_pentagon_dual(df):
             faults_p2.append(_find_pentagon_zone(xy, PATHS_P2))
         else:
             xs.append(np.nan); ys.append(np.nan)
-            faults_p1.append("UNCERTAIN"); faults_p2.append("UNCERTAIN")
+            faults_p1.append("ABSTAIN"); faults_p2.append("ABSTAIN")
     df["p_x"] = xs; df["p_y"] = ys
     df["fault_p1"] = faults_p1; df["fault_p2"] = faults_p2
 

@@ -90,7 +90,7 @@ export function HistoryTable({ rows }: { rows: DgaRow[] }) {
     const faultCounts: Record<string, number> = {};
     for (const { row, status } of enriched) {
       if (status) statusCounts[status] = (statusCounts[status] ?? 0) + 1;
-      const f = row.consensus_fault ?? "UNCERTAIN";
+      const f = row.consensus_fault ?? "ABSTAIN";
       faultCounts[f] = (faultCounts[f] ?? 0) + 1;
     }
     const topFault = Object.entries(faultCounts).sort((a, b) => b[1] - a[1])[0];
@@ -215,7 +215,7 @@ export function HistoryTable({ rows }: { rows: DgaRow[] }) {
           <tbody>
             {filtered.map(({ row, status }, i) => {
               const mixedComponents = (row.mixed_components as string[] | undefined) ?? [];
-              const consensus = row.consensus_fault ?? "UNCERTAIN";
+              const consensus = row.consensus_fault ?? "ABSTAIN";
               return (
                 <tr key={`${row.sample_day}-${i}`} className="border-b border-cream-200 last:border-0 hover:bg-cream-50">
                   <td className="sticky left-0 z-10 bg-white px-3 py-2 font-medium text-teal-800 whitespace-nowrap">
@@ -234,7 +234,7 @@ export function HistoryTable({ rows }: { rows: DgaRow[] }) {
                   </td>
                   {METHOD_COLUMNS.map((c) => {
                     const value = row[c.key] as string | undefined;
-                    const isAbstain = !value || value === "UNCERTAIN" || value === "-1";
+                    const isAbstain = !value || value === "ABSTAIN" || value === "-1";
                     return (
                       <td
                         key={String(c.key)}
@@ -262,3 +262,4 @@ export function HistoryTable({ rows }: { rows: DgaRow[] }) {
     </div>
   );
 }
+

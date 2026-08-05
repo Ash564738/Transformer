@@ -23,7 +23,7 @@ export const FAULT_EXPLANATIONS: Record<string, string> = {
   THERMAL_OIL: "Thermal fault (oil)",
   THERMAL_CELLULOSE: "Thermal fault (cellulose / CO dominant)",
   MIXED: "Mixed fault (methods disagree)",
-  UNCERTAIN: "Uncertain diagnosis",
+  ABSTAIN: "ABSTAIN diagnosis",
 };
 
 // Mirrors config.py's FAULT_GROUPS — a static label taxonomy (not a
@@ -44,13 +44,14 @@ const FAULT_GROUPS: Record<string, string> = {
   C: "CELLULOSE",
   O: "THERMAL",
   S: "STRAY_GASSING",
-  UNCERTAIN: "UNCERTAIN",
+  ABSTAIN: "ABSTAIN",
   MIXED: "MIXED",
 };
 
 /** Mirrors consensus.py's unify_fault(): maps a specific fault code to its broad group. */
 export function unifyFault(label?: string): string {
-  if (!label) return "UNCERTAIN";
+  if (!label) return "ABSTAIN";
   const key = label.trim().toUpperCase();
-  return FAULT_GROUPS[key === "T3-H" ? "T3_H" : key] ?? "UNCERTAIN";
+  return FAULT_GROUPS[key === "T3-H" ? "T3_H" : key] ?? "ABSTAIN";
 }
+

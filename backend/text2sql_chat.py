@@ -49,7 +49,7 @@ Columns:
 - latest_score (REAL): severity score of the most recent sample (raw scale, roughly 0-30+, NOT 0-100)
 - status (TEXT): 'Normal' | 'Watch' | 'High' | 'Critical' -- the 4-tier badge shown on screen, derived from latest_score
 - severity (TEXT): 'Severe' | 'Moderate' | 'Low' -- an older 3-tier label, prefer `status` for anything user-facing
-- fault_type (TEXT): consensus fault type across all 6 diagnostic methods, e.g. 'D2', 'T3_H', 'PD', 'MIXED', 'UNCERTAIN'
+- fault_type (TEXT): consensus fault type across all 6 diagnostic methods, e.g. 'D2', 'T3_H', 'PD', 'MIXED', 'ABSTAIN'
 - trend (TEXT): 'worsening' | 'stable' | 'improving'
 - priority_score (REAL): overall fleet-ranking score (blends current severity, historical severity, trend, critical-event history, confidence) -- use this, not latest_score, to rank "most critical" transformers
 - recommended_action (TEXT): human-readable maintenance recommendation
@@ -74,7 +74,7 @@ Columns:
 - mixed_components (TEXT, JSON array as string): component fault groups when consensus_fault = 'MIXED'
 - diagnostic_confidence (REAL, 0-100)
 - diagnostic_votes (TEXT, JSON object as string): {method: fault_type} for all 6 methods
-- keygas_fault, iec_fault, rogers_fault, doernenburg_fault, duval_triangle_fault (TEXT): each traditional method's individual call for this sample. 'UNCERTAIN' means that method abstained (not enough signal), not that it found "no fault"
+- keygas_fault, iec_fault, rogers_fault, doernenburg_fault, duval_triangle_fault (TEXT): each traditional method's individual call for this sample. 'ABSTAIN' means that method abstained (not enough signal), not that it found "no fault"
 - fault_p1 (TEXT): Duval Pentagon 1 method's call
 - duval_pentagon_fault (TEXT): Duval Pentagon 2 method's call
 - iec_r1_c2h2_c2h4, iec_r2_ch4_h2, iec_r3_c2h4_c2h6 (REAL): IEC 60599 gas ratios
@@ -87,7 +87,7 @@ Columns:
 Notes:
 - Dates are plain text; use SQLite date functions (date(), strftime()) as needed, e.g. strftime('%Y-%m', sample_day).
 - "Most critical" / "highest risk" transformer = highest transformers.priority_score, not latest_score.
-- A transformer flagged 'UNCERTAIN' or with mostly abstaining methods is NOT necessarily healthy -- low gas levels can mean the traditional methods can't classify it, not that there's no fault. Mention this nuance if relevant.
+- A transformer flagged 'ABSTAIN' or with mostly abstaining methods is NOT necessarily healthy -- low gas levels can mean the traditional methods can't classify it, not that there's no fault. Mention this nuance if relevant.
 """
 
 FEW_SHOT = [
@@ -324,3 +324,4 @@ def answer_question(question: str, context: dict | None = None, history=None) ->
     except Exception:
         logger.exception("Text2SQL answer-interpretation call failed")
         return result_text
+

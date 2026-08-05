@@ -8,11 +8,12 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from config import BACKEND_ROOT
 
 # ============================================================
 # CONFIG
 # ============================================================
-DATA_DIR = Path("dataset")
+DATA_DIR = Path(BACKEND_ROOT) / "dataset"
 INPUT_FILE = DATA_DIR / "DGA of Main Tank only KT 11022026_09062026.xlsx"
 OUTPUT_DIR = DATA_DIR / "processed"
 

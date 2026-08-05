@@ -8,16 +8,17 @@ from typing import Iterable, List
 
 import numpy as np
 import pandas as pd
+from config import BACKEND_DATA_DIR
 
 
 # ============================================================
 # Paths
 # ============================================================
 
-DATA_DIR = Path("dataset")
-INPUT_PATH = DATA_DIR / "processed" / "dga_clean.parquet"
-OUTPUT_PATH = DATA_DIR / "processed" / "dga_features.parquet"
-FEATURE_META_PATH = DATA_DIR / "processed" / "dga_feature_columns.json"
+DATA_DIR = Path(BACKEND_DATA_DIR)
+INPUT_PATH = DATA_DIR / "dga_clean.parquet"
+OUTPUT_PATH = DATA_DIR / "dga_features.parquet"
+FEATURE_META_PATH = DATA_DIR / "dga_feature_columns.json"
 
 
 # ============================================================
@@ -392,50 +393,55 @@ def add_quality_flags(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================
 # Main
 # ============================================================
+from logging_config import init_logging
+init_logging()
+import logging
+logger = logging.getLogger(__name__)
+
 def main():
     if not INPUT_PATH.exists():
         raise FileNotFoundError(f"Không tìm thấy file input: {INPUT_PATH}")
 
-    print(f"[INFO] Reading {INPUT_PATH}")
+    logger.info(f"[INFO] Reading {INPUT_PATH}")
     df = pd.read_parquet(INPUT_PATH)
 
     ensure_required_columns(df)
 
-    print("[INFO] Preprocessing dtypes")
+    logger.info("[INFO] Preprocessing dtypes")
     df = preprocess_types(df)
 
-    print("[INFO] Sorting and deduplicating")
+    logger.info("[INFO] Sorting and deduplicating")
     df = sort_and_deduplicate(df)
 
-    print("[INFO] Filtering bad rows")
+    logger.info("[INFO] Filtering bad rows")
     df = filter_rows_for_model(df, max_missing_core=3)
 
     # --- Thêm weak ground truth từ NB (phải làm trước imputation để giữ nguyên text) ---
-    print("[INFO] Extracting event flags from NB column")
+    logger.info("[INFO] Extracting event flags from NB column")
     df = add_nb_event_features(df)
 
-    print("[INFO] Adding missing flags BEFORE imputation")
-    df = add_missingness_flags(df, OPTIONAL_NUMERIC + ["year_energized", "tdcg_raw"])
+    logger.info("[INFO] Adding missing flags BEFORE imputation")
+    df = add_missingness_flags(df, OPTIONAL_NUMERIC + ["year_energized", "tdcg_raw"]) 
 
-    print("[INFO] Imputing optional context columns by transformer")
+    logger.info("[INFO] Imputing optional context columns by transformer")
     df = impute_optional_context_by_transformer(df)
 
-    print("[INFO] Creating TDCG")
+    logger.info("[INFO] Creating TDCG")
     df = add_tdcg(df)
 
-    print("[INFO] Adding rating features")
+    logger.info("[INFO] Adding rating features")
     df = add_rating_features(df)
 
-    print("[INFO] Adding metadata features")
+    logger.info("[INFO] Adding metadata features")
     df = add_metadata_features(df)
 
-    print("[INFO] Adding ratio features")
+    logger.info("[INFO] Adding ratio features")
     df = add_ratio_features(df)
 
-    print("[INFO] Adding Duval input features")
+    logger.info("[INFO] Adding Duval input features")
     df = add_duval_input_features(df)
 
-    print("[INFO] Adding calendar/sequence features")
+    logger.info("[INFO] Adding calendar/sequence features")
     df = add_calendar_and_sequence_features(df)
 
     temporal_value_cols = [c for c in CORE_GASES + ["tdcg"] if c in df.columns]
@@ -443,19 +449,19 @@ def main():
         if c in df.columns:
             temporal_value_cols.append(c)
 
-    print("[INFO] Adding lag/delta/rate features")
+    logger.info("[INFO] Adding lag/delta/rate features")
     df = add_lag_delta_rate_features(df, temporal_value_cols)
 
-    print("[INFO] Adding rolling features")
+    logger.info("[INFO] Adding rolling features")
     df = add_rolling_features(df, temporal_value_cols)
 
-    print("[INFO] Adding EWMA features")
+    logger.info("[INFO] Adding EWMA features")
     df = add_ewm_features(df, temporal_value_cols)
 
-    print("[INFO] Adding cross-gas trend features")
+    logger.info("[INFO] Adding cross-gas trend features")
     df = add_cross_gas_trend_features(df)
 
-    print("[INFO] Adding quality flags")
+    logger.info("[INFO] Adding quality flags")
     df = add_quality_flags(df)
 
     df = df.sort_values(["transformer_id", "sample_day"]).reset_index(drop=True)
@@ -490,21 +496,21 @@ def main():
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"[INFO] Writing {OUTPUT_PATH}")
+    logger.info(f"[INFO] Writing {OUTPUT_PATH}")
     df.to_parquet(OUTPUT_PATH, index=False)
 
-    print(f"[INFO] Writing {FEATURE_META_PATH}")
+    logger.info(f"[INFO] Writing {FEATURE_META_PATH}")
     with open(FEATURE_META_PATH, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
-    print("=" * 80)
-    print("[DONE] Feature build complete")
-    print(f"Rows: {len(df):,}")
-    print(f"Transformers: {df['transformer_id'].nunique():,}")
-    print(f"Columns: {len(df.columns):,}")
-    print(f"Saved features to: {OUTPUT_PATH}")
-    print(f"Saved feature registry to: {FEATURE_META_PATH}")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info("[DONE] Feature build complete")
+    logger.info(f"Rows: {len(df):,}")
+    logger.info(f"Transformers: {df['transformer_id'].nunique():,}")
+    logger.info(f"Columns: {len(df.columns):,}")
+    logger.info(f"Saved features to: {OUTPUT_PATH}")
+    logger.info(f"Saved feature registry to: {FEATURE_META_PATH}")
+    logger.info("=" * 80)
 
     preview_cols = [
         c for c in [
@@ -521,7 +527,7 @@ def main():
             "has_event", "event_type"  # thêm vào preview
         ] if c in df.columns
     ]
-    print(df[preview_cols].head(10).to_string(index=False))
+    logger.debug(df[preview_cols].head(10).to_string(index=False))
 
 
 if __name__ == "__main__":

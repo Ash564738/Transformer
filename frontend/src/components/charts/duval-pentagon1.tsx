@@ -38,7 +38,7 @@ const FAULT_EXPLANATIONS: Record<string, string> = {
   T2: "Thermal fault 300–700°C",
   T3: "Thermal fault > 700°C",
   S: "Stray Gassing",
-  UNCERTAIN: "Uncertain diagnosis",
+  ABSTAIN: "ABSTAIN diagnosis",
   NORMAL: "Normal",
 };
 
@@ -66,7 +66,7 @@ function diagnoseP1(cent: { x: number; y: number }) {
   for (const [zone, poly] of Object.entries(ZONES_P1)) {
     if (pointInPolygon(cent, poly)) return zone;
   }
-  return "UNCERTAIN";
+  return "ABSTAIN";
 }
 
 function clamp(val: number, min: number, max: number) {
@@ -81,7 +81,7 @@ export function DuvalPentagon1Svg({
   backendFault?: string;
 }) {
   const cent = useMemo(() => centroid(h2, ch4, c2h6, c2h4, c2h2), [h2, ch4, c2h6, c2h4, c2h2]);
-  const fault = useMemo(() => (cent ? diagnoseP1(cent) : "UNCERTAIN"), [cent]);
+  const fault = useMemo(() => (cent ? diagnoseP1(cent) : "ABSTAIN"), [cent]);
 
   const total5 = h2 + ch4 + c2h6 + c2h4 + c2h2;
   const pH2 = total5 > 0 ? (h2 / total5) * 100 : 0;

@@ -4,21 +4,27 @@ import pandas as pd
 import numpy as np
 import consensus
 import severity
+from config import BACKEND_DATA_DIR
 
-DATA_DIR = Path("dataset/processed")
+DATA_DIR = Path(BACKEND_DATA_DIR)
 FEATURES_PATH = DATA_DIR / "dga_features.parquet"
 LABELED_PATH = DATA_DIR / "dga_labeled.parquet"
 
 def main():
-    print("Loading features...")
+    from logging_config import init_logging
+    init_logging()
+    import logging
+    logger = logging.getLogger(__name__)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info("Loading features...")
     df = pd.read_parquet(FEATURES_PATH)
 
     # Chạy consensus (các cột khí cần có: h2, ch4, c2h6, c2h4, c2h2, co, co2)
-    print("Applying consensus diagnosis...")
+    logger.info("Applying consensus diagnosis...")
     df = consensus.apply_consensus(df)
 
     # Chạy severity
-    print("Computing severity scores...")
+    logger.info("Computing severity scores...")
     df = severity.apply_severity(df)
 
     # Đảm bảo có cột fault_type_label (map từ consensus_fault) để train_models.py dùng
@@ -38,9 +44,9 @@ def main():
 
     # severity_score đã có sẵn, giữ nguyên
 
-    print(f"Saving labeled dataset to {LABELED_PATH}")
+    logger.info(f"Saving labeled dataset to {LABELED_PATH}")
     df.to_parquet(LABELED_PATH, index=False)
-    print(f"Done. Shape: {df.shape}")
+    logger.info(f"Done. Shape: {df.shape}")
 
 if __name__ == "__main__":
     main()

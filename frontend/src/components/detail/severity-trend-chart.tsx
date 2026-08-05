@@ -56,7 +56,7 @@ export function SeverityTrendChart({ rows }: { rows: DgaRow[] }) {
             day: r.sample_day,
             risk,
             status,
-            fault: r.consensus_fault ?? "UNCERTAIN",
+            fault: r.consensus_fault ?? "ABSTAIN",
           };
         }),
     [rows]
@@ -129,3 +129,4 @@ export function SeverityTrendChart({ rows }: { rows: DgaRow[] }) {
     </div>
   );
 }
+

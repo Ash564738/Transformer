@@ -3,9 +3,7 @@
 import { useState } from "react";
 import type { DgaRow } from "@/types/dga";
 import { FAULT_EXPLANATIONS } from "@/lib/dga-methods";
-import { duvalTriangleImageUrl, duvalPentagonImageUrl } from "@/lib/api";
 import { cn, formatNumber } from "@/lib/utils";
-import { BackendChartImage } from "@/components/charts/backend-chart-image";
 import { DuvalTriangleSvg } from "../charts/duval-triangle";
 import { DuvalPentagon1Svg } from "../charts/duval-pentagon1";
 import { DuvalPentagon2Svg } from "../charts/duval-pentagon2";
@@ -25,7 +23,7 @@ const METHODS: { key: MethodKey; label: string }[] = [
 ];
 
 function resultLabel(code?: string) {
-  if (!code) return "UNCERTAIN";
+  if (!code) return "ABSTAIN";
   const explanation = FAULT_EXPLANATIONS[code];
   return explanation ? `${explanation.toUpperCase()} (${code})` : code;
 }
@@ -86,10 +84,10 @@ export function DiagnosticSwitcher({ row }: { row: DgaRow }) {
           <div className="space-y-2">
             <DuvalPentagon2Svg
               h2={g.h2} ch4={g.ch4} c2h6={g.c2h6} c2h4={g.c2h4} c2h2={g.c2h2}
-              backendFault={row.duval_pentagon_fault}
+              backendFault={row.fault_p2 ?? row.duval_pentagon_fault}
             />
             <p className="text-center text-sm font-extrabold text-status-critical">
-              RESULT: {resultLabel(row.duval_pentagon_fault)}
+              RESULT: {resultLabel(row.fault_p2 ?? row.duval_pentagon_fault)}
             </p>
           </div>
         )}
@@ -216,7 +214,7 @@ function KeyGasView({ g, co, tdcg, fault }: {
           Dominant gas: <span className="font-bold text-teal-800">{dominantGas}</span>
         </p>
         <p className="text-sm font-extrabold text-status-critical">
-          RESULT: {fault ?? "UNCERTAIN"}
+          RESULT: {fault ?? "ABSTAIN"}
         </p>
       </div>
     </div>

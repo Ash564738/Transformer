@@ -9,20 +9,20 @@ logger = logging.getLogger(__name__)
 def unify_fault(label: str) -> str:
     """Chuyển đổi nhãn lỗi về nhóm lớn (THERMAL, DISCHARGE,...)"""
     if label is None:
-        return "UNCERTAIN"
+        return "ABSTAIN"
     label = str(label).strip().upper()
     # Xử lý một số trường hợp đặc biệt
     if label == "T3-H":
         label = "T3_H"
-    return cfg.FAULT_GROUPS.get(label, "UNCERTAIN")
+    return cfg.FAULT_GROUPS.get(label, "ABSTAIN")
 
 def normalize_fault(label: str) -> str:
     """Chuẩn hóa nhãn lỗi về dạng code chung (PD, D1, T1,...)"""
     if label is None:
-        return "UNCERTAIN"
+        return "ABSTAIN"
     label = str(label).strip().upper()
-    if label in ("", "UNCERTAIN", "NA"):
-        return "UNCERTAIN"
+    if label in ("", "ABSTAIN", "NA"):
+        return "ABSTAIN"
     legacy_map = {
         "T3-H": "T3_H",
         "ARCING": "D2",
@@ -43,7 +43,7 @@ def aggregate_votes(votes: Dict[str, str]) -> Tuple[str, List[str]]:
 
     for method, raw_fault in votes.items():
         norm = normalize_fault(raw_fault)
-        if norm == "UNCERTAIN":
+        if norm == "ABSTAIN":
             continue
         group = unify_fault(norm)
         weight = cfg.METHOD_WEIGHTS.get(method, 1.0)
@@ -51,7 +51,7 @@ def aggregate_votes(votes: Dict[str, str]) -> Tuple[str, List[str]]:
         fault_by_method[method] = norm
 
     if not group_weights:
-        return "UNCERTAIN", []
+        return "ABSTAIN", []
 
     # Loại bỏ NORMAL để tính non‑normal tỉ lệ
     non_normal = {g: w for g, w in group_weights.items() if g != "NORMAL"}
@@ -94,7 +94,7 @@ def confidence(votes: Dict[str, str]) -> float:
     group_weights = {}
     for method, raw_fault in votes.items():
         norm = normalize_fault(raw_fault)
-        if norm == "UNCERTAIN":
+        if norm == "ABSTAIN":
             continue
         group = unify_fault(norm)
         weight = cfg.METHOD_WEIGHTS.get(method, 1.0)
@@ -143,7 +143,7 @@ def apply_consensus(df: pd.DataFrame) -> pd.DataFrame:
     }
 
     def make_votes(row):
-        return {method: row.get(col, "UNCERTAIN") for method, col in vote_columns.items()}
+        return {method: row.get(col, "ABSTAIN") for method, col in vote_columns.items()}
 
     votes_series = df.apply(make_votes, axis=1)
 
