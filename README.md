@@ -161,14 +161,14 @@ just run the two `npm run dev` / `python app.py` commands above.
 
 This project provides scripts that implement the pipeline described in the repository:
 
-B1. Feature engineering (assume `dataset/processed/dga_unlabeled.parquet` contains the time-series features per sample)
+B1. Feature engineering (assume `backend/dataset/processed/dga_unlabeled.parquet` contains the time-series features per sample)
 B2. Weak Supervision Labeling (traditional methods -> label model -> probabilistic labels)
 B3. Train student classifier on probabilistic labels (LightGBM by default)
 B4. Compute per-sample severity scores (domain-driven)
 B5. Aggregate per-transformer ranking (latest sample + EWMA + bonuses/penalties)
 B6. Produce evaluation reports (LF stats, ranking CSV)
 
-Below are the exact manual commands to reproduce the pipeline on Windows (PowerShell examples). All outputs are written under `dataset/processed/`, `models/` and `reports/`.
+Below are the exact manual commands to reproduce the pipeline on Windows (PowerShell examples). All outputs are written under `backend/dataset/processed/`, `backend/models/` and `reports/`.
 
 Prerequisites (from repository root, Windows PowerShell):
 
@@ -187,13 +187,13 @@ pip install pyarrow
 Step 0 — prepare data
 
 - Place your cleaned, feature-engineered per-sample time-series table at:
-  `dataset/processed/dga_unlabeled.parquet`
+  `backend/dataset/processed/dga_unlabeled.parquet`
   Each row should be one sample with columns: transformer_id, sample_day, and the numeric features (CO, CO2, H2, C2H4, C2H6, tdcg, derived rates/trends). The repo contains a small synthetic example for testing.
 
 Step 1 — (Optional, safe) Normalize legacy labels and generate initial reports
 
 ```powershell
-# This script will create backups under dataset/processed/backups_uncertain/
+# This script will create backups under backend/dataset/processed/backups_uncertain/
 # and will replace literal 'UNCERTAIN' strings in Parquet string columns with 'ABSTAIN' if found.
 python backend/maintenance_replace_and_report.py
 ```
@@ -204,7 +204,7 @@ python backend/maintenance_replace_and_report.py
 Step 2 — Generate weak (pseudo) labels only (useful to inspect before training)
 
 ```powershell
-# Generates dataset/processed/dga_weak_labels.parquet and does NOT train student
+# Generates backend/dataset/processed/dga_weak_labels.parquet and does NOT train student
 python backend/train_models.py --weak-supervision --weak-only --use-snorkel
 ```
 
@@ -216,13 +216,13 @@ python backend/train_models.py --weak-supervision --weak-only --use-snorkel
 Step 3 — Generate weak labels and train the student + severity + temporal models (end-to-end)
 
 ```powershell
-# This runs weak supervision then trains the student and severity models, then saves models under models/
+# This runs weak supervision then trains the student and severity models, then saves models under backend/models/
 python backend/train_models.py --weak-supervision --use-snorkel
 ```
 
 - Outputs:
-  - `dataset/processed/dga_weak_labels.parquet` (per-sample P(y) columns: `weak_prob_<GROUP>`, `weak_fault_group`, `weak_fault_confidence`)
-  - `models/fault_classifier.joblib`, `models/severity_classifier.joblib`, `models/severity_regressor.joblib`, and temporal model artifacts
+  - `backend/dataset/processed/dga_weak_labels.parquet` (per-sample P(y) columns: `weak_prob_<GROUP>`, `weak_fault_group`, `weak_fault_confidence`)
+  - `backend/models/fault_classifier.joblib`, `backend/models/severity_classifier.joblib`, `backend/models/severity_regressor.joblib`, and temporal model artifacts
 
 Step 4 — Produce final reports (LF stats + transformer ranking)
 
@@ -241,15 +241,31 @@ Quick troubleshooting
 - If Parquet read/write raises an error, ensure `pyarrow` is installed: `pip install pyarrow`.
 - If your dataset is large and LightGBM runs out of memory, reduce rows or increase machine memory; you can also use `--weak-supervision --weak-only` to inspect labels before training.
 
+Debug logs and where to look
+
+- Backend structured logs are written to `backend/logs/pipeline.log`. This file contains timestamps, module names and level (INFO/DEBUG/ERROR) — useful when diagnosing why Snorkel import failed or why a subprocess returned a non-zero exit code.
+- To run the pipeline manually and watch logs:
+
+```powershell
+# Activate venv (from repo root)
+.\.venv\Scripts\Activate.ps1
+# Run the full pipeline (writes weak labels, trains student, saves models and reports)
+python backend/train_models.py --weak-supervision --use-snorkel
+# Check the logs (tail)
+Get-Content backend\logs\pipeline.log -Tail 200 -Wait
+```
+
+- The Flask API endpoint `/pipeline/run` also captures stdout/stderr from the training and maintenance subprocesses and writes them to the same log file. If you trigger the pipeline from the UI and it fails, inspect `backend/logs/pipeline.log` and the returned JSON from the endpoint (it includes stdout/stderr on error).
+
 Automated run script
 
 - There is `run_all.ps1` at the repository root (Windows) that installs backend requirements and runs `train_models.py`. Use it if you want a single command to install and run the training flow.
 
 Where the important outputs land
 
-- dataset/processed/dga_weak_labels.parquet — weak supervision probabilistic labels
-- dataset/processed/backups_uncertain/ — backups of original Parquet files before UNCERTAIN→ABSTAIN replacement
-- models/ — trained LightGBM/XGBoost/PyTorch models
+- backend/dataset/processed/dga_weak_labels.parquet — weak supervision probabilistic labels
+- backend/dataset/processed/backups_uncertain/ — backups of original Parquet files before UNCERTAIN→ABSTAIN replacement
+- backend/models/ — trained LightGBM/XGBoost/PyTorch models
 - reports/lf_stats.csv, reports/transformer_ranking.csv — LF statistics and fleet ranking
 
 If you'd like, I'll commit this README update (so it's persisted). I can also add a short example PowerShell snippet to `run_all.ps1` to call the exact recommended sequence (maintenance -> weak-only -> train -> reports).
@@ -273,4 +289,3 @@ Chi?n lu?c d�ng Snorkel + student classifier l� h?p l� cho DGA kh�ng nh�
 4. T�ch h?p temporal features + EWMA d? t?ng h?p per-transformer ranking (hi?n t?i tr?ng s? l?n nhung v?n gi? s? d?ng l?ch s?).
 5. Th�m active learning / expert review cho c�c m?u c� d? kh�ng ch?c ch?n (low confidence) d? c?i thi?n LF v� label model theo v�ng l?p.
 6. B? sung unsupervised anomaly detection v� clustering d? ph�t hi?n fault types chua c� trong c�c phuong ph�p truy?n th?ng.
-

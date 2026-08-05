@@ -1,14 +1,16 @@
 "use client";
 
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { TransformerSummary } from "@/types/dga";
+import type { DgaRow, TransformerSummary } from "@/types/dga";
 
 const PALETTE = ["#184843", "#316f64", "#4f8f83", "#c96f28", "#e08a3c", "#854318", "#7db0a6", "#a8571c"];
 
-export function FaultDistributionChart({ summaries }: { summaries: TransformerSummary[] }) {
+export function FaultDistributionChart({ summaries, rows }: { summaries: TransformerSummary[]; rows?: DgaRow[] }) {
   const counts = new Map<string, number>();
-  for (const s of summaries) {
-    const key = s.fault_type || "ABSTAIN";
+  const sourceRows = rows && rows.length > 0 ? rows : summaries;
+  for (const item of sourceRows) {
+    const rawKey = "consensus_fault" in item ? item.consensus_fault : item.fault_type;
+    const key = typeof rawKey === "string" && rawKey.trim() ? rawKey : "ABSTAIN";
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const data = Array.from(counts.entries())

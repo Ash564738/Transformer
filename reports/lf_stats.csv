@@ -1,8 +1,0 @@
-lf,abstain_rate,NORMAL,DISCHARGE,THERMAL,CELLULOSE,STRAY_GASSING,MIXED
-keygas_fault,1.0,0,0,0,0,0,0
-iec_fault,1.0,0,0,0,0,0,0
-rogers_fault,1.0,0,0,0,0,0,0
-doernenburg_fault,1.0,0,0,0,0,0,0
-duval_triangle_fault,1.0,0,0,0,0,0,0
-duval_pentagon_p1_fault,1.0,0,0,0,0,0,0
-duval_pentagon_p2_fault,1.0,0,0,0,0,0,0

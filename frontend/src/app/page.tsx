@@ -63,7 +63,7 @@ export default function OverviewPage() {
             <CardTitle>Fault Type Distribution</CardTitle>
           </CardHeader>
           <CardContent>
-            <FaultDistributionChart summaries={payload.transformer_summary} />
+            <FaultDistributionChart summaries={payload.transformer_summary} rows={payload.rows} />
           </CardContent>
         </Card>
       </div>

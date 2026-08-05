@@ -2,19 +2,43 @@ from __future__ import annotations
 
 import logging
 from typing import Dict, List, Optional, Tuple
+import importlib
 
 import numpy as np
 import pandas as pd
 
 from consensus import normalize_fault, unify_fault
 
+from logging_config import init_logging
+init_logging()
 logger = logging.getLogger(__name__)
 
+# Robust snorkel detection: attempt to find the package spec first, then import
+SNORKEL_AVAILABLE = False
+LabelModel = None
+SNORKEL_IMPORT_ERROR = None
 try:
-    from snorkel.labeling import LabelModel
-    SNORKEL_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    LabelModel = None
+    if importlib.util.find_spec('snorkel') is not None:
+        # Attempt compatible imports across snorkel versions and log failures.
+        try:
+            try:
+                from snorkel.labeling.model import LabelModel
+            except Exception:
+                from snorkel.labeling import LabelModel
+            LabelModel  # type: ignore
+            SNORKEL_AVAILABLE = True
+            logger.debug("Snorkel detected and LabelModel imported successfully.")
+        except Exception as ex:
+            # Log the stack trace so we can diagnose import-time failures (e.g. dependency issues)
+            logger.exception("Snorkel package found but import failed: %s", ex)
+            LabelModel = None
+            SNORKEL_AVAILABLE = False
+            SNORKEL_IMPORT_ERROR = str(ex)
+    else:
+        logger.debug("snorkel not found by importlib.util.find_spec")
+except Exception:
+    # Guard: if importlib itself raises unexpected errors, we still want to continue
+    logger.exception("Unexpected error while checking snorkel availability")
     SNORKEL_AVAILABLE = False
 
 ABSTAIN = -1
@@ -122,9 +146,15 @@ def fit_label_model(
     """Fit a label model and return prediction probabilities."""
     if use_snorkel:
         if not SNORKEL_AVAILABLE:
-            logger.warning(
-                "Snorkel is not installed; falling back to the built-in weak supervision estimator."
-            )
+            if SNORKEL_IMPORT_ERROR:
+                logger.warning(
+                    "Snorkel is installed but LabelModel is unavailable (%s); falling back to the built-in weak supervision estimator.",
+                    SNORKEL_IMPORT_ERROR,
+                )
+            else:
+                logger.warning(
+                    "Snorkel is not installed; falling back to the built-in weak supervision estimator."
+                )
         elif LabelModel is None:
             raise RuntimeError("Snorkel is not importable despite availability flag.")
         else:
@@ -168,11 +198,16 @@ def create_student_training_targets(
     df: pd.DataFrame,
     target_group: str = "weak_fault_group",
     weight_column: str = "weak_fault_confidence",
+    groups: Optional[List[str]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     if target_group not in df.columns:
         raise ValueError(f"Missing weak supervision target column: {target_group}")
 
-    y = df[target_group].astype("category")
+    groups = groups or WEAK_GROUPS
+    group_to_idx = {group: idx for idx, group in enumerate(groups)}
+    y = df[target_group].map(group_to_idx)
+    if y.isna().any():
+        unknown = sorted(df.loc[y.isna(), target_group].astype(str).unique())
+        raise ValueError(f"Unknown weak supervision labels: {unknown}")
     weights = df[weight_column].fillna(0.0).astype(float).values
-    return y.cat.codes.values, weights
-
+    return y.astype(int).values, weights

@@ -121,7 +121,7 @@ class DiagnosticConfig:
     })
 
     # DGA L1 limits
-    L1_LIMITS: Dict[str, int] = field(default_factory=lambda: {  # IEC, Rogers, Keygas
+    L1_LIMITS: Dict[str, int] = field(default_factory=lambda: {
         "h2": 100,
         "ch4": 120,
         "c2h2": 1,
@@ -138,3 +138,14 @@ class DiagnosticConfig:
     MIN_TDCG: float = 100.0
 
 config = DiagnosticConfig()
+
+from pathlib import Path
+BACKEND_ROOT = Path(__file__).resolve().parent
+BACKEND_DATA_DIR = BACKEND_ROOT / "dataset" / "processed"
+BACKEND_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+FAULT_LABELS = [
+    "NORMAL", "PD", "D1", "D2", "DT", "T1", "T2", "T3", "T3_H",
+    "THERMAL_OIL", "THERMAL_CELLULOSE", "C", "O", "S", "ABSTAIN", "MIXED"
+]
+SEVERITY_LABELS = config.SEVERITY_LABELS

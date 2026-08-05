@@ -7,7 +7,6 @@ from config import config as cfg
 logger = logging.getLogger(__name__)
 
 def score_by_threshold(value: float, thresholds: list) -> int:
-    """Gán điểm dựa trên ngưỡng (0,1,2,3)."""
     if pd.isna(value) or value < 0:
         return 0
     for i, thr in enumerate(thresholds):
@@ -16,7 +15,6 @@ def score_by_threshold(value: float, thresholds: list) -> int:
     return 3
 
 def compute_gas_level_score(row: pd.Series) -> int:
-    """Điểm dựa trên nồng độ khí vượt ngưỡng."""
     score = 0
     for gas, thresholds in cfg.SEVERITY_GAS_THRESHOLDS.items():
         val = row.get(gas, np.nan)
@@ -24,7 +22,6 @@ def compute_gas_level_score(row: pd.Series) -> int:
     return score
 
 def compute_trend_score(row: pd.Series) -> int:
-    """Điểm dựa trên tốc độ tăng của khí."""
     score = 0
     tdcg_rate = row.get("tdcg_rate_per_day", np.nan)
     if pd.notna(tdcg_rate):
@@ -53,7 +50,6 @@ def compute_trend_score(row: pd.Series) -> int:
     return score
 
 def compute_aging_score(row: pd.Series) -> int:
-    """Điểm dựa trên dấu hiệu lão hóa cách điện."""
     score = 0
     co = row.get("co", np.nan)
     co2 = row.get("co2", np.nan)
@@ -73,7 +69,6 @@ def compute_aging_score(row: pd.Series) -> int:
         elif co2 >= 5000:
             score += 1
 
-    # Tính tỉ số CO2/CO, tránh chia cho 0
     if pd.notna(co) and pd.notna(co2) and co > 0:
         ratio = co2 / co
         if ratio < 3:
@@ -95,7 +90,6 @@ def compute_aging_score(row: pd.Series) -> int:
     return score
 
 def severity_class_from_score(score: float) -> str:
-    """Phân loại mức độ nghiêm trọng dựa trên điểm tổng."""
     if pd.isna(score):
         return "ABSTAIN"
     boundaries = cfg.SEVERITY_CLASS_BOUNDARIES
@@ -120,7 +114,7 @@ def get_fault_points(row: pd.Series) -> int:
 
     if fl == "MIXED":
         components = row.get("mixed_components", [])
-        if not components:
+        if components is None or (hasattr(components, '__len__') and len(components) == 0):
             return cfg.SEVERITY_BY_GROUP.get("MIXED", 5)
         max_sev = 0
         for comp in components:
@@ -131,10 +125,19 @@ def get_fault_points(row: pd.Series) -> int:
 
     if fl == "T3-H":
         fl = "T3_H"
-    return cfg.FAULT_SEVERITY_POINTS.get(fl, 1)
+    # Try exact match in FAULT_SEVERITY_POINTS
+    if fl in cfg.FAULT_SEVERITY_POINTS:
+        return cfg.FAULT_SEVERITY_POINTS[fl]
+    # Try group match (e.g., "CELLULOSE", "THERMAL", etc.)
+    if fl in cfg.SEVERITY_BY_GROUP:
+        return cfg.SEVERITY_BY_GROUP[fl]
+    # Fallback via FAULT_GROUPS mapping
+    group = cfg.FAULT_GROUPS.get(fl)
+    if group and group in cfg.SEVERITY_BY_GROUP:
+        return cfg.SEVERITY_BY_GROUP[group]
+    return cfg.FAULT_SEVERITY_POINTS["ABSTAIN"]
 
 def apply_severity(df: pd.DataFrame) -> pd.DataFrame:
-    """Tính toán các chỉ số severity và gán nhãn."""
     logger.info("Bắt đầu tính severity scores...")
     df["severity_gas_score"] = df.apply(compute_gas_level_score, axis=1)
     df["severity_trend_score"] = df.apply(compute_trend_score, axis=1)
@@ -151,7 +154,6 @@ def apply_severity(df: pd.DataFrame) -> pd.DataFrame:
 
     df["severity_label"] = df["severity_score"].apply(severity_class_from_score)
 
-    # Log mẫu
     sample_cols = ["transformer_id", "severity_gas_score", "severity_trend_score",
                    "severity_fault_score", "severity_score", "severity_label"]
     if all(c in df.columns for c in sample_cols):

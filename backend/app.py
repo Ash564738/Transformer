@@ -12,6 +12,11 @@ if hasattr(sys.stdout, "reconfigure"):
 from dotenv import load_dotenv
 load_dotenv()  # backend/.env — OPENROUTER_API_KEY for text2sql_chat.py, gitignored
 
+from logging_config import init_logging
+init_logging()
+import logging
+logger = logging.getLogger(__name__)
+
 import matplotlib
 matplotlib.use("Agg")  # headless backend — must be set before any pyplot import
 
@@ -54,6 +59,7 @@ def _add_cors_headers(response):
 @app.route('/auth/me', methods=['OPTIONS'])
 @app.route('/auth/logout', methods=['OPTIONS'])
 @app.route('/dataset/reset', methods=['OPTIONS'])
+@app.route('/report/student-vs-traditional', methods=['OPTIONS'])
 def _cors_preflight():
     return ('', 204)
 
@@ -127,6 +133,7 @@ def root():
         service='Transformer Degradation Ranking API',
         endpoints=[
             '/health', '/predict', '/chat', '/dataset/reset', '/chart/duval-triangle', '/chart/duval-pentagon',
+            '/report/student-vs-traditional',
             '/auth/login', '/auth/me', '/auth/logout',
         ],
     )
@@ -189,6 +196,21 @@ def dataset_reset():
     return jsonify(ok=True)
 
 
+@app.route('/report/student-vs-traditional', methods=['GET'])
+@auth.require_auth
+def student_vs_traditional_report():
+    reports_dir = Path(__file__).resolve().parent.parent / 'reports'
+    report_path = reports_dir / 'student_vs_traditional_by_transformer.csv'
+    if not report_path.exists():
+        return jsonify(error='student_vs_traditional_by_transformer.csv not found. Run /predict first.'), 404
+    try:
+        df = pd.read_csv(report_path)
+        return jsonify(rows=df.to_dict(orient='records'), path=str(report_path))
+    except Exception as exc:
+        logger.exception("Failed to load student-vs-traditional report")
+        return jsonify(error=f'Failed to load report: {exc}'), 500
+
+
 @app.route('/chat', methods=['POST'])
 @auth.require_auth
 def chat():
@@ -231,6 +253,38 @@ def chart_duval_pentagon():
     if fig is None:
         return jsonify(error='Insufficient gas data for Duval Pentagon.'), 400
     return _fig_to_png_response(fig)
+
+
+@app.route('/pipeline/run', methods=['POST'])
+@auth.require_auth
+def pipeline_run():
+    """Run the full B1..B6 pipeline end-to-end: weak-supervision, student training, severity, ranking, and reports.
+    This runs backend/train_models.py with --weak-supervision then the maintenance/report script.
+    """
+    import sys, subprocess
+    backend_dir = Path(__file__).resolve().parent
+    python_exec = sys.executable
+    # 1) Run train_models end-to-end (weak supervision + student training)
+    cmd_train = [python_exec, str(backend_dir / 'train_models.py'), '--weak-supervision', '--use-snorkel']
+    proc_train = subprocess.run(cmd_train, cwd=str(backend_dir), capture_output=True, text=True)
+    logger.info("train_models stdout: %s", proc_train.stdout)
+    logger.info("train_models stderr: %s", proc_train.stderr)
+    if proc_train.returncode != 0:
+        logger.error("train_models.py failed with return code %s", proc_train.returncode)
+        return jsonify(error='train_models.py failed', returncode=proc_train.returncode, stdout=proc_train.stdout, stderr=proc_train.stderr), 500
+    # 2) Run maintenance/report to produce lf_stats and ranking (this also backups/normalizes)
+    cmd_rep = [python_exec, str(backend_dir / 'maintenance_replace_and_report.py')]
+    proc_rep = subprocess.run(cmd_rep, cwd=str(backend_dir), capture_output=True, text=True)
+    logger.info("maintenance stdout: %s", proc_rep.stdout)
+    logger.info("maintenance stderr: %s", proc_rep.stderr)
+    if proc_rep.returncode != 0:
+        logger.error("maintenance_replace_and_report.py failed with return code %s", proc_rep.returncode)
+        return jsonify(error='maintenance_replace_and_report.py failed', returncode=proc_rep.returncode, stdout=proc_rep.stdout, stderr=proc_rep.stderr), 500
+    # Return report locations
+    reports_dir = (Path(__file__).resolve().parent.parent / 'reports')
+    lf = reports_dir / 'lf_stats.csv'
+    ranking = reports_dir / 'transformer_ranking.csv'
+    return jsonify(ok=True, lf_stats=str(lf), ranking=str(ranking))
 
 
 if __name__ == '__main__':

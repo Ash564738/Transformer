@@ -44,7 +44,6 @@ const METHOD_CONFIGS = {
     xLabel: "R1 (CH₄ / H₂)",
     yLabel: "R2 (C₂H₂ / C₂H₄)",
     zones: [
-      { key: "normal_zone", label: "N", xMin: 0.1, xMax: 1.0, yMin: 0.001, yMax: 0.1, color: ZONE_COLORS.NORMAL, desc: "Normal" },
       { key: "pd_zone", label: "PD", xMin: 0.001, xMax: 0.1, yMin: 0.001, yMax: 0.1, color: ZONE_COLORS.PD, desc: "Partial Discharge" },
       { key: "d2_zone", label: "D2", xMin: 0.1, xMax: 1.0, yMin: 0.1, yMax: 1.0, color: ZONE_COLORS.D2, desc: "Low-energy arcing (D2)" },
       { key: "d1_zone", label: "D1", xMin: 0.1, xMax: 1.0, yMin: 1.0, yMax: 10, color: ZONE_COLORS.D1, desc: "High-energy arcing (D1)" },
@@ -52,7 +51,6 @@ const METHOD_CONFIGS = {
       { key: "t3_zone", label: "T3", xMin: 1.0, xMax: 10, yMin: 0.1, yMax: 10, color: ZONE_COLORS.T3, desc: "Thermal > 700°C" },
     ],
     legends: [
-      "Normal",
       "PD: Partial Discharge",
       "D2: Low-energy arcing",
       "D1: High-energy arcing",

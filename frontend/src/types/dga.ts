@@ -76,6 +76,7 @@ export interface DgaRow {
   doernenburg_fault?: string;
   duval_triangle_fault?: string;
   fault_p1?: string;
+  fault_p2?: string;
   duval_pentagon_fault?: string;
 
   iec_r1_c2h2_c2h4?: number;
@@ -157,6 +158,18 @@ export interface DatasetSummary {
   total_rows: number;
 }
 
+export interface StudentTraditionalComparisonRow {
+  transformer_id: string;
+  n_samples: number;
+  agreement_rate: number;
+  disagree_count: number;
+  latest_student_fault: string;
+  latest_traditional_fault: string;
+  latest_severity_score: number;
+  latest_severity_label: NativeSeverityLabel | string;
+  latest_sample_day: string;
+}
+
 export interface ChatContextPayload {
   transformer_summary: TransformerSummary[];
   dataset_summary: DatasetSummary;
@@ -169,6 +182,7 @@ export interface DgaPayload {
   transformer_summary: TransformerSummary[];
   transformer_timeseries: Record<string, TimeseriesPoint[]>;
   dataset_summary: DatasetSummary;
+  student_traditional_comparison?: StudentTraditionalComparisonRow[];
   chat_context_payload: ChatContextPayload;
 }
 

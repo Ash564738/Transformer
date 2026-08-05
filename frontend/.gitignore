@@ -42,3 +42,6 @@ next-env.d.ts
 
 # local field-inspection confirmation store (SCR-03)
 /data/confirmations.json
+
+backend/dataset/*
+backend/models/*
