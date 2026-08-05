@@ -9,7 +9,7 @@ import { scoreToRisk, scoreToStatus, STATUS_STYLES } from "@/lib/severity";
 import { getStations, latestRowFor, stationOf, topGasLabel } from "@/lib/transformer-helpers";
 import { formatDate } from "@/lib/utils";
 
-type SortColumn = "id" | "station" | "score" | "status" | "date" | "gas";
+type SortColumn = "id" | "station" | "score" | "status" | "fault" | "date" | "gas";
 type SortDirection = "asc" | "desc";
 
 interface RowData {
@@ -20,10 +20,26 @@ interface RowData {
 export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: number }) {
   const [query, setQuery] = useState("");
   const [station, setStation] = useState("All Stations");
+  const [faultFilter, setFaultFilter] = useState("All");
+  const [statusFilter, setStatusFilter] = useState("All");
   const [sortColumn, setSortColumn] = useState<SortColumn>("score");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
 
   const stations = useMemo(() => ["All Stations", ...getStations(payload)], [payload]);
+
+  // Lấy danh sách các fault type duy nhất (không null/undefined)
+  const faultTypes = useMemo(() => {
+    const types = new Set<string>();
+    payload.transformer_summary.forEach((s) => {
+      if (s.fault_type) {
+        types.add(s.fault_type);
+      }
+    });
+    return ["All", ...Array.from(types).sort()];
+  }, [payload]);
+
+  // Danh sách trạng thái cố định
+  const statuses = ["All", "Normal", "Watch", "High", "Critical"];
 
   const allRows = useMemo<RowData[]>(() => {
     return payload.transformer_summary.map((s) => ({
@@ -32,6 +48,8 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
     }));
   }, [payload]);
 
+  // Chỉ thay đổi phần filteredRows, còn lại giữ nguyên code bạn đã có
+
   const filteredRows = useMemo(() => {
     let list = allRows;
     if (query.trim()) {
@@ -39,10 +57,16 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
       list = list.filter((r) => r.summary.transformer_id.toLowerCase().includes(q));
     }
     if (station !== "All Stations") {
-      list = list.filter((r) => stationOf(r.summary) === station);
+      list = list.filter((r) => (stationOf(r.summary) || "") === station);
+    }
+    if (faultFilter !== "All") {
+      list = list.filter((r) => r.summary.fault_type === faultFilter);
+    }
+    if (statusFilter !== "All") {
+      list = list.filter((r) => scoreToStatus(r.summary.latest_score) === statusFilter);
     }
     return list;
-  }, [allRows, query, station]);
+  }, [allRows, query, station, faultFilter, statusFilter]);
 
   const sortedRows = useMemo(() => {
     const list = [...filteredRows];
@@ -62,10 +86,17 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
           const sb = scoreToStatus(b.summary.latest_score);
           return ((statusOrder[sa] ?? 0) - (statusOrder[sb] ?? 0)) * dir;
         }
+        case "fault":
+          return (a.summary.fault_type || "").localeCompare(b.summary.fault_type || "") * dir;
         case "date":
-          return (new Date(a.summary.latest_sample_day).getTime() - new Date(b.summary.latest_sample_day).getTime()) * dir;
+          return (
+            new Date(a.summary.latest_sample_day).getTime() -
+            new Date(b.summary.latest_sample_day).getTime()
+          ) * dir;
         case "gas":
-          return (topGasLabel(a.row, scoreToStatus(a.summary.latest_score)) || "").localeCompare(
+          return (
+            topGasLabel(a.row, scoreToStatus(a.summary.latest_score)) || ""
+          ).localeCompare(
             topGasLabel(b.row, scoreToStatus(b.summary.latest_score)) || ""
           ) * dir;
         default:
@@ -100,10 +131,10 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
 
   return (
     <div className="space-y-4">
-      {/* Bộ lọc bên ngoài: Search + Station */}
       {!limit && (
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-          <div className="relative flex-1 sm:max-w-xs">
+        <div className="flex flex-wrap gap-3 items-end justify-end">
+          {/* Tìm kiếm */}
+          <div className="relative flex-1 min-w-[200px] max-w-xs">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-teal-300" />
             <input
               value={query}
@@ -112,6 +143,7 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
               className="h-10 w-full rounded-lg border border-teal-200 bg-white pl-9 pr-3 text-sm text-teal-900 outline-none focus:border-teal-500"
             />
           </div>
+          {/* Lọc theo station */}
           <select
             value={station}
             onChange={(e) => setStation(e.target.value)}
@@ -121,12 +153,32 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
               <option key={s}>{s}</option>
             ))}
           </select>
+          {/* Lọc theo fault type */}
+          <select
+            value={faultFilter}
+            onChange={(e) => setFaultFilter(e.target.value)}
+            className="h-10 rounded-lg border border-teal-200 bg-white px-3 text-sm text-teal-800 outline-none focus:border-teal-500"
+          >
+            {faultTypes.map((ft) => (
+              <option key={ft}>{ft === "All" ? "All Faults" : ft}</option>
+            ))}
+          </select>
+          {/* Lọc theo status */}
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="h-10 rounded-lg border border-teal-200 bg-white px-3 text-sm text-teal-800 outline-none focus:border-teal-500"
+          >
+            {statuses.map((s) => (
+              <option key={s}>{s === "All" ? "All Statuses" : s}</option>
+            ))}
+          </select>
         </div>
       )}
 
       <div className="card-surface overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] text-left text-sm">
+          <table className="w-full min-w-[900px] text-left text-sm">
             <thead>
               <tr className="border-b border-cream-300 text-xs font-semibold uppercase tracking-wide text-teal-400">
                 <th className="px-4 py-3">#</th>
@@ -168,6 +220,15 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
                 </th>
                 <th className="px-4 py-3">
                   <button
+                    onClick={() => handleSort("fault")}
+                    className="group inline-flex items-center gap-1 hover:text-teal-700 transition-colors"
+                  >
+                    Fault Type
+                    {renderSortIcon("fault")}
+                  </button>
+                </th>
+                <th className="px-4 py-3">
+                  <button
                     onClick={() => handleSort("date")}
                     className="group inline-flex items-center gap-1 hover:text-teal-700 transition-colors"
                   >
@@ -192,7 +253,10 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
                 const risk = scoreToRisk(summary.latest_score);
                 const style = STATUS_STYLES[status];
                 return (
-                  <tr key={summary.transformer_id} className="border-b border-cream-200 last:border-0 hover:bg-cream-50">
+                  <tr
+                    key={summary.transformer_id}
+                    className="border-b border-cream-200 last:border-0 hover:bg-cream-50"
+                  >
                     <td className="px-4 py-3 text-teal-400">{i + 1}</td>
                     <td className="px-4 py-3">
                       <Link
@@ -205,8 +269,13 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
                     <td className="px-4 py-3 text-teal-600">{stationOf(summary)}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <div className="h-1.5 w-24 overflow-hidden rounded-full bg-cream-200">
-                          <div className={`h-full rounded-full ${style.bar}`} style={{ width: `${risk}%` }} />
+                        <div
+                          className="h-1.5 w-24 overflow-hidden rounded-full bg-cream-200"
+                        >
+                          <div
+                            className={`h-full rounded-full ${style.bar}`}
+                            style={{ width: `${risk}%` }}
+                          />
                         </div>
                         <span className={`text-sm font-bold ${style.text}`}>{risk}</span>
                       </div>
@@ -214,14 +283,21 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
                     <td className="px-4 py-3">
                       <StatusBadge status={status} />
                     </td>
-                    <td className="px-4 py-3 text-teal-600">{formatDate(summary.latest_sample_day)}</td>
-                    <td className="px-4 py-3 text-teal-600">{topGasLabel(row, status)}</td>
+                    <td className="px-4 py-3 text-teal-700 font-medium">
+                      {summary.fault_type || "—"}
+                    </td>
+                    <td className="px-4 py-3 text-teal-600">
+                      {formatDate(summary.latest_sample_day)}
+                    </td>
+                    <td className="px-4 py-3 text-teal-600">
+                      {topGasLabel(row, status)}
+                    </td>
                   </tr>
                 );
               })}
               {displayRows.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-teal-400">
+                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-teal-400">
                     No transformers match the current filters.
                   </td>
                 </tr>

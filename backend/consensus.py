@@ -7,17 +7,17 @@ from config import config as cfg
 logger = logging.getLogger(__name__)
 
 def unify_fault(label: str) -> str:
-    """Chuyển đổi nhãn lỗi về nhóm lớn (THERMAL, DISCHARGE,...)"""
     if label is None:
         return "ABSTAIN"
     label = str(label).strip().upper()
-    # Xử lý một số trường hợp đặc biệt
     if label == "T3-H":
         label = "T3_H"
+    # DT đặc biệt: trả về cả THERMAL và DISCHARGE (được xử lý trong aggregate_votes)
+    if label == "DT":
+        return "DT"
     return cfg.FAULT_GROUPS.get(label, "ABSTAIN")
 
 def normalize_fault(label: str) -> str:
-    """Chuẩn hóa nhãn lỗi về dạng code chung (PD, D1, T1,...)"""
     if label is None:
         return "ABSTAIN"
     label = str(label).strip().upper()
@@ -33,11 +33,6 @@ def normalize_fault(label: str) -> str:
     return legacy_map.get(label, label)
 
 def aggregate_votes(votes: Dict[str, str]) -> Tuple[str, List[str]]:
-    """
-    Weighted voting để xác định consensus.
-    Trả về (fault_label, list_of_groups).
-    Sửa điều kiện MIXED dùng tỉ lệ trọng số thay vì giá trị tuyệt đối.
-    """
     group_weights = {}
     fault_by_method = {}
 
@@ -45,6 +40,15 @@ def aggregate_votes(votes: Dict[str, str]) -> Tuple[str, List[str]]:
         norm = normalize_fault(raw_fault)
         if norm == "ABSTAIN":
             continue
+        # Xử lý DT: gán trọng số cho cả THERMAL và DISCHARGE
+        if norm == "DT":
+            # Tăng trọng số cho cả hai nhóm
+            for grp in ["THERMAL", "DISCHARGE"]:
+                weight = cfg.METHOD_WEIGHTS.get(method, 1.0)
+                group_weights[grp] = group_weights.get(grp, 0) + weight
+            fault_by_method[method] = norm
+            continue
+
         group = unify_fault(norm)
         weight = cfg.METHOD_WEIGHTS.get(method, 1.0)
         group_weights[group] = group_weights.get(group, 0) + weight
@@ -53,31 +57,29 @@ def aggregate_votes(votes: Dict[str, str]) -> Tuple[str, List[str]]:
     if not group_weights:
         return "ABSTAIN", []
 
-    # Loại bỏ NORMAL để tính non‑normal tỉ lệ
     non_normal = {g: w for g, w in group_weights.items() if g != "NORMAL"}
     total_non_normal = sum(non_normal.values())
 
     if total_non_normal == 0:
         return "NORMAL", ["NORMAL"]
 
-    # Nhóm có trọng số cao nhất
     top_group = max(non_normal, key=non_normal.get)
     top_weight = non_normal[top_group]
 
-    # Sắp xếp trọng số giảm dần
     sorted_weights = sorted(non_normal.values(), reverse=True)
     second_weight = sorted_weights[1] if len(sorted_weights) > 1 else 0
 
-    # Xác định MIXED: nếu top không chiếm ưu thế rõ rệt hoặc nhóm thứ hai đủ lớn
     if (top_weight / total_non_normal < cfg.MIXED_THRESHOLD) or \
        (second_weight / total_non_normal >= cfg.MIN_SECOND_GROUP_WEIGHT_RATIO):
         mixed_groups = [g for g in non_normal if non_normal[g] > 0]
         return "MIXED", mixed_groups
 
-    # Chọn fault cụ thể đại diện cho nhóm thắng
     best_fault = None
     best_weight = -1
     for method, fault in fault_by_method.items():
+        if fault == "DT":
+            # Nếu DT thắng, ưu tiên chọn nhãn cụ thể từ phương pháp khác, nếu không có thì gán "DT"
+            continue
         if unify_fault(fault) == top_group:
             w = cfg.METHOD_WEIGHTS.get(method, 1.0)
             if w > best_weight:

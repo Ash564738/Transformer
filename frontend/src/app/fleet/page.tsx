@@ -14,12 +14,23 @@ export default function FleetPage() {
   const payload = useDashboardStore((s) => s.payload);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<RiskStatus | "All">("All");
+  const [faultFilter, setFaultFilter] = useState("All");
 
   const stations = useMemo(() => (payload ? getStations(payload) : []), [payload]);
 
+  const faultTypes = useMemo(() => {
+    if (!payload) return ["All"];
+    const types = new Set<string>();
+    payload.transformer_summary.forEach((s) => {
+      if (s.fault_type) types.add(s.fault_type);
+    });
+    return ["All", ...Array.from(types).sort()];
+  }, [payload]);
+
   const grouped = useMemo(() => {
     if (!payload) return [];
-    let list = payload.transformer_summary;
+    let list = [...payload.transformer_summary];
+
     if (query.trim()) {
       const q = query.trim().toLowerCase();
       list = list.filter((s) => s.transformer_id.toLowerCase().includes(q));
@@ -27,16 +38,37 @@ export default function FleetPage() {
     if (statusFilter !== "All") {
       list = list.filter((s) => scoreToStatus(s.latest_score) === statusFilter);
     }
+    if (faultFilter !== "All") {
+      list = list.filter((s) => s.fault_type === faultFilter);
+    }
+
     const map = new Map<string, typeof list>();
     for (const s of list) {
-      const station = stationOf(s);
-      if (!map.has(station)) map.set(station, []);
-      map.get(station)!.push(s);
+      const sta = stationOf(s) || "Unknown";   // fallback nếu stationOf undefined
+      if (!map.has(sta)) map.set(sta, []);
+      map.get(sta)!.push(s);
     }
-    return stations
+
+    // Gom nhóm theo thứ tự stations, sau đó thêm các station không có trong danh sách gốc
+    const ordered = stations
       .filter((st) => map.has(st))
-      .map((st) => ({ station: st, items: map.get(st)!.sort((a, b) => b.latest_score - a.latest_score) }));
-  }, [payload, query, statusFilter, stations]);
+      .map((st) => ({
+        station: st,
+        items: map.get(st)!.sort((a, b) => b.latest_score - a.latest_score),
+      }));
+
+    // Thêm các station còn lại (nếu có)
+    for (const [sta, items] of map.entries()) {
+      if (!stations.includes(sta)) {
+        ordered.push({
+          station: sta,
+          items: items.sort((a, b) => b.latest_score - a.latest_score),
+        });
+      }
+    }
+
+    return ordered;
+  }, [payload, query, statusFilter, faultFilter, stations]);
 
   if (!payload) {
     return (
@@ -52,8 +84,8 @@ export default function FleetPage() {
       <div>
         <h1 className="text-2xl font-extrabold tracking-tight text-teal-900">Fleet Directory</h1>
         <p className="mt-1 text-sm text-teal-500">
-          {payload.dataset_summary.total_transformers} transformers across {stations.length} station
-          {stations.length === 1 ? "" : "s"}.
+          {payload.dataset_summary.total_transformers} transformers across{" "}
+          {stations.length} station{stations.length === 1 ? "" : "s"}.
         </p>
       </div>
 
@@ -67,16 +99,35 @@ export default function FleetPage() {
             className="h-10 w-full rounded-lg border border-teal-200 bg-white pl-9 pr-3 text-sm text-teal-900 outline-none focus:border-teal-500"
           />
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          <FilterChip active={statusFilter === "All"} onClick={() => setStatusFilter("All")} label="All" />
-          {STATUS_ORDER.map((status) => (
+
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={faultFilter}
+            onChange={(e) => setFaultFilter(e.target.value)}
+            className="h-10 rounded-lg border border-teal-200 bg-white px-3 text-sm text-teal-800 outline-none focus:border-teal-500"
+          >
+            {faultTypes.map((ft) => (
+              <option key={ft} value={ft}>
+                {ft === "All" ? "All Faults" : ft}
+              </option>
+            ))}
+          </select>
+
+          <div className="flex flex-wrap gap-1.5">
             <FilterChip
-              key={status}
-              active={statusFilter === status}
-              onClick={() => setStatusFilter(status)}
-              label={status === "High" ? "High Risk" : status}
+              active={statusFilter === "All"}
+              onClick={() => setStatusFilter("All")}
+              label="All"
             />
-          ))}
+            {STATUS_ORDER.map((status) => (
+              <FilterChip
+                key={status}
+                active={statusFilter === status}
+                onClick={() => setStatusFilter(status)}
+                label={status === "High" ? "High Risk" : status}
+              />
+            ))}
+          </div>
         </div>
       </div>
 
@@ -91,7 +142,9 @@ export default function FleetPage() {
           <section key={station}>
             <div className="mb-3 flex items-baseline gap-2">
               <h2 className="text-sm font-bold uppercase tracking-wide text-teal-600">{station}</h2>
-              <span className="text-xs text-teal-400">{items.length} unit{items.length === 1 ? "" : "s"}</span>
+              <span className="text-xs text-teal-400">
+                {items.length} unit{items.length === 1 ? "" : "s"}
+              </span>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {items.map((s) => (
@@ -111,7 +164,9 @@ function FilterChip({ active, onClick, label }: { active: boolean; onClick: () =
       onClick={onClick}
       className={cn(
         "rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer",
-        active ? "border-teal-800 bg-teal-800 text-white" : "border-teal-200 bg-white text-teal-600 hover:bg-teal-50"
+        active
+          ? "border-teal-800 bg-teal-800 text-white"
+          : "border-teal-200 bg-white text-teal-600 hover:bg-teal-50"
       )}
     >
       {label}

@@ -23,8 +23,8 @@ export default function AnalyticsPage() {
       ) : (
         <>
           <StatCards summaries={payload.transformer_summary} />
-          <RankingTable payload={payload} />
           <RiskLegend />
+          <RankingTable payload={payload} />
         </>
       )}
     </div>

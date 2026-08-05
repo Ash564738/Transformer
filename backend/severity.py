@@ -115,7 +115,7 @@ def get_fault_points(row: pd.Series) -> int:
     if fl == "MIXED":
         components = row.get("mixed_components", [])
         if components is None or (hasattr(components, '__len__') and len(components) == 0):
-            return cfg.SEVERITY_BY_GROUP.get("MIXED", 5)
+            return cfg.SEVERITY_BY_GROUP.get("MIXED", 1)  # => đổi 5 thành 1
         max_sev = 0
         for comp in components:
             sev = cfg.SEVERITY_BY_GROUP.get(comp, 1)

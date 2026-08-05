@@ -2,28 +2,39 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Bot, X, Info, Mic, Send, Trash2, ChevronDown, GripVertical } from "lucide-react";
+import { Bot, X, Info, Mic, Send, Trash2, ChevronDown, GripVertical, GripHorizontal } from "lucide-react";
 import { useDashboardStore } from "@/store/use-dashboard-store";
 import { cn } from "@/lib/utils";
 
 const SUGGESTIONS = [
-  "Which need attention now?",
+  "Which transformers are Critical right now?",
   "Why is this transformer flagged?",
-  "Pentagon 1 vs 2?",
-  "How is the ensemble score calculated?",
-  "Compare two transformers",
+  "What does acetylene (C₂H₂) indicate?",
+  "How is the severity score calculated?",
+  "Compare Duval Triangle and IEC 60599",
+  "Show me the H₂ and CO trend for the current transformer over the last 2 years.",
 ];
 
-const DEFAULT_WIDTH = 384; // 24rem, matches the panel's old fixed w-[24rem]
+const DEFAULT_WIDTH = 384;
+const DEFAULT_HEIGHT = 32 * 16; // 32rem in px (approx)
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 640;
+const MIN_HEIGHT = 300; // px
+const MAX_HEIGHT = 600; // px
 const WIDTH_STORAGE_KEY = "dga-chat-width";
+const HEIGHT_STORAGE_KEY = "dga-chat-height";
 const SUGGESTIONS_OPEN_STORAGE_KEY = "dga-chat-suggestions-open";
 
 function readStoredWidth(): number {
   if (typeof window === "undefined") return DEFAULT_WIDTH;
   const raw = Number(window.localStorage.getItem(WIDTH_STORAGE_KEY));
   return raw >= MIN_WIDTH && raw <= MAX_WIDTH ? raw : DEFAULT_WIDTH;
+}
+
+function readStoredHeight(): number {
+  if (typeof window === "undefined") return DEFAULT_HEIGHT;
+  const raw = Number(window.localStorage.getItem(HEIGHT_STORAGE_KEY));
+  return raw >= MIN_HEIGHT && raw <= MAX_HEIGHT ? raw : DEFAULT_HEIGHT;
 }
 
 function readStoredSuggestionsOpen(): boolean {
@@ -46,28 +57,30 @@ export function FloatingChat() {
   const [listening, setListening] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Lazy initializers, not an effect+setState: this panel only ever mounts
-  // client-side (it's inside `{open && ...}` and `open` starts false, so
-  // there's nothing rendered during SSR for a post-mount read to "fix up"
-  // — reading localStorage straight away is safe here.
   const [width, setWidth] = useState(readStoredWidth);
+  const [height, setHeight] = useState(readStoredHeight);
   const [resizing, setResizing] = useState(false);
-  const resizeStartRef = useRef<{ x: number; width: number } | null>(null);
+  const resizeStartRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
   const [suggestionsOpen, setSuggestionsOpen] = useState(readStoredSuggestionsOpen);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, sending]);
 
+  // Resize logic (cả chiều rộng và chiều cao)
   useEffect(() => {
     if (!resizing) return;
     function onMove(e: MouseEvent) {
       if (!resizeStartRef.current) return;
-      // Panel is anchored to the right edge, so dragging the left-edge
-      // handle further LEFT should make it wider.
-      const delta = resizeStartRef.current.x - e.clientX;
-      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, resizeStartRef.current.width + delta));
-      setWidth(next);
+      const { x: startX, y: startY, width: startW, height: startH } = resizeStartRef.current;
+      // Chiều rộng: kéo cạnh trái sang trái -> tăng width (vì panel neo phải)
+      const deltaX = startX - e.clientX;
+      const nextWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startW + deltaX));
+      setWidth(nextWidth);
+      // Chiều cao: kéo cạnh trên lên trên -> tăng height (vì panel neo dưới)
+      const deltaY = startY - e.clientY;
+      const nextHeight = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, startH + deltaY));
+      setHeight(nextHeight);
     }
     function onUp() {
       setResizing(false);
@@ -76,10 +89,14 @@ export function FloatingChat() {
         window.localStorage.setItem(WIDTH_STORAGE_KEY, String(w));
         return w;
       });
+      setHeight((h) => {
+        window.localStorage.setItem(HEIGHT_STORAGE_KEY, String(h));
+        return h;
+      });
     }
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
-    document.body.style.cursor = "ew-resize";
+    document.body.style.cursor = "nw-resize"; // thay đổi con trỏ
     document.body.style.userSelect = "none";
     return () => {
       window.removeEventListener("mousemove", onMove);
@@ -155,12 +172,13 @@ export function FloatingChat() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 24, scale: 0.97 }}
             transition={resizing ? { duration: 0 } : { type: "spring", damping: 26, stiffness: 300 }}
-            style={{ width }}
-            className="fixed bottom-24 right-6 z-50 flex h-[32rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-teal-800/10 bg-white shadow-2xl"
+            style={{ width, height }}
+            className="fixed bottom-24 right-6 z-50 flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-teal-800/10 bg-white shadow-2xl"
           >
+            {/* Handle resize cạnh trái (chiều rộng) */}
             <div
               onMouseDown={(e) => {
-                resizeStartRef.current = { x: e.clientX, width };
+                resizeStartRef.current = { x: e.clientX, y: e.clientY, width, height };
                 setResizing(true);
               }}
               className={cn(
@@ -170,6 +188,21 @@ export function FloatingChat() {
               aria-hidden
             >
               <GripVertical className="h-4 w-4 text-teal-800/0 group-hover:text-teal-800/40" />
+            </div>
+
+            {/* Handle resize cạnh trên (chiều cao) */}
+            <div
+              onMouseDown={(e) => {
+                resizeStartRef.current = { x: e.clientX, y: e.clientY, width, height };
+                setResizing(true);
+              }}
+              className={cn(
+                "group absolute left-0 right-0 top-0 z-10 flex h-2 cursor-n-resize items-center justify-center hover:bg-teal-500/15",
+                resizing && "bg-teal-500/20"
+              )}
+              aria-hidden
+            >
+              <GripHorizontal className="h-4 w-4 text-teal-800/0 group-hover:text-teal-800/40 rotate-90" />
             </div>
 
             <div className="flex items-start justify-between gap-3 bg-gradient-to-b from-teal-900 to-teal-800 px-4 py-3.5 text-white">

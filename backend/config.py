@@ -4,13 +4,15 @@ from typing import Dict, List
 
 @dataclass
 class DiagnosticConfig:
-    # Fault grouping
+    # --------------------------------------------------------
+    # Fault grouping – ánh xạ nhãn chi tiết → nhóm lớn
+    # --------------------------------------------------------
     FAULT_GROUPS: Dict[str, str] = field(default_factory=lambda: {
         "NORMAL": "NORMAL",
         "PD": "DISCHARGE",
         "D1": "DISCHARGE",
         "D2": "DISCHARGE",
-        "DT": "MIXED",
+        "DT": "MIXED",               # DT → MIXED, nhưng logic vote sẽ bổ sung cả THERMAL & DISCHARGE
         "T1": "THERMAL",
         "T2": "THERMAL",
         "T3": "THERMAL",
@@ -24,21 +26,25 @@ class DiagnosticConfig:
         "MIXED": "MIXED"
     })
 
-    # Method weights for consensus
+    # --------------------------------------------------------
+    # Method weights for consensus – tạm thời đặt tất cả = 1.0
+    # vì Snorkel sẽ tự học trọng số. Nếu không dùng Snorkel,
+    # có thể điều chỉnh sau khi có đánh giá từ chuyên gia.
+    # --------------------------------------------------------
     METHOD_WEIGHTS: Dict[str, float] = field(default_factory=lambda: {
-        "duval_pentagon_p2_fault": 2.0,
-        "duval_pentagon_p1_fault": 1.8,
-        "duval_triangle_fault": 1.5,
-        "iec_fault": 1.3,
-        "rogers_fault": 1.1,
+        "duval_pentagon_p2_fault": 1.0,
+        "duval_pentagon_p1_fault": 1.0,
+        "duval_triangle_fault": 1.0,
+        "iec_fault": 1.0,
+        "rogers_fault": 1.0,
         "doernenburg_fault": 1.0,
-        "keygas_fault": 1.2,
+        "keygas_fault": 1.0,
     })
 
     MIXED_THRESHOLD: float = 0.65
     MIN_SECOND_GROUP_WEIGHT_RATIO: float = 0.3
 
-    # Severity thresholds per gas [Level1, Level2, Level3]
+    # Severity thresholds per gas – dựa trên IEEE C57.104 / IEC 60599
     SEVERITY_GAS_THRESHOLDS: Dict[str, List[float]] = field(default_factory=lambda: {
         "h2": [100, 500, 1000],
         "ch4": [120, 400, 1000],
@@ -60,21 +66,16 @@ class DiagnosticConfig:
 
     SEVERITY_CLASS_BOUNDARIES: List[float] = field(default_factory=lambda: [4, 8, 13])
 
+    # --------------------------------------------------------
+    # Fault severity points – TẠM THỜI, cần hiệu chỉnh
+    # --------------------------------------------------------
     FAULT_SEVERITY_POINTS: Dict[str, int] = field(default_factory=lambda: {
         "NORMAL": 0,
-        "PD": 2,
-        "D1": 3,
-        "D2": 5,
-        "DT": 5,
-        "T1": 2,
-        "T2": 3,
-        "T3": 5,
-        "T3_H": 5,
-        "THERMAL_OIL": 3,
-        "THERMAL_CELLULOSE": 4,
-        "C": 5,
-        "O": 2,
-        "S": 1,
+        "PD": 2, "D1": 3, "D2": 5,
+        "DT": 5,   # vẫn giữ 5 vì DT đã được tách thành 2 nhóm trong quá trình vote
+        "T1": 2, "T2": 3, "T3": 5, "T3_H": 5,
+        "THERMAL_OIL": 3, "THERMAL_CELLULOSE": 4,
+        "C": 5, "O": 2, "S": 1,
         "ABSTAIN": 1,
         "MIXED": 5
     })
@@ -115,25 +116,15 @@ class DiagnosticConfig:
         "NORMAL": "Low"
     })
     SEVERITY_ACCENT: Dict[str, str] = field(default_factory=lambda: {
-        "Severe": "red",
-        "Moderate": "amber",
-        "Low": "green"
+        "Severe": "red", "Moderate": "amber", "Low": "green"
     })
 
     # DGA L1 limits
     L1_LIMITS: Dict[str, int] = field(default_factory=lambda: {
-        "h2": 100,
-        "ch4": 120,
-        "c2h2": 1,
-        "c2h4": 50,
-        "c2h6": 65
+        "h2": 100, "ch4": 120, "c2h2": 1, "c2h4": 50, "c2h6": 65
     })
     L1_DOERNENBURG: Dict[str, int] = field(default_factory=lambda: {
-        "h2": 100,
-        "ch4": 120,
-        "c2h2": 35,
-        "c2h4": 50,
-        "c2h6": 65
+        "h2": 100, "ch4": 120, "c2h2": 35, "c2h4": 50, "c2h6": 65
     })
     MIN_TDCG: float = 100.0
 
