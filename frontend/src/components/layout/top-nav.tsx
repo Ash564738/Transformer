@@ -12,6 +12,7 @@ const NAV_LINKS = [
   { href: "/", label: "Overview" },
   { href: "/analytics", label: "Analytics" },
   { href: "/fleet", label: "Fleet" },
+  { href: "/experiments", label: "Experiments" },
 ];
 
 export function TopNav({ onOpenDataPanel }: { onOpenDataPanel: () => void }) {

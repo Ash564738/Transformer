@@ -2,29 +2,28 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Iterable, List
 
 import numpy as np
 import pandas as pd
-from config import BACKEND_DATA_DIR
-
+from config import DATASET_DIR, DATABASE_DIR, MODEL_DIR, REPORT_DIR
+from logging_config import init_logging
+# ── Logger setup ──
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # Paths
 # ============================================================
-
-DATA_DIR = Path(BACKEND_DATA_DIR)
-INPUT_PATH = DATA_DIR / "dga_clean.parquet"
-OUTPUT_PATH = DATA_DIR / "dga_features.parquet"
-FEATURE_META_PATH = DATA_DIR / "dga_feature_columns.json"
-
+INPUT_PATH = DATASET_DIR / "processed" / "dga_clean.parquet"
+OUTPUT_PATH = DATASET_DIR / "processed" / "dga_features.parquet"
+FEATURE_META_PATH = DATASET_DIR / "processed" / "dga_feature_columns.json"
 
 # ============================================================
 # Config
 # ============================================================
-
 CORE_GASES = ["h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2"]
 OPTIONAL_NUMERIC = ["o2", "n2", "water", "temp"]
 ROLL_WINDOWS = [3, 5]
@@ -173,67 +172,75 @@ def rating_stats_series(s: pd.Series, prefix: str) -> pd.DataFrame:
     )
 
 # ============================================================
-# Core preprocessing (giữ nguyên)
+# Feature engineering functions – each now logs its output
 # ============================================================
 def preprocess_types(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Preprocessing data types and dates...")
     out = df.copy()
-    out["sample_day"] = coerce_datetime(out["sample_day"])
+    out["sample_day"] = pd.to_datetime(out["sample_day"], errors="coerce")
     out = out[out["sample_day"].notna()].copy()
     numeric_cols = CORE_GASES + OPTIONAL_NUMERIC + ["tdcg_raw", "year_energized"]
     for col in numeric_cols:
         if col in out.columns:
-            out[col] = coerce_numeric(out[col])
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    logger.debug("Preprocessing done: %d rows remain", len(out))
     return out
 
 def sort_and_deduplicate(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Sorting and deduplicating by transformer and date...")
     out = df.copy()
     out = out[out["transformer_id"].notna()].copy()
     out = out.sort_values(["transformer_id", "sample_day"]).drop_duplicates(
         subset=["transformer_id", "sample_day"], keep="last"
     ).reset_index(drop=True)
+    logger.debug("Deduplicated: %d rows", len(out))
     return out
 
 def filter_rows_for_model(df: pd.DataFrame, max_missing_core: int = 3) -> pd.DataFrame:
+    logger.info("Filtering rows with too many missing core gas values...")
     out = df.copy()
     out = out[out["transformer_id"].notna() & out["sample_day"].notna()].copy()
     core_missing_count = out[CORE_GASES].isna().sum(axis=1)
     out = out[core_missing_count <= max_missing_core].copy()
+    logger.debug("Rows after filtering: %d (dropped %d)", len(out), len(df)-len(out))
     return out
 
 def impute_optional_context_by_transformer(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Imputing optional context columns (o2, n2, year_energized) within each transformer...")
     out = df.copy()
     fill_cols = [c for c in ["o2", "n2", "year_energized"] if c in out.columns]
     if not fill_cols:
+        logger.debug("No optional columns to impute.")
         return out
     for col in fill_cols:
         out[col] = out.groupby("transformer_id", sort=False)[col].transform(lambda s: s.ffill().bfill())
+    logger.debug("Imputation complete.")
     return out
 
 def add_missingness_flags(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:
+    logger.info("Creating missingness indicator flags for: %s", list(cols))
     out = df.copy()
     for col in cols:
         if col in out.columns and f"{col}_missing" not in out.columns:
             out[f"{col}_missing"] = out[col].isna().astype("int8")
+    logger.debug("Missingness flags added: %d new columns", len([c for c in out.columns if c.endswith("_missing")]))
     return out
 
-# ============================================================
-# NEW: Extract weak ground truth from NB
-# ============================================================
 def add_nb_event_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Thêm has_event và event_type từ cột nb (đã làm sạch)."""
+    logger.info("Extracting event flags from NB notes...")
     out = df.copy()
     if "nb" not in out.columns:
         out["has_event"] = False
         out["event_type"] = "No NB"
+        logger.debug("No NB column found; event columns set to defaults.")
     else:
         out["has_event"] = out["nb"].apply(has_event)
         out["event_type"] = out["nb"].apply(classify_event)
+        logger.debug("Event flags extracted: %d events found", out["has_event"].sum())
     return out
 
-# ============================================================
-# Feature blocks (giữ nguyên)
-# ============================================================
 def add_tdcg(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Calculating Total Dissolved Combustible Gases (TDCG)...")
     out = df.copy()
     combustible = ["h2", "ch4", "c2h6", "c2h4", "c2h2", "co"]
     out["tdcg_recalc"] = out[combustible].sum(axis=1, min_count=1)
@@ -243,9 +250,11 @@ def add_tdcg(df: pd.DataFrame) -> pd.DataFrame:
         out["tdcg_raw"] = np.nan
         out["tdcg"] = out["tdcg_recalc"]
     out["tdcg_source"] = np.where(out["tdcg_raw"].notna(), "raw", "recalc")
+    logger.debug("TDCG computed (mean=%.1f)", out["tdcg"].mean())
     return out
 
 def add_rating_features(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Extracting rating features (MVA, KV)...")
     out = df.copy()
     if "mva" in out.columns:
         mva_stats = rating_stats_series(out["mva"], "mva")
@@ -253,16 +262,20 @@ def add_rating_features(df: pd.DataFrame) -> pd.DataFrame:
     if "kv" in out.columns:
         kv_stats = rating_stats_series(out["kv"], "kv")
         out = pd.concat([out, kv_stats], axis=1)
+    logger.debug("Rating features added: %d new columns", len(mva_stats.columns)+len(kv_stats.columns) if ("mva" in out.columns and "kv" in out.columns) else 0)
     return out
 
 def add_metadata_features(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Adding metadata features (transformer age)...")
     out = df.copy()
     if "year_energized" in out.columns:
         out["transformer_age"] = out["sample_day"].dt.year - out["year_energized"]
         out.loc[out["transformer_age"] < 0, "transformer_age"] = np.nan
+    logger.debug("Metadata features complete.")
     return out
 
 def add_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Calculating gas ratios (CH4/H2, C2H2/C2H4, ...)...")
     out = df.copy()
     out["ratio_ch4_h2"] = safe_div(out["ch4"], out["h2"])
     out["ratio_c2h2_c2h4"] = safe_div(out["c2h2"], out["c2h4"])
@@ -280,9 +293,11 @@ def add_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
     out["ratio_co_tdcg"] = safe_div(out["co"], out["tdcg"])
     for col in CORE_GASES + ["tdcg"]:
         out[f"log1p_{col}"] = np.log1p(out[col].clip(lower=0))
+    logger.debug("Ratio and log features added: %d new columns", 14 + len(CORE_GASES)+1)  # approximate
     return out
 
 def add_duval_input_features(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Creating Duval Triangle & Pentagon input features...")
     out = df.copy()
     tri_sum = out[["ch4", "c2h4", "c2h2"]].sum(axis=1, min_count=1)
     out["duval1_sum"] = tri_sum
@@ -293,9 +308,11 @@ def add_duval_input_features(df: pd.DataFrame) -> pd.DataFrame:
     out["duval_pent_sum"] = pent_sum
     for g in ["h2", "ch4", "c2h6", "c2h4", "c2h2"]:
         out[f"duval_pent_pct_{g}"] = safe_div(out[g] * 100.0, pent_sum)
+    logger.debug("Duval features added.")
     return out
 
 def add_calendar_and_sequence_features(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Creating calendar and sequence features...")
     out = df.copy()
     out["sample_year"] = out["sample_day"].dt.year
     out["sample_month"] = out["sample_day"].dt.month
@@ -307,9 +324,11 @@ def add_calendar_and_sequence_features(df: pd.DataFrame) -> pd.DataFrame:
     out["days_since_first_sample"] = (out["sample_day"] - first_date).dt.days.astype(float)
     prev_date = out.groupby("transformer_id")["sample_day"].shift(1)
     out["days_since_prev"] = (out["sample_day"] - prev_date).dt.days.astype(float)
+    logger.debug("Sequence features added.")
     return out
 
 def add_lag_delta_rate_features(df: pd.DataFrame, value_cols: List[str]) -> pd.DataFrame:
+    logger.info("Adding lag, delta, and rate-of-change features for %d columns...", len(value_cols))
     out = df.copy()
     g = out.groupby("transformer_id", sort=False)
     for col in value_cols:
@@ -321,9 +340,11 @@ def add_lag_delta_rate_features(df: pd.DataFrame, value_cols: List[str]) -> pd.D
         out[f"{col}_delta2"] = out[col] - out[f"{col}_lag2"]
         days_lag2 = (out["sample_day"] - g["sample_day"].shift(2)).dt.days.astype(float)
         out[f"{col}_rate_per_day_lag2"] = safe_div(out[f"{col}_delta2"], days_lag2)
+    logger.debug("Lag/delta/rate features added.")
     return out
 
 def add_rolling_features(df: pd.DataFrame, value_cols: List[str]) -> pd.DataFrame:
+    logger.info("Adding rolling-window statistics (window sizes %s)...", ROLL_WINDOWS)
     out = df.copy()
     new_cols = {}
     for col in value_cols:
@@ -349,9 +370,11 @@ def add_rolling_features(df: pd.DataFrame, value_cols: List[str]) -> pd.DataFram
             new_cols[f"{col}_roll{w}_slope"] = slope_s
     if new_cols:
         out = pd.concat([out, pd.DataFrame(new_cols, index=out.index)], axis=1)
+    logger.debug("Rolling features added: %d new columns", len(new_cols))
     return out
 
 def add_ewm_features(df: pd.DataFrame, value_cols: List[str]) -> pd.DataFrame:
+    logger.info("Adding exponentially weighted moving averages (spans %s)...", EWMA_SPANS)
     out = df.copy()
     for col in value_cols:
         hist = out.groupby("transformer_id", sort=False)[col].shift(1)
@@ -362,9 +385,11 @@ def add_ewm_features(df: pd.DataFrame, value_cols: List[str]) -> pd.DataFrame:
             )
             out[f"{col}_ewm{span}"] = ewm_col
             out[f"{col}_vs_ewm{span}"] = out[col] - out[f"{col}_ewm{span}"]
+    logger.debug("EWM features added.")
     return out
 
 def add_cross_gas_trend_features(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Adding cross-gas trend features...")
     out = df.copy()
     core_delta_cols_all = [f"{c}_delta1" for c in CORE_GASES if f"{c}_delta1" in out.columns]
     if core_delta_cols_all:
@@ -377,9 +402,11 @@ def add_cross_gas_trend_features(df: pd.DataFrame) -> pd.DataFrame:
         out["discharge_gas_index"] = out["h2"] + out["c2h2"]
         out["thermal_gas_index"] = out["c2h4"] + out["ch4"] + out["c2h6"]
         out["discharge_to_thermal"] = safe_div(out["discharge_gas_index"], out["thermal_gas_index"])
+    logger.debug("Cross-gas trends added.")
     return out
 
 def add_quality_flags(df: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Adding data quality flags...")
     out = df.copy()
     out["is_first_record"] = (out["record_idx"] == 0).astype("int8")
     out["has_prev_record"] = (out["record_idx"] > 0).astype("int8")
@@ -388,60 +415,55 @@ def add_quality_flags(df: pd.DataFrame) -> pd.DataFrame:
     if "ratio_co2_co" in out.columns:
         out["low_co2_co_flag"] = (out["ratio_co2_co"] < 3).fillna(False).astype("int8")
         out["high_co2_co_flag"] = (out["ratio_co2_co"] > 10).fillna(False).astype("int8")
+    logger.debug("Quality flags added.")
     return out
 
 # ============================================================
-# Main
+# Main pipeline
 # ============================================================
-from logging_config import init_logging
-init_logging()
-import logging
-logger = logging.getLogger(__name__)
-
 def main():
     if not INPUT_PATH.exists():
-        raise FileNotFoundError(f"Không tìm thấy file input: {INPUT_PATH}")
+        raise FileNotFoundError(f"Input file not found: {INPUT_PATH}")
 
-    logger.info(f"[INFO] Reading {INPUT_PATH}")
+    logger.info("Starting feature engineering on %s", INPUT_PATH)
     df = pd.read_parquet(INPUT_PATH)
 
     ensure_required_columns(df)
 
-    logger.info("[INFO] Preprocessing dtypes")
+    logger.info("Preprocessing data types")
     df = preprocess_types(df)
 
-    logger.info("[INFO] Sorting and deduplicating")
+    logger.info("Sorting and deduplicating")
     df = sort_and_deduplicate(df)
 
-    logger.info("[INFO] Filtering bad rows")
+    logger.info("Filtering rows with excessive missing core gases")
     df = filter_rows_for_model(df, max_missing_core=3)
 
-    # --- Thêm weak ground truth từ NB (phải làm trước imputation để giữ nguyên text) ---
-    logger.info("[INFO] Extracting event flags from NB column")
+    logger.info("Extracting event flags from NB notes")
     df = add_nb_event_features(df)
 
-    logger.info("[INFO] Adding missing flags BEFORE imputation")
-    df = add_missingness_flags(df, OPTIONAL_NUMERIC + ["year_energized", "tdcg_raw"]) 
+    logger.info("Adding missingness flags before imputation")
+    df = add_missingness_flags(df, OPTIONAL_NUMERIC + ["year_energized", "tdcg_raw"])
 
-    logger.info("[INFO] Imputing optional context columns by transformer")
+    logger.info("Imputing optional context columns by transformer")
     df = impute_optional_context_by_transformer(df)
 
-    logger.info("[INFO] Creating TDCG")
+    logger.info("Calculating TDCG")
     df = add_tdcg(df)
 
-    logger.info("[INFO] Adding rating features")
+    logger.info("Extracting rating features")
     df = add_rating_features(df)
 
-    logger.info("[INFO] Adding metadata features")
+    logger.info("Adding metadata (transformer age)")
     df = add_metadata_features(df)
 
-    logger.info("[INFO] Adding ratio features")
+    logger.info("Calculating gas ratios and logarithms")
     df = add_ratio_features(df)
 
-    logger.info("[INFO] Adding Duval input features")
+    logger.info("Creating Duval Triangle/Pentagon input features")
     df = add_duval_input_features(df)
 
-    logger.info("[INFO] Adding calendar/sequence features")
+    logger.info("Adding calendar and sequence features")
     df = add_calendar_and_sequence_features(df)
 
     temporal_value_cols = [c for c in CORE_GASES + ["tdcg"] if c in df.columns]
@@ -449,19 +471,19 @@ def main():
         if c in df.columns:
             temporal_value_cols.append(c)
 
-    logger.info("[INFO] Adding lag/delta/rate features")
+    logger.info("Adding lag, delta, and rate-of-change features")
     df = add_lag_delta_rate_features(df, temporal_value_cols)
 
-    logger.info("[INFO] Adding rolling features")
+    logger.info("Adding rolling-window features")
     df = add_rolling_features(df, temporal_value_cols)
 
-    logger.info("[INFO] Adding EWMA features")
+    logger.info("Adding EWM features")
     df = add_ewm_features(df, temporal_value_cols)
 
-    logger.info("[INFO] Adding cross-gas trend features")
+    logger.info("Adding cross-gas trend features")
     df = add_cross_gas_trend_features(df)
 
-    logger.info("[INFO] Adding quality flags")
+    logger.info("Adding quality flags")
     df = add_quality_flags(df)
 
     df = df.sort_values(["transformer_id", "sample_day"]).reset_index(drop=True)
@@ -484,7 +506,7 @@ def main():
         "roll_windows": ROLL_WINDOWS,
         "ewma_spans": EWMA_SPANS,
         "lag_steps": LAG_STEPS,
-        "weak_label_columns": ["has_event", "event_type"],   # đánh dấu đây là nhãn yếu
+        "weak_label_columns": ["has_event", "event_type"],
         "notes": {
             "tdcg_raw_kept": True,
             "tdcg_final_prefers_raw_else_recalc": True,
@@ -496,39 +518,39 @@ def main():
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"[INFO] Writing {OUTPUT_PATH}")
+    logger.info("Saving feature set to %s", OUTPUT_PATH)
     df.to_parquet(OUTPUT_PATH, index=False)
 
-    logger.info(f"[INFO] Writing {FEATURE_META_PATH}")
+    logger.info("Writing feature metadata to %s", FEATURE_META_PATH)
     with open(FEATURE_META_PATH, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
     logger.info("=" * 80)
-    logger.info("[DONE] Feature build complete")
-    logger.info(f"Rows: {len(df):,}")
-    logger.info(f"Transformers: {df['transformer_id'].nunique():,}")
-    logger.info(f"Columns: {len(df.columns):,}")
-    logger.info(f"Saved features to: {OUTPUT_PATH}")
-    logger.info(f"Saved feature registry to: {FEATURE_META_PATH}")
+    logger.info("FEATURE ENGINEERING COMPLETE")
+    logger.info("Rows: %d", len(df))
+    logger.info("Unique transformers: %d", df["transformer_id"].nunique())
+    logger.info("Total columns: %d", len(df.columns))
+    logger.info("Output: %s", OUTPUT_PATH)
+    logger.info("Metadata: %s", FEATURE_META_PATH)
     logger.info("=" * 80)
 
-    preview_cols = [
-        c for c in [
-            "transformer_id", "sample_day",
-            "h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2",
-            "tdcg_raw", "tdcg_recalc", "tdcg",
-            "water", "temp",
-            "ratio_ch4_h2", "ratio_c2h2_c2h4", "ratio_c2h4_c2h6", "ratio_co2_co",
-            "h2_delta1", "tdcg_delta1", "h2_rate_per_day", "tdcg_rate_per_day",
-            "h2_roll3_mean", "tdcg_roll3_mean",
-            "num_gases_increasing",
-            "transformer_age",
-            "mva_mean", "kv_mean",
-            "has_event", "event_type"  # thêm vào preview
-        ] if c in df.columns
-    ]
-    logger.debug(df[preview_cols].head(10).to_string(index=False))
+    preview_cols = [c for c in [
+        "transformer_id", "sample_day",
+        "h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2",
+        "tdcg_raw", "tdcg_recalc", "tdcg",
+        "water", "temp",
+        "ratio_ch4_h2", "ratio_c2h2_c2h4", "ratio_c2h4_c2h6", "ratio_co2_co",
+        "h2_delta1", "tdcg_delta1", "h2_rate_per_day", "tdcg_rate_per_day",
+        "h2_roll3_mean", "tdcg_roll3_mean",
+        "num_gases_increasing",
+        "transformer_age",
+        "mva_mean", "kv_mean",
+        "has_event", "event_type"
+    ] if c in df.columns]
+    if preview_cols:
+        logger.debug("Preview of first 10 rows:\n" + df[preview_cols].head(10).to_string(index=False))
 
 
 if __name__ == "__main__":
+    init_logging()  # ensure log configuration
     main()

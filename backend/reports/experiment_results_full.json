@@ -1,0 +1,260 @@
+{
+  "tdcg": {
+    "Precision@K": 0.02412280701754386,
+    "Recall@K": 0.5474599961442067,
+    "Lift": 1.0918270182034033,
+    "GIC": 1.0,
+    "Stability": 1.0,
+    "Spearman": 1.0,
+    "TC": 1.0,
+    "Precision_CI_low": 0.02017543859649123,
+    "Precision_CI_high": 0.02807017543859649,
+    "Posthoc": {
+      "keygas_fault": {
+        "Top-20": 100.0,
+        "Top-50": 100.0,
+        "Top-100": 100.0
+      },
+      "iec_fault": {
+        "Top-20": 34.0,
+        "Top-50": 32.0,
+        "Top-100": 28.2
+      },
+      "rogers_fault": {
+        "Top-20": 24.0,
+        "Top-50": 18.4,
+        "Top-100": 12.4
+      },
+      "doernenburg_fault": {
+        "Top-20": 14.0,
+        "Top-50": 6.8,
+        "Top-100": 4.0
+      },
+      "duval_triangle_fault": {
+        "Top-20": 100.0,
+        "Top-50": 98.8,
+        "Top-100": 97.8
+      },
+      "duval_pentagon_fault": {
+        "Top-20": 99.0,
+        "Top-50": 98.4,
+        "Top-100": 97.0
+      }
+    }
+  },
+  "iforest": {
+    "Precision@K": 0.027192982456140352,
+    "Recall@K": 0.6038244650086755,
+    "Lift": 1.2042526134414984,
+    "GIC": 0.63,
+    "Stability": 0.794267219788788,
+    "Spearman": 0.9109406798166078,
+    "TC": 0.48801305656225685,
+    "Precision_CI_low": 0.022807017543859647,
+    "Precision_CI_high": 0.03114035087719298,
+    "Posthoc": {
+      "keygas_fault": {
+        "Top-20": 52.0,
+        "Top-50": 48.8,
+        "Top-100": 56.6
+      },
+      "iec_fault": {
+        "Top-20": 36.0,
+        "Top-50": 35.6,
+        "Top-100": 40.6
+      },
+      "rogers_fault": {
+        "Top-20": 25.0,
+        "Top-50": 26.0,
+        "Top-100": 22.6
+      },
+      "doernenburg_fault": {
+        "Top-20": 22.0,
+        "Top-50": 10.0,
+        "Top-100": 5.0
+      },
+      "duval_triangle_fault": {
+        "Top-20": 80.0,
+        "Top-50": 75.6,
+        "Top-100": 80.6
+      },
+      "duval_pentagon_fault": {
+        "Top-20": 74.0,
+        "Top-50": 70.8,
+        "Top-100": 78.2
+      }
+    }
+  },
+  "lof": {
+    "Precision@K": 0.02675438596491228,
+    "Recall@K": 0.5894616348563717,
+    "Lift": 1.1755690624587785,
+    "GIC": 0.623,
+    "Stability": 0.5983500510651913,
+    "Spearman": 0.7045278396032653,
+    "TC": 0.5128796497454636,
+    "Precision_CI_low": 0.022368421052631583,
+    "Precision_CI_high": 0.031578947368421054,
+    "Posthoc": {
+      "keygas_fault": {
+        "Top-20": 78.0,
+        "Top-50": 71.6,
+        "Top-100": 69.6
+      },
+      "iec_fault": {
+        "Top-20": 52.0,
+        "Top-50": 44.0,
+        "Top-100": 40.4
+      },
+      "rogers_fault": {
+        "Top-20": 33.0,
+        "Top-50": 21.2,
+        "Top-100": 15.0
+      },
+      "doernenburg_fault": {
+        "Top-20": 13.0,
+        "Top-50": 6.0,
+        "Top-100": 3.4
+      },
+      "duval_triangle_fault": {
+        "Top-20": 90.0,
+        "Top-50": 93.2,
+        "Top-100": 93.6
+      },
+      "duval_pentagon_fault": {
+        "Top-20": 91.0,
+        "Top-50": 92.0,
+        "Top-100": 93.8
+      }
+    }
+  },
+  "ocsvm": {
+    "Precision@K": 0.02631578947368421,
+    "Recall@K": 0.5829453441295547,
+    "Lift": 1.1626486034164358,
+    "GIC": 0.779,
+    "Stability": 0.778480312837109,
+    "Spearman": 0.9047185674704169,
+    "TC": 0.4850426428108041,
+    "Precision_CI_low": 0.02149122807017544,
+    "Precision_CI_high": 0.03114035087719298,
+    "Posthoc": {
+      "keygas_fault": {
+        "Top-20": 72.0,
+        "Top-50": 66.4,
+        "Top-100": 66.2
+      },
+      "iec_fault": {
+        "Top-20": 47.0,
+        "Top-50": 44.4,
+        "Top-100": 40.6
+      },
+      "rogers_fault": {
+        "Top-20": 34.0,
+        "Top-50": 32.8,
+        "Top-100": 21.2
+      },
+      "doernenburg_fault": {
+        "Top-20": 23.0,
+        "Top-50": 9.6,
+        "Top-100": 5.0
+      },
+      "duval_triangle_fault": {
+        "Top-20": 91.0,
+        "Top-50": 86.8,
+        "Top-100": 83.6
+      },
+      "duval_pentagon_fault": {
+        "Top-20": 90.0,
+        "Top-50": 84.0,
+        "Top-100": 82.2
+      }
+    }
+  },
+  "autoencoder": {
+    "Precision@K": 0.023684210526315787,
+    "Recall@K": 0.5243107769423558,
+    "Lift": 1.0456222793826673,
+    "GIC": 0.68,
+    "Stability": 0.6555813767916779,
+    "Spearman": 0.7969336130407026,
+    "TC": 0.5058045412054998,
+    "Precision_CI_low": 0.019298245614035085,
+    "Precision_CI_high": 0.02807017543859649,
+    "Posthoc": {
+      "keygas_fault": {
+        "Top-20": 83.0,
+        "Top-50": 74.4,
+        "Top-100": 71.0
+      },
+      "iec_fault": {
+        "Top-20": 56.0,
+        "Top-50": 52.4,
+        "Top-100": 45.2
+      },
+      "rogers_fault": {
+        "Top-20": 41.0,
+        "Top-50": 30.8,
+        "Top-100": 22.6
+      },
+      "doernenburg_fault": {
+        "Top-20": 8.0,
+        "Top-50": 7.2,
+        "Top-100": 4.4
+      },
+      "duval_triangle_fault": {
+        "Top-20": 95.0,
+        "Top-50": 92.0,
+        "Top-100": 90.4
+      },
+      "duval_pentagon_fault": {
+        "Top-20": 95.0,
+        "Top-50": 89.6,
+        "Top-100": 89.4
+      }
+    }
+  },
+  "ensemble": {
+    "Precision@K": 0.026754385964912274,
+    "Recall@K": 0.5931559668401774,
+    "Lift": 1.1829689354966362,
+    "GIC": 0.6759999999999999,
+    "Stability": 0.8549527077845809,
+    "Spearman": 0.9587456298704031,
+    "TC": 0.4884991992930118,
+    "Precision_CI_low": 0.02149122807017544,
+    "Precision_CI_high": 0.030701754385964907,
+    "Posthoc": {
+      "keygas_fault": {
+        "Top-20": 71.0,
+        "Top-50": 72.0,
+        "Top-100": 71.8
+      },
+      "iec_fault": {
+        "Top-20": 48.0,
+        "Top-50": 48.4,
+        "Top-100": 45.4
+      },
+      "rogers_fault": {
+        "Top-20": 45.0,
+        "Top-50": 32.4,
+        "Top-100": 22.6
+      },
+      "doernenburg_fault": {
+        "Top-20": 17.0,
+        "Top-50": 8.8,
+        "Top-100": 4.8
+      },
+      "duval_triangle_fault": {
+        "Top-20": 88.0,
+        "Top-50": 89.6,
+        "Top-100": 89.4
+      },
+      "duval_pentagon_fault": {
+        "Top-20": 87.0,
+        "Top-50": 89.6,
+        "Top-100": 89.4
+      }
+    }
+  }
+}

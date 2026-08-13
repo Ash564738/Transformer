@@ -42,13 +42,48 @@ const FAULT_EXPLANATIONS: Record<string, string> = {
   NORMAL: "Normal",
 };
 
+function polygonCentroid(points: [number, number][]) {
+  let area = 0;
+  let cx = 0;
+  let cy = 0;
+  const n = points.length;
+
+  for (let i = 0; i < n; i++) {
+    const [x0, y0] = points[i];
+    const [x1, y1] = points[(i + 1) % n];
+    const cross = x0 * y1 - x1 * y0;
+
+    area += cross;
+    cx += (x0 + x1) * cross;
+    cy += (y0 + y1) * cross;
+  }
+
+  area *= 0.5;
+  cx /= 6 * area;
+  cy /= 6 * area;
+
+  return { x: cx, y: cy };
+}
+
 function centroid(h2: number, ch4: number, c2h6: number, c2h4: number, c2h2: number) {
   const total = h2 + ch4 + c2h6 + c2h4 + c2h2;
   if (total <= 0) return null;
-  const p = [h2 / total, c2h2 / total, c2h4 / total, ch4 / total, c2h6 / total];
-  const x = p[0] * V.H2[0] + p[1] * V.C2H2[0] + p[2] * V.C2H4[0] + p[3] * V.CH4[0] + p[4] * V.C2H6[0];
-  const y = p[0] * V.H2[1] + p[1] * V.C2H2[1] + p[2] * V.C2H4[1] + p[3] * V.CH4[1] + p[4] * V.C2H6[1];
-  return { x, y };
+
+  const fH2 = h2 / total;
+  const fC2H6 = c2h6 / total;
+  const fCH4 = ch4 / total;
+  const fC2H4 = c2h4 / total;
+  const fC2H2 = c2h2 / total;
+
+  const points: [number, number][] = [
+    [fH2 * V.H2[0], fH2 * V.H2[1]],
+    [fC2H6 * V.C2H6[0], fC2H6 * V.C2H6[1]],
+    [fCH4 * V.CH4[0], fCH4 * V.CH4[1]],
+    [fC2H4 * V.C2H4[0], fC2H4 * V.C2H4[1]],
+    [fC2H2 * V.C2H2[0], fC2H2 * V.C2H2[1]],
+  ];
+
+  return polygonCentroid(points);
 }
 
 function pointInPolygon(p: { x: number; y: number }, poly: [number, number][]) {

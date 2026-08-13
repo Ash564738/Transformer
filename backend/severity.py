@@ -7,6 +7,7 @@ from config import config as cfg
 logger = logging.getLogger(__name__)
 
 def score_by_threshold(value: float, thresholds: list) -> int:
+    """Điểm 0-3 dựa trên ngưỡng IEEE."""
     if pd.isna(value) or value < 0:
         return 0
     for i, thr in enumerate(thresholds):
@@ -15,6 +16,7 @@ def score_by_threshold(value: float, thresholds: list) -> int:
     return 3
 
 def compute_gas_level_score(row: pd.Series) -> int:
+    """Tổng điểm vượt ngưỡng khí (mỗi khí 0-3)."""
     score = 0
     for gas, thresholds in cfg.SEVERITY_GAS_THRESHOLDS.items():
         val = row.get(gas, np.nan)
@@ -22,6 +24,10 @@ def compute_gas_level_score(row: pd.Series) -> int:
     return score
 
 def compute_trend_score(row: pd.Series) -> int:
+    """
+    Điểm xu hướng dựa trên tốc độ tăng (ppm/ngày).
+    Ngưỡng tốc độ tham khảo từ IEEE C57.104 (bảng rate of change).
+    """
     score = 0
     tdcg_rate = row.get("tdcg_rate_per_day", np.nan)
     if pd.notna(tdcg_rate):
@@ -32,6 +38,7 @@ def compute_trend_score(row: pd.Series) -> int:
         elif tdcg_rate > 0:
             score += 1
 
+    # Số khí đang tăng
     num_inc = row.get("num_gases_increasing", np.nan)
     if pd.notna(num_inc):
         if num_inc >= 5:
@@ -39,6 +46,7 @@ def compute_trend_score(row: pd.Series) -> int:
         elif num_inc >= 3:
             score += 1
 
+    # Tốc độ tăng riêng lẻ cho các khí quan trọng
     for gas, limit in [("h2", 3), ("c2h2", 0.5), ("c2h4", 3), ("co", 3)]:
         rate = row.get(f"{gas}_rate_per_day", np.nan)
         if pd.isna(rate):
@@ -49,116 +57,71 @@ def compute_trend_score(row: pd.Series) -> int:
             score += 1
     return score
 
-def compute_aging_score(row: pd.Series) -> int:
-    score = 0
-    co = row.get("co", np.nan)
-    co2 = row.get("co2", np.nan)
-    water = row.get("water", np.nan)
-    temp = row.get("temp", np.nan)
-
-    if pd.notna(co):
-        if co >= 1400:
-            score += 3
-        elif co >= 700:
-            score += 2
-        elif co >= 350:
-            score += 1
-    if pd.notna(co2):
-        if co2 >= 10000:
-            score += 2
-        elif co2 >= 5000:
-            score += 1
-
-    if pd.notna(co) and pd.notna(co2) and co > 0:
-        ratio = co2 / co
-        if ratio < 3:
-            score += 3
-        elif ratio < 5:
-            score += 2
-        elif ratio < 7:
-            score += 1
-    if pd.notna(water):
-        if water >= 40:
-            score += 2
-        elif water >= 25:
-            score += 1
-    if pd.notna(temp):
-        if temp >= 90:
-            score += 2
-        elif temp >= 70:
-            score += 1
-    return score
-
-def severity_class_from_score(score: float) -> str:
-    if pd.isna(score):
-        return "ABSTAIN"
-    boundaries = cfg.SEVERITY_CLASS_BOUNDARIES
-    if score < boundaries[0]:
-        return "NORMAL"
-    if score < boundaries[1]:
-        return "WATCHLIST"
-    if score < boundaries[2]:
-        return "WARNING"
-    return "CRITICAL"
-
-def get_fault_points(row: pd.Series) -> int:
-    """
-    Tính điểm severity từ consensus fault.
-    Với MIXED: lấy max severity của các nhóm thành phần.
-    """
-    fault_label = row.get("consensus_fault")
-    if pd.isna(fault_label):
-        return cfg.FAULT_SEVERITY_POINTS["ABSTAIN"]
-
-    fl = str(fault_label).strip().upper()
-
-    if fl == "MIXED":
-        components = row.get("mixed_components", [])
-        if components is None or (hasattr(components, '__len__') and len(components) == 0):
-            return cfg.SEVERITY_BY_GROUP.get("MIXED", 1)  # => đổi 5 thành 1
-        max_sev = 0
-        for comp in components:
-            sev = cfg.SEVERITY_BY_GROUP.get(comp, 1)
-            if sev > max_sev:
-                max_sev = sev
-        return max_sev
-
-    if fl == "T3-H":
-        fl = "T3_H"
-    # Try exact match in FAULT_SEVERITY_POINTS
-    if fl in cfg.FAULT_SEVERITY_POINTS:
-        return cfg.FAULT_SEVERITY_POINTS[fl]
-    # Try group match (e.g., "CELLULOSE", "THERMAL", etc.)
-    if fl in cfg.SEVERITY_BY_GROUP:
-        return cfg.SEVERITY_BY_GROUP[fl]
-    # Fallback via FAULT_GROUPS mapping
-    group = cfg.FAULT_GROUPS.get(fl)
-    if group and group in cfg.SEVERITY_BY_GROUP:
-        return cfg.SEVERITY_BY_GROUP[group]
-    return cfg.FAULT_SEVERITY_POINTS["ABSTAIN"]
-
 def apply_severity(df: pd.DataFrame) -> pd.DataFrame:
-    logger.info("Bắt đầu tính severity scores...")
-    df["severity_gas_score"] = df.apply(compute_gas_level_score, axis=1)
-    df["severity_trend_score"] = df.apply(compute_trend_score, axis=1)
-    df["severity_aging_score"] = df.apply(compute_aging_score, axis=1)
-    df["severity_fault_score"] = df.apply(get_fault_points, axis=1)
+    """
+    Tính severity score hoàn toàn dựa trên phương pháp thống kê:
+    1. Gas score: tổng điểm vượt ngưỡng IEEE.
+    2. Trend score: điểm tốc độ tăng.
+    3. Anomaly score: percentile từ ensemble (0-1).
+    Cả ba được chuyển về percentile rank, sau đó cộng lại.
+    Phân loại severity bằng percentile của tổng điểm.
+    """
+    logger.info("Calculating severity scores...")
 
-    w = cfg.SEVERITY_WEIGHTS
+    # 1. Gas score
+    df["severity_gas_score"] = df.apply(compute_gas_level_score, axis=1)
+    # 2. Trend score
+    df["severity_trend_score"] = df.apply(compute_trend_score, axis=1)
+
+    # 3. Anomaly score (nếu có)
+    if "anomaly_percentile" in df.columns:
+        df["severity_anomaly_score"] = df["anomaly_percentile"].astype(float)
+        logger.info("Anomaly percentile feature found.")
+    else:
+        df["severity_anomaly_score"] = 0.0
+
+    # Chuyển gas và trend sang percentile rank (0-1)
+    df["severity_gas_rank"] = df["severity_gas_score"].rank(pct=True)
+    df["severity_trend_rank"] = df["severity_trend_score"].rank(pct=True)
+
+    # Tổng hợp: tổng các percentile rank (mỗi thành phần đóng góp 0-1)
     df["severity_score"] = (
-        w["gas"] * df["severity_gas_score"] +
-        w["trend"] * df["severity_trend_score"] +
-        w["fault"] * df["severity_fault_score"] +
-        w["aging"] * df["severity_aging_score"]
+        df["severity_gas_rank"]
+        + df["severity_trend_rank"]
+        + df["severity_anomaly_score"]  # anomaly đã là percentile
     )
 
-    df["severity_label"] = df["severity_score"].apply(severity_class_from_score)
+    # Phân loại severity dùng percentile của severity_score
+    # (đảm bảo phân bố cân bằng, không lệch)
+    q = [50, 75, 90]
+    thresholds = np.percentile(df["severity_score"], q)
+    logger.info("Severity score percentile thresholds: P50=%.3f, P75=%.3f, P90=%.3f",
+                thresholds[0], thresholds[1], thresholds[2])
 
-    sample_cols = ["transformer_id", "severity_gas_score", "severity_trend_score",
-                   "severity_fault_score", "severity_score", "severity_label"]
-    if all(c in df.columns for c in sample_cols):
-        sample = df[sample_cols].head(5)
-        logger.info("Mẫu severity (5 dòng đầu):\n" + sample.to_string())
-    else:
-        logger.warning("Không đủ cột để hiển thị debug severity.")
+    def classify(score):
+        if score < thresholds[0]:
+            return "NORMAL"
+        elif score < thresholds[1]:
+            return "WATCHLIST"
+        elif score < thresholds[2]:
+            return "WARNING"
+        else:
+            return "CRITICAL"
+
+    df["severity_label"] = df["severity_score"].apply(classify)
+
+    # Log phân bố
+    label_counts = df["severity_label"].value_counts()
+    logger.info("Severity label distribution:\n%s", label_counts.to_string())
+    logger.info("Overall severity score statistics: mean=%.3f, median=%.3f, min=%.3f, max=%.3f",
+                df["severity_score"].mean(), df["severity_score"].median(),
+                df["severity_score"].min(), df["severity_score"].max())
+
+    sample_cols = [
+        "transformer_id", "severity_gas_score", "severity_trend_score",
+        "severity_anomaly_score", "severity_score", "severity_label",
+    ]
+    available = [c for c in sample_cols if c in df.columns]
+    if available:
+        logger.info("Sample severity rows (first 5):\n" + df[available].head(5).to_string())
     return df

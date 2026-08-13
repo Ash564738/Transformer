@@ -109,20 +109,9 @@ export interface DgaRow {
  * severity weighted most heavily, but historical (EWM) severity, trend,
  * critical-event history, and diagnostic confidence all contribute. */
 export interface RankingBreakdown {
-  weights: { current: number; history: number; trend: number; critical_history: number; confidence: number };
-  current_severity: number;
-  current_contribution: number;
-  historical_severity: number;
-  historical_contribution: number;
-  trend_bonus: number;
-  trend_contribution: number;
-  critical_history_count: number;
-  critical_history_contribution: number;
-  diagnostic_confidence: number;
-  confidence_contribution: number;
-  persistence_bonus_factor: number;
-  fault_persistence: number;
-  days_since_last_critical: number | null;
+  final_score: number;
+  severity_score: number;
+  trend_slope: number | null;
 }
 
 export interface TransformerSummary {

@@ -18,11 +18,13 @@ export default function FleetPage() {
 
   const stations = useMemo(() => (payload ? getStations(payload) : []), [payload]);
 
+  // Lấy danh sách fault type duy nhất (loại bỏ null/undefined)
   const faultTypes = useMemo(() => {
     if (!payload) return ["All"];
     const types = new Set<string>();
     payload.transformer_summary.forEach((s) => {
-      if (s.fault_type) types.add(s.fault_type);
+      const ft = s.fault_type || "";   // chuẩn hóa
+      if (ft) types.add(ft);
     });
     return ["All", ...Array.from(types).sort()];
   }, [payload]);
@@ -39,17 +41,16 @@ export default function FleetPage() {
       list = list.filter((s) => scoreToStatus(s.latest_score) === statusFilter);
     }
     if (faultFilter !== "All") {
-      list = list.filter((s) => s.fault_type === faultFilter);
+      list = list.filter((s) => (s.fault_type || "") === faultFilter);
     }
 
     const map = new Map<string, typeof list>();
     for (const s of list) {
-      const sta = stationOf(s) || "Unknown";   // fallback nếu stationOf undefined
+      const sta = stationOf(s) || "Unknown";
       if (!map.has(sta)) map.set(sta, []);
       map.get(sta)!.push(s);
     }
 
-    // Gom nhóm theo thứ tự stations, sau đó thêm các station không có trong danh sách gốc
     const ordered = stations
       .filter((st) => map.has(st))
       .map((st) => ({
@@ -57,7 +58,7 @@ export default function FleetPage() {
         items: map.get(st)!.sort((a, b) => b.latest_score - a.latest_score),
       }));
 
-    // Thêm các station còn lại (nếu có)
+    // Thêm các station không nằm trong danh sách gốc (nếu có)
     for (const [sta, items] of map.entries()) {
       if (!stations.includes(sta)) {
         ordered.push({

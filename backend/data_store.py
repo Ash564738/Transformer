@@ -10,6 +10,7 @@ incremental to do here. reset_db() clears it when the user explicitly wants
 to start over (paired with dataset_accumulator.reset_accumulated_dataset()).
 """
 import json
+import logging
 import math
 import sqlite3
 from pathlib import Path
@@ -17,7 +18,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-DB_PATH = Path(__file__).resolve().parent / "data" / "dga.db"
+from config import DATASET_DIR, DATABASE_DIR, MODEL_DIR, REPORT_DIR
+
+logger = logging.getLogger(__name__)
+
+DB_PATH = DATABASE_DIR / "dga.db"
 
 # Mirrors backend/config.py SEVERITY_CLASS_BOUNDARIES / frontend/src/lib/severity.ts
 # classifyScore — the same 4-tier Normal/Watch/High/Critical the dashboard
@@ -94,6 +99,7 @@ def _to_sql_value(value):
 
 
 def save_payload_to_db(payload: dict) -> None:
+    logger.info("Saving payload to SQLite database...")
     conn = _connect()
     try:
         conn.execute("DROP TABLE IF EXISTS samples")
@@ -114,6 +120,7 @@ def save_payload_to_db(payload: dict) -> None:
         if sample_rows:
             placeholders = ", ".join(["?"] * len(SAMPLE_COLUMNS))
             conn.executemany(f"INSERT INTO samples VALUES ({placeholders})", sample_rows)
+        logger.info("Inserted %d sample rows", len(sample_rows))
 
         transformer_rows = []
         for t in payload.get("transformer_summary", []):
@@ -143,8 +150,13 @@ def save_payload_to_db(payload: dict) -> None:
         if transformer_rows:
             placeholders = ", ".join(["?"] * len(TRANSFORMER_COLUMNS))
             conn.executemany(f"INSERT INTO transformers VALUES ({placeholders})", transformer_rows)
+        logger.info("Inserted %d transformer rows", len(transformer_rows))
 
         conn.commit()
+        logger.info("Database commit successful")
+    except Exception as e:
+        logger.exception("Failed to save payload to database")
+        raise
     finally:
         conn.close()
 
@@ -163,6 +175,7 @@ _TRANSFORMER_TEXT_COLS = {
 
 def has_data() -> bool:
     if not DB_PATH.exists():
+        logger.debug("Database file not found at %s", DB_PATH)
         return False
     conn = _connect()
     try:
@@ -170,8 +183,11 @@ def has_data() -> bool:
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='transformers'"
         ).fetchone()
         if not row or row[0] == 0:
+            logger.debug("Transformers table does not exist in database")
             return False
-        return conn.execute("SELECT COUNT(*) FROM transformers").fetchone()[0] > 0
+        count = conn.execute("SELECT COUNT(*) FROM transformers").fetchone()[0]
+        logger.debug("Database contains %d transformer records", count)
+        return count > 0
     finally:
         conn.close()
 
@@ -180,11 +196,16 @@ def reset_db() -> None:
     """Drops both tables — paired with dataset_accumulator.reset_accumulated_dataset()
     when the user explicitly clears the loaded dataset."""
     if not DB_PATH.exists():
+        logger.info("Database file does not exist, nothing to reset")
         return
     conn = _connect()
     try:
         conn.execute("DROP TABLE IF EXISTS samples")
         conn.execute("DROP TABLE IF EXISTS transformers")
         conn.commit()
+        logger.info("Database tables dropped successfully")
+    except Exception as e:
+        logger.exception("Failed to reset database")
+        raise
     finally:
         conn.close()

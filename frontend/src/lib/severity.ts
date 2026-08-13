@@ -8,7 +8,7 @@ import type { NativeSeverityLabel, RiskStatus, TransformerSummary } from "@/type
  * Normal/Watch/High/Critical status from UI-SPEC-DGA-DASHBOARD-01 directly
  * from the same raw `severity_score`, so no backend change is required.
  */
-const SEVERITY_BOUNDARIES = [4, 8, 13] as const;
+const SEVERITY_BOUNDARIES = [30, 60, 90] as const;
 
 export function classifyScore(score: number): NativeSeverityLabel {
   if (score < SEVERITY_BOUNDARIES[0]) return "NORMAL";
@@ -43,12 +43,12 @@ export function scoreToStatus(score: number): RiskStatus {
 export function scoreToRisk(score: number): number {
   const anchors: [number, number][] = [
     [0, 0],
-    [SEVERITY_BOUNDARIES[0], 30],
-    [SEVERITY_BOUNDARIES[1], 60],
-    [SEVERITY_BOUNDARIES[2], 90],
-    [SEVERITY_BOUNDARIES[2] * 2, 100],
+    [30, 30],
+    [60, 60],
+    [90, 90],
+    [100, 100],
   ];
-  const clamped = Math.max(0, score);
+  const clamped = Math.max(0, Math.min(100, score));
   for (let i = 1; i < anchors.length; i++) {
     const [x0, y0] = anchors[i - 1];
     const [x1, y1] = anchors[i];

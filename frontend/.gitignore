@@ -45,3 +45,15 @@ next-env.d.ts
 
 backend/dataset/*
 backend/models/*
+# Bỏ qua các file cấu hình huấn luyện của CatBoost
+backend/catboost_info/
+
+# Bỏ qua các file cơ sở dữ liệu SQLite cục bộ
+backend/database/*.db
+
+# Bỏ qua toàn bộ các file ảnh và file báo cáo tự sinh ra
+backend/reports/
+
+# Bỏ qua các file tạm thời của Microsoft Excel (Sửa lỗi Permission denied)
+~$*.xlsx
+~$*.xls

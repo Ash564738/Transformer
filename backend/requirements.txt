@@ -1,19 +1,38 @@
-# Single requirements file for the whole backend: the live dashboard API
-# (app.py -> /predict, /chat, /chart/*, /auth/*) and the offline training
-# pipeline (train_models.py). Installing this once covers both.
-numpy
-pandas
-matplotlib
-openpyxl
+# ============================================================
+# DGA Transformer Monitoring – Backend Requirements
+# ============================================================
+# Cài đặt: pip install -r requirements.txt
+#
+# Các gói được chia thành 3 nhóm:
+#   [core]      : Flask API, xử lý dữ liệu, machine learning cơ bản
+#   [training]  : Huấn luyện model (LightGBM, XGBoost, CatBoost, Temporal)
+#   [optional]  : Snorkel (weak supervision), SHAP (giải thích model)
+# ============================================================
+
+# ── Core ──────────────────────────────────────────────────
 flask
-python-dotenv
-openai  # OpenAI-compatible SDK, pointed at OpenRouter (text2sql_chat.py) — see README "DGA Assistant chatbot"
-scikit-learn
-snorkel
-lightgbm
-xgboost
-lifelines
-torch
 joblib
+matplotlib
+numpy
+openai             # OpenAI SDK (dùng với OpenRouter cho chatbot)
+openpyxl           # Đọc file Excel
+pandas
+python-dotenv      # Nạp biến môi trường từ .env
+scikit-learn
 scipy
-shap
+seaborn            # Vẽ biểu đồ nâng cao (heatmap, barplot)
+
+# ── Training pipeline ─────────────────────────────────────
+catboost           # CatBoost classifier (supervised_experiment.py)
+imbalanced-learn   # SMOTE và các kỹ thuật cân bằng dữ liệu
+lightgbm
+torch 
+xgboost
+
+# ── Optional but recommended ──────────────────────────────
+lifelines          # (nếu có dùng trong survival analysis)
+shap               # Giải thích model (SHAP values)
+snorkel            # Weak supervision (Snorkel LabelModel)
+
+# ── Dev / utilities ───────────────────────────────────────
+# statsmodels      # Phân tích thống kê (bỏ comment nếu cần)

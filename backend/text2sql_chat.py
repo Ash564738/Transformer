@@ -236,20 +236,27 @@ def _sanitize_history(history) -> list[dict]:
 def answer_question(question: str, context: dict | None = None, history=None) -> str:
     question = (question or "").strip()
     if not question:
+        logger.debug("Empty question received, returning empty string.")
         return ""
     vi = _looks_vietnamese(question)
+    logger.info("Processing question (lang=%s): %s", "vi" if vi else "en", question[:80])
+
     history_messages = _sanitize_history(history)
+    if history_messages:
+        logger.debug("Using %d history turns.", len(history_messages))
 
     client = _client()
     if client is None:
-        # No OpenRouter key configured — fall back to the simple rule-based
-        # bot rather than hard-failing the whole chat feature.
+        logger.warning("No OpenRouter client available, falling back to rule-based chat.")
         from chat import generate_chat_answer
         return generate_chat_answer(question, context)
 
     if not DB_PATH.exists():
+        logger.warning("Database file not found, telling user to load data first.")
         return _NO_DATA_REPLY[vi]
 
+    # Step 1: route / SQL generation
+    logger.info("Calling LLM for routing/SQL generation...")
     few_shot_messages = []
     for q, a in FEW_SHOT:
         few_shot_messages.append({"role": "user", "content": q})
@@ -261,40 +268,51 @@ def answer_question(question: str, context: dict | None = None, history=None) ->
             _ROUTER_SYSTEM_PROMPT,
             [*few_shot_messages, *history_messages, {"role": "user", "content": question}],
         )
+        logger.debug("LLM route response: %s", route[:200])
     except Exception:
         logger.exception("Text2SQL router call failed")
         from chat import generate_chat_answer
         return generate_chat_answer(question, context)
 
     if route.strip().upper() == "OUT_OF_SCOPE":
+        logger.info("Question classified as OUT_OF_SCOPE.")
         return _OUT_OF_SCOPE_REPLY[vi]
 
     if route.upper().startswith("NO_QUERY"):
-        return route.split(":", 1)[1].strip() if ":" in route else route
+        answer = route.split(":", 1)[1].strip() if ":" in route else route
+        logger.info("LLM returned NO_QUERY answer: %s", answer[:80])
+        return answer
 
     sql = route.strip().strip("`")
     if sql.lower().startswith("sql"):
         sql = sql[3:].strip()
+    logger.info("Generated SQL: %s", sql[:200])
 
+    # Step 2: execute with retries
     last_error = None
     for attempt in range(MAX_SQL_RETRIES + 1):
         if not _is_safe_select(sql):
+            logger.warning("Unsafe SQL rejected: %s", sql[:200])
             return _OUT_OF_SCOPE_REPLY[vi] if attempt == 0 else (
                 "Tôi không thể tạo truy vấn an toàn cho câu hỏi này." if vi
                 else "I couldn't build a safe query for that question."
             )
         try:
+            logger.debug("Executing SQL (attempt %d)...", attempt)
             columns, rows = _run_select(_ensure_limit(sql))
+            logger.debug("Query returned %d rows, %d columns.", len(rows), len(columns))
             break
         except sqlite3.Error as exc:
             last_error = str(exc)
-            logger.warning("Text2SQL query failed (attempt %d): %s | sql=%s", attempt, last_error, sql)
+            logger.warning("SQL execution failed (attempt %d): %s | sql=%s", attempt, last_error, sql[:200])
             if attempt >= MAX_SQL_RETRIES:
+                logger.error("Max retries reached, giving up.")
                 return (
                     f"Tôi không thể truy vấn dữ liệu cho câu hỏi này ({last_error})." if vi
                     else f"I couldn't query the data for that ({last_error})."
                 )
             try:
+                # self-correction
                 sql = _chat(
                     client,
                     _ROUTER_SYSTEM_PROMPT,
@@ -304,6 +322,7 @@ def answer_question(question: str, context: dict | None = None, history=None) ->
                         {"role": "user", "content": f"That SQL failed with error: {last_error}\nFix it. Respond with ONLY the corrected SQL."},
                     ],
                 ).strip().strip("`")
+                logger.debug("Self-corrected SQL: %s", sql[:200])
             except Exception:
                 logger.exception("Text2SQL self-correction call failed")
                 return (
@@ -314,14 +333,18 @@ def answer_question(question: str, context: dict | None = None, history=None) ->
         return _NO_DATA_REPLY[vi]
 
     result_text = _format_result(columns, rows)
+    logger.debug("Formatted result (first 200 chars): %s", result_text[:200])
+
+    # Step 3: natural language answer
+    logger.info("Generating natural language answer...")
     try:
         answer = _chat(
             client,
             _ANSWER_SYSTEM_PROMPT,
             [{"role": "user", "content": f"Question: {question}\nSQL used: {sql}\nResult:\n{result_text}"}],
         )
+        logger.debug("LLM answer: %s", answer[:200])
         return answer or result_text
     except Exception:
         logger.exception("Text2SQL answer-interpretation call failed")
         return result_text
-

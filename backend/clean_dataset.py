@@ -2,20 +2,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from config import BACKEND_ROOT
+from config import config as cfg
+from config import DATASET_DIR, DATABASE_DIR, MODEL_DIR, REPORT_DIR
+
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # CONFIG
 # ============================================================
-DATA_DIR = Path(BACKEND_ROOT) / "dataset"
-INPUT_FILE = DATA_DIR / "DGA of Main Tank only KT 11022026_09062026.xlsx"
-OUTPUT_DIR = DATA_DIR / "processed"
+INPUT_FILE = DATASET_DIR / "DGA of Main Tank only KT 11022026_09062026.xlsx"
+OUTPUT_DIR = DATASET_DIR / "processed"
 
 KEEP_NB = True
 
@@ -184,29 +187,54 @@ def infer_loc_from_codetx_and_name(row: pd.Series) -> Optional[str]:
     return None
 
 def fill_missing_ser(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fill missing serial numbers (SER) using the following rules:
+    - Same (CODETX, MFG) → same SER.
+    - Groups that already have a valid SER → fill missing rows with that SER.
+    - Groups where all SER are missing/xxxx → assign sequential xxxx1, xxxx2, ...
+      ensuring no collision with any existing real SER.
+    """
+    logger.info("Filling missing serial numbers (SER)...")
     df = df.copy()
-    groups = df.groupby(["codetx", "mfg"], dropna=False)
-    for (codetx_val, mfg_val), group in groups:
-        if pd.isna(codetx_val) or pd.isna(mfg_val):
-            continue
-        non_null_ser = group["ser"].dropna()
-        if len(non_null_ser) > 0:
-            fill_value = non_null_ser.iloc[0]
-            mask = (df["codetx"] == codetx_val) & (df["mfg"] == mfg_val) & (df["ser"].isna())
-            df.loc[mask, "ser"] = fill_value
-    nan_mask = df["ser"].isna()
-    if nan_mask.any():
-        existing_ser = set(df["ser"].dropna().unique())
-        counter = 1
-        for idx in df.index[nan_mask]:
+    # Normalize: treat "xxxx" (case insensitive) as missing
+    ser_clean = df["ser"].astype(str).str.strip()
+    mask_xxxx = ser_clean.str.lower() == "xxxx"
+    df.loc[mask_xxxx, "ser"] = None
+
+    # Set of all existing real SERs to avoid duplicates
+    existing_ser = set(
+        s for s in df["ser"].dropna().unique()
+        if isinstance(s, str) and not s.lower().startswith("xxxx")
+    )
+
+    # Step 1: fill from valid SER within the same group
+    for (codetx, mfg), idx in df.groupby(["codetx", "mfg"]).groups.items():
+        mask = df.index.isin(idx)
+        group_ser = df.loc[mask, "ser"]
+        valid = group_ser.dropna()
+        if not valid.empty:
+            fill_val = valid.iloc[0]
+            df.loc[mask, "ser"] = df.loc[mask, "ser"].fillna(fill_val)
+
+    # Step 2: groups still completely missing → assign xxxxN
+    counter = 1
+    for (codetx, mfg), idx in df.groupby(["codetx", "mfg"]).groups.items():
+        mask = df.index.isin(idx)
+        if df.loc[mask, "ser"].isna().all():
             while f"xxxx{counter}" in existing_ser:
                 counter += 1
-            df.at[idx, "ser"] = f"xxxx{counter}"
-            existing_ser.add(f"xxxx{counter}")
+            new_ser = f"xxxx{counter}"
+            existing_ser.add(new_ser)
+            df.loc[mask, "ser"] = new_ser
             counter += 1
+
+    # Ensure no NaN remains
+    assert df["ser"].isna().sum() == 0, "SER column still contains NaN after filling!"
+    logger.info("SER filling complete. Assigned %d unique xxxx IDs.", counter - 1)
     return df
 
 def build_transformer_id(df: pd.DataFrame) -> pd.Series:
+    logger.debug("Building transformer IDs...")
     idx = df.index
     ser = df["ser"].fillna("").astype(str).str.strip() if "ser" in df.columns else pd.Series("", index=idx)
     codetx = df["codetx"].fillna("").astype(str).str.strip() if "codetx" in df.columns else pd.Series("", index=idx)
@@ -241,6 +269,7 @@ def report_missing(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------
 def impute_by_transformer_timeseries(df: pd.DataFrame, col: str) -> pd.Series:
     """Linear interpolation per transformer; median fallback."""
+    logger.debug("Imputing column '%s' using time-series interpolation...", col)
     s = df[col].copy()
     if s.notna().sum() == len(s):
         return s
@@ -267,41 +296,53 @@ def clean_dataset(
     input_file: Path = INPUT_FILE,
     output_dir: Path = OUTPUT_DIR,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    logger.info("Starting dataset cleaning. Input file: %s", input_file)
     if not input_file.exists():
         raise FileNotFoundError(f"Input file not found: {input_file}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 1) LOAD
+    logger.info("Loading Excel file...")
     xl = pd.ExcelFile(input_file)
     sheet_name = xl.sheet_names[0]
     raw = xl.parse(sheet_name)
     raw.columns = [normalize_col_name(c) for c in raw.columns]
     df = raw.copy()
+    logger.info("Loaded sheet '%s' with shape %s", sheet_name, df.shape)
 
     original_shape = df.shape
     original_columns = df.columns.tolist()
 
     # 2) DROP NOISE COLUMNS
+    logger.info("Dropping unnamed / all-NaN columns...")
     unnamed_cols = [c for c in df.columns if is_unnamed_or_empty_column(c)]
     if unnamed_cols:
+        logger.debug("Dropping unnamed columns: %s", unnamed_cols)
         df = df.drop(columns=unnamed_cols)
     all_nan_cols = [c for c in df.columns if df[c].isna().all()]
     if all_nan_cols:
+        logger.debug("Dropping all-NaN columns: %s", all_nan_cols)
         df = df.drop(columns=all_nan_cols)
     dropped_noise_columns = unnamed_cols + [c for c in all_nan_cols if c not in unnamed_cols]
+    logger.info("Dropped %d noise columns", len(dropped_noise_columns))
 
     # 3) RENAME COLUMNS
+    logger.info("Renaming columns to standard names...")
     rename_map = {}
     for c in df.columns:
         canon = canonicalize_col(c)
         if canon in COLUMN_ALIASES:
             rename_map[c] = COLUMN_ALIASES[canon]
-    df = df.rename(columns=rename_map)
+    if rename_map:
+        logger.debug("Renaming %d columns", len(rename_map))
+        df = df.rename(columns=rename_map)
     df.columns = df.columns.str.lower()
+    logger.debug("Columns after rename: %s", list(df.columns))
 
     # 4) DATE PARSING & SWAP
+    logger.info("Parsing dates and fixing sample/tested day swaps...")
     if "sample_day" not in df.columns:
-        raise ValueError("Không tìm thấy cột Sample Day trong dataset.")
+        raise ValueError("Missing 'sample_day' column in dataset.")
     df["sample_day"] = parse_date_series(df["sample_day"])
     if "tested_day" in df.columns:
         df["tested_day"] = parse_date_series(df["tested_day"])
@@ -310,9 +351,11 @@ def clean_dataset(
     swap_mask = df["tested_day"].notna() & df["sample_day"].notna() & (df["tested_day"] < df["sample_day"])
     n_swapped = swap_mask.sum()
     if n_swapped > 0:
+        logger.info("Swapped sample_day and tested_day for %d rows", n_swapped)
         df.loc[swap_mask, ["sample_day", "tested_day"]] = df.loc[swap_mask, ["tested_day", "sample_day"]].values
 
     # 5) TEXT COLUMNS
+    logger.info("Cleaning text columns...")
     for col in ["loc", "name", "codetx", "mfg"]:
         if col not in df.columns:
             df[col] = None
@@ -322,15 +365,19 @@ def clean_dataset(
     df["ser"] = df["ser"].apply(clean_ser)
 
     # 6) FILL LOC
+    logger.info("Filling missing location (loc) from codetx and name...")
     df["loc"] = df.apply(infer_loc_from_codetx_and_name, axis=1)
 
     # 7) FILL MISSING SER
     df = fill_missing_ser(df)
 
     # 8) BUILD TRANSFORMER_ID
+    logger.info("Building unique transformer IDs...")
     df["transformer_id"] = build_transformer_id(df)
+    logger.info("Created %d unique transformer IDs", df["transformer_id"].nunique())
 
     # 9) CLEAN YEAR / TEMP / WATER
+    logger.info("Cleaning year_energized, temp, water...")
     if "year_energized" in df.columns:
         df["year_energized"] = df["year_energized"].apply(clean_year_energized)
     else:
@@ -345,20 +392,22 @@ def clean_dataset(
         df["water"] = np.nan
 
     # 10) CLEAN GAS COLUMNS
+    logger.info("Cleaning gas concentration columns...")
     for col in CORE_GASES + OPTIONAL_GASES:
         if col in df.columns:
             df[col] = df[col].apply(clean_gas_value)
         else:
             df[col] = np.nan
 
-    # 11) CLEAN TCG (raw) – sẽ bị ghi đè sau khi tính lại, tạm giữ để so sánh
+    # 11) CLEAN TCG (raw) – will be recalculated later, keep for comparison
     if "tcg" in df.columns:
         df["tcg"] = df["tcg"].apply(clean_gas_value)
     else:
         df["tcg"] = np.nan
-    tcg_raw = df["tcg"].copy()   # lưu tạm để thống kê sai lệch
+    tcg_raw = df["tcg"].copy()
 
     # 12) CLEAN MVA / KV
+    logger.info("Cleaning rating columns (MVA, KV)...")
     if "mva" in df.columns:
         df["mva"] = df["mva"].apply(normalize_rating_text)
     else:
@@ -376,14 +425,17 @@ def clean_dataset(
             df["nb"] = None
 
     # 14) SORT
+    logger.info("Sorting by transformer and date...")
     df = df.sort_values(["transformer_id", "sample_day"], kind="mergesort").reset_index(drop=True)
 
     # 15) DROP DUPLICATES
     before_dedup = len(df)
     df = df.drop_duplicates(keep="first").reset_index(drop=True)
     duplicate_rows_removed = before_dedup - len(df)
+    if duplicate_rows_removed > 0:
+        logger.info("Removed %d duplicate rows", duplicate_rows_removed)
 
-    # 16) RECALCULATE TCG (ghi đè cột tcg)
+    # 16) RECALCULATE TCG (overwrite column)
     df["tcg"] = (
         df["h2"].fillna(0)
         + df["ch4"].fillna(0)
@@ -392,20 +444,23 @@ def clean_dataset(
         + df["c2h2"].fillna(0)
         + df["co"].fillna(0)
     )
-    # Đếm số dòng có sai lệch > 0.1 so với giá trị gốc (nếu có)
     n_diff = (tcg_raw.notna() & (abs(tcg_raw - df["tcg"]) > 0.1)).sum()
+    if n_diff > 0:
+        logger.info("TCG discrepancy (>0.1) detected in %d rows; recalculated TCG used.", n_diff)
 
     # 17) IMPUTATION & ROUNDING
+    logger.info("Imputing missing values per transformer (temp, water, year_energized)...")
     for col in ["temp", "water", "year_energized"]:
         if col in df.columns and df[col].isna().any():
             df[col] = impute_by_transformer_timeseries(df, col)
 
-    # Làm tròn về số nguyên
+    # Round to integer
     for col in ["temp", "water"]:
         if col in df.columns:
             df[col] = df[col].round().astype(int)
     if "year_energized" in df.columns:
         df["year_energized"] = df["year_energized"].round().astype(int)
+    logger.info("Imputation and rounding done.")
 
     # 18) OUTPUT COLUMN ORDER
     preferred_order = [
@@ -416,7 +471,7 @@ def clean_dataset(
         "temp", "water",
         "h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2",
         "o2", "n2", "c3h6", "c3h8",
-        "tcg",                 # TCG đã tính lại đúng chuẩn
+        "tcg",
         "nb",
     ]
     existing_cols = [c for c in preferred_order if c in df.columns]
@@ -424,6 +479,7 @@ def clean_dataset(
     df = df[existing_cols + extra_cols].copy()
 
     # 19) SUMMARY
+    logger.info("Generating cleaning summary...")
     missing_summary = report_missing(df)
     summary = {
         "input_file": str(input_file),
@@ -459,6 +515,7 @@ def clean_dataset(
     }
 
     # 20) SAVE
+    logger.info("Saving cleaned dataset and summary...")
     output_dir.mkdir(parents=True, exist_ok=True)
     clean_parquet = output_dir / "dga_clean.parquet"
     clean_csv = output_dir / "dga_clean.csv"
@@ -467,15 +524,17 @@ def clean_dataset(
 
     try:
         df.to_parquet(clean_parquet, index=False)
+        logger.debug("Saved Parquet: %s", clean_parquet)
     except ImportError:
-        # pyarrow/fastparquet aren't installed for the live API deployment;
-        # the CSV written right below already carries the same cleaned data.
-        pass
+        logger.warning("Parquet library not available; CSV will be used instead.")
+
     df.to_csv(clean_csv, index=False, encoding="utf-8-sig")
     missing_summary.to_csv(missing_csv, index=False, encoding="utf-8-sig")
     with open(summary_json, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
+    logger.info("Cleaned data: %d rows, %d columns. Saved to %s", len(df), len(df.columns), output_dir)
+    logger.info("Missing value summary saved to %s", missing_csv)
     return df, summary
 
 # ============================================================

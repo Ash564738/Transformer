@@ -1,0 +1,158 @@
+{
+  "keygas_fault": {
+    "RF": {
+      "accuracy": 0.9952915186693234,
+      "f1_macro": 0.9251030826411444
+    },
+    "RF+SMOTE": {
+      "accuracy": 0.9949987005111323,
+      "f1_macro": 0.9332782672183783
+    },
+    "XGBoost": {
+      "accuracy": 0.9961747379364116,
+      "f1_macro": 0.9513314529588802
+    },
+    "XGBoost+SMOTE": {
+      "accuracy": 0.992351641687603,
+      "f1_macro": 0.917966674594157
+    },
+    "CatBoost": {
+      "accuracy": 0.9964692887464264,
+      "f1_macro": 0.9483902947007448
+    },
+    "CatBoost+SMOTE": {
+      "accuracy": 0.9935272459499263,
+      "f1_macro": 0.9220099379119233
+    }
+  },
+  "iec_fault": {
+    "RF": {
+      "accuracy": 0.988764516926118,
+      "f1_macro": 0.8848332155261918
+    },
+    "RF+SMOTE": {
+      "accuracy": 0.9929701013096122,
+      "f1_macro": 0.9426817186602598
+    },
+    "XGBoost": {
+      "accuracy": 0.9950827773659501,
+      "f1_macro": 0.9455813446817494
+    },
+    "XGBoost+SMOTE": {
+      "accuracy": 0.9943785520138373,
+      "f1_macro": 0.9485723538846667
+    },
+    "CatBoost": {
+      "accuracy": 0.9922708178897949,
+      "f1_macro": 0.9176124714755552
+    },
+    "CatBoost+SMOTE": {
+      "accuracy": 0.990867309117865,
+      "f1_macro": 0.9266121458201789
+    }
+  },
+  "rogers_fault": {
+    "RF": {
+      "accuracy": 0.9648648648648649,
+      "f1_macro": 0.9410225919846067
+    },
+    "RF+SMOTE": {
+      "accuracy": 0.9675675675675676,
+      "f1_macro": 0.9519092598713899
+    },
+    "XGBoost": {
+      "accuracy": 0.9648648648648649,
+      "f1_macro": 0.9378811084737251
+    },
+    "XGBoost+SMOTE": {
+      "accuracy": 0.9675675675675676,
+      "f1_macro": 0.9452452909356518
+    },
+    "CatBoost": {
+      "accuracy": 0.9702702702702701,
+      "f1_macro": 0.9542505473656275
+    },
+    "CatBoost+SMOTE": {
+      "accuracy": 0.9675675675675676,
+      "f1_macro": 0.9529576324367902
+    }
+  },
+  "doernenburg_fault": {
+    "RF": {
+      "accuracy": 0.65,
+      "f1_macro": 0.5733333333333335
+    },
+    "RF+SMOTE": {
+      "accuracy": 0.65,
+      "f1_macro": 0.5733333333333335
+    },
+    "XGBoost": {
+      "accuracy": 0.7,
+      "f1_macro": 0.6666666666666667
+    },
+    "XGBoost+SMOTE": {
+      "accuracy": 0.7,
+      "f1_macro": 0.6666666666666667
+    },
+    "CatBoost": {
+      "accuracy": 0.65,
+      "f1_macro": 0.5733333333333335
+    },
+    "CatBoost+SMOTE": {
+      "accuracy": 0.7,
+      "f1_macro": 0.6000000000000001
+    }
+  },
+  "duval_triangle_fault": {
+    "RF": {
+      "accuracy": 0.9916573017764913,
+      "f1_macro": 0.6621761853897674
+    },
+    "RF+SMOTE": {
+      "accuracy": 0.9926108178670754,
+      "f1_macro": 0.8117815666393673
+    },
+    "XGBoost": {
+      "accuracy": 0.9909427322776547,
+      "f1_macro": 0.7661744727031694
+    },
+    "XGBoost+SMOTE": {
+      "accuracy": 0.9928491968897214,
+      "f1_macro": 0.7995286819358398
+    },
+    "CatBoost": {
+      "accuracy": 0.9918953970145864,
+      "f1_macro": 0.7671721547301147
+    },
+    "CatBoost+SMOTE": {
+      "accuracy": 0.9926111016516261,
+      "f1_macro": 0.8065922086090357
+    }
+  },
+  "duval_pentagon_fault": {
+    "RF": {
+      "accuracy": 0.907923390521488,
+      "f1_macro": 0.7505709156875824
+    },
+    "RF+SMOTE": {
+      "accuracy": 0.906253326538701,
+      "f1_macro": 0.8111563990810822
+    },
+    "XGBoost": {
+      "accuracy": 0.9343327104920446,
+      "f1_macro": 0.8245048414244394
+    },
+    "XGBoost+SMOTE": {
+      "accuracy": 0.9317128135439671,
+      "f1_macro": 0.8453210917947558
+    },
+    "CatBoost": {
+      "accuracy": 0.9367099824471999,
+      "f1_macro": 0.7944552613820652
+    },
+    "CatBoost+SMOTE": {
+      "accuracy": 0.933616443010022,
+      "f1_macro": 0.8236738705795255
+    }
+  }
+}

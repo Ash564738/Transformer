@@ -18,11 +18,11 @@ import re
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
-
+from config import DATABASE_DIR
 from flask import request, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 
-DB_PATH = Path(__file__).resolve().parent / "data" / "users.db"
+DB_PATH = DATABASE_DIR / "users.db"
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 

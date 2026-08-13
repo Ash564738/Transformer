@@ -5,11 +5,28 @@ import Link from "next/link";
 import { Search, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import type { DgaPayload } from "@/types/dga";
 import { StatusBadge } from "@/components/ui/badge";
-import { scoreToRisk, scoreToStatus, STATUS_STYLES } from "@/lib/severity";
-import { getStations, latestRowFor, stationOf, topGasLabel } from "@/lib/transformer-helpers";
+import {
+  scoreToRisk,
+  scoreToStatus,
+  STATUS_STYLES,
+} from "@/lib/severity";
+import {
+  getStations,
+  latestRowFor,
+  stationOf,
+  topGasLabel,
+} from "@/lib/transformer-helpers";
 import { formatDate } from "@/lib/utils";
 
-type SortColumn = "id" | "station" | "score" | "status" | "fault" | "date" | "gas";
+type SortColumn =
+  | "id"
+  | "station"
+  | "score"
+  | "status"
+  | "fault"
+  | "date"
+  | "gas";
+
 type SortDirection = "asc" | "desc";
 
 interface RowData {
@@ -17,28 +34,39 @@ interface RowData {
   row: any;
 }
 
-export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: number }) {
+export function RankingTable({
+  payload,
+  limit,
+}: {
+  payload: DgaPayload;
+  limit?: number;
+}) {
   const [query, setQuery] = useState("");
   const [station, setStation] = useState("All Stations");
   const [faultFilter, setFaultFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
   const [sortColumn, setSortColumn] = useState<SortColumn>("score");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [sortDirection, setSortDirection] =
+    useState<SortDirection>("desc");
 
-  const stations = useMemo(() => ["All Stations", ...getStations(payload)], [payload]);
+  const stations = useMemo(
+    () => ["All Stations", ...getStations(payload)],
+    [payload]
+  );
 
-  // Lấy danh sách các fault type duy nhất (không null/undefined)
   const faultTypes = useMemo(() => {
     const types = new Set<string>();
+
     payload.transformer_summary.forEach((s) => {
-      if (s.fault_type) {
-        types.add(s.fault_type);
+      const ft = s.fault_type || "";
+      if (ft) {
+        types.add(ft);
       }
     });
+
     return ["All", ...Array.from(types).sort()];
   }, [payload]);
 
-  // Danh sách trạng thái cố định
   const statuses = ["All", "Normal", "Watch", "High", "Critical"];
 
   const allRows = useMemo<RowData[]>(() => {
@@ -48,25 +76,51 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
     }));
   }, [payload]);
 
-  // Chỉ thay đổi phần filteredRows, còn lại giữ nguyên code bạn đã có
-
-  const filteredRows = useMemo(() => {
+  /*
+   * Calculate filtered rows directly from the current filter state.
+   *
+   * Important:
+   * The internal value for "All" must remain exactly "All".
+   * The displayed labels ("All Faults", "All Statuses") are only UI text.
+   */
+  const filteredRows = useMemo<RowData[]>(() => {
     let list = allRows;
+
     if (query.trim()) {
       const q = query.trim().toLowerCase();
-      list = list.filter((r) => r.summary.transformer_id.toLowerCase().includes(q));
+
+      list = list.filter((r) =>
+        r.summary.transformer_id.toLowerCase().includes(q)
+      );
     }
+
     if (station !== "All Stations") {
-      list = list.filter((r) => (stationOf(r.summary) || "") === station);
+      list = list.filter(
+        (r) => (stationOf(r.summary) || "") === station
+      );
     }
+
     if (faultFilter !== "All") {
-      list = list.filter((r) => r.summary.fault_type === faultFilter);
+      list = list.filter(
+        (r) => (r.summary.fault_type || "") === faultFilter
+      );
     }
+
     if (statusFilter !== "All") {
-      list = list.filter((r) => scoreToStatus(r.summary.latest_score) === statusFilter);
+      list = list.filter(
+        (r) =>
+          scoreToStatus(r.summary.latest_score) === statusFilter
+      );
     }
+
     return list;
-  }, [allRows, query, station, faultFilter, statusFilter]);
+  }, [
+    allRows,
+    query,
+    station,
+    faultFilter,
+    statusFilter,
+  ]);
 
   const sortedRows = useMemo(() => {
     const list = [...filteredRows];
@@ -75,30 +129,77 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
     const compare = (a: RowData, b: RowData) => {
       switch (sortColumn) {
         case "id":
-          return a.summary.transformer_id.localeCompare(b.summary.transformer_id) * dir;
+          return (
+            a.summary.transformer_id.localeCompare(
+              b.summary.transformer_id
+            ) * dir
+          );
+
         case "station":
-          return (stationOf(a.summary) || "").localeCompare(stationOf(b.summary) || "") * dir;
+          return (
+            (stationOf(a.summary) || "").localeCompare(
+              stationOf(b.summary) || ""
+            ) * dir
+          );
+
         case "score":
-          return (a.summary.latest_score - b.summary.latest_score) * dir;
+          return (
+            (a.summary.latest_score -
+              b.summary.latest_score) *
+            dir
+          );
+
         case "status": {
-          const statusOrder: Record<string, number> = { NORMAL: 0, WATCH: 1, HIGH: 2, CRITICAL: 3 };
+          const statusOrder: Record<string, number> = {
+            NORMAL: 0,
+            WATCH: 1,
+            HIGH: 2,
+            CRITICAL: 3,
+          };
+
           const sa = scoreToStatus(a.summary.latest_score);
           const sb = scoreToStatus(b.summary.latest_score);
-          return ((statusOrder[sa] ?? 0) - (statusOrder[sb] ?? 0)) * dir;
+
+          return (
+            ((statusOrder[sa] ?? 0) -
+              (statusOrder[sb] ?? 0)) *
+            dir
+          );
         }
+
         case "fault":
-          return (a.summary.fault_type || "").localeCompare(b.summary.fault_type || "") * dir;
+          return (
+            (a.summary.fault_type || "").localeCompare(
+              b.summary.fault_type || ""
+            ) * dir
+          );
+
         case "date":
           return (
-            new Date(a.summary.latest_sample_day).getTime() -
-            new Date(b.summary.latest_sample_day).getTime()
-          ) * dir;
+            (new Date(
+              a.summary.latest_sample_day
+            ).getTime() -
+              new Date(
+                b.summary.latest_sample_day
+              ).getTime()) *
+            dir
+          );
+
         case "gas":
           return (
-            topGasLabel(a.row, scoreToStatus(a.summary.latest_score)) || ""
-          ).localeCompare(
-            topGasLabel(b.row, scoreToStatus(b.summary.latest_score)) || ""
-          ) * dir;
+            (
+              topGasLabel(
+                a.row,
+                scoreToStatus(a.summary.latest_score)
+              ) || ""
+            ).localeCompare(
+              topGasLabel(
+                b.row,
+                scoreToStatus(b.summary.latest_score)
+              ) || ""
+            ) * dir
+          );
+
         default:
           return 0;
       }
@@ -107,11 +208,15 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
     return list.sort(compare);
   }, [filteredRows, sortColumn, sortDirection]);
 
-  const displayRows = limit ? sortedRows.slice(0, limit) : sortedRows;
+  const displayRows = limit
+    ? sortedRows.slice(0, limit)
+    : sortedRows;
 
   const handleSort = (column: SortColumn) => {
     if (sortColumn === column) {
-      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+      setSortDirection((prev) =>
+        prev === "asc" ? "desc" : "asc"
+      );
     } else {
       setSortColumn(column);
       setSortDirection("asc");
@@ -120,8 +225,11 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
 
   const renderSortIcon = (column: SortColumn) => {
     if (sortColumn !== column) {
-      return <ArrowUpDown className="h-3 w-3 text-teal-300 group-hover:text-teal-500" />;
+      return (
+        <ArrowUpDown className="h-3 w-3 text-teal-300 group-hover:text-teal-500" />
+      );
     }
+
     return sortDirection === "asc" ? (
       <ArrowUp className="h-3 w-3 text-teal-700" />
     ) : (
@@ -133,9 +241,9 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
     <div className="space-y-4">
       {!limit && (
         <div className="flex flex-wrap gap-3 items-end justify-end">
-          {/* Tìm kiếm */}
           <div className="relative flex-1 min-w-[200px] max-w-xs">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-teal-300" />
+
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -143,36 +251,49 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
               className="h-10 w-full rounded-lg border border-teal-200 bg-white pl-9 pr-3 text-sm text-teal-900 outline-none focus:border-teal-500"
             />
           </div>
-          {/* Lọc theo station */}
+
+          {/* Station */}
           <select
             value={station}
             onChange={(e) => setStation(e.target.value)}
             className="h-10 rounded-lg border border-teal-200 bg-white px-3 text-sm text-teal-800 outline-none focus:border-teal-500"
           >
             {stations.map((s) => (
-              <option key={s}>{s}</option>
+              <option key={s} value={s}>
+                {s}
+              </option>
             ))}
           </select>
-          {/* Lọc theo fault type */}
+
+          {/* Fault */}
           <select
             value={faultFilter}
             onChange={(e) => setFaultFilter(e.target.value)}
             className="h-10 rounded-lg border border-teal-200 bg-white px-3 text-sm text-teal-800 outline-none focus:border-teal-500"
           >
             {faultTypes.map((ft) => (
-              <option key={ft}>{ft === "All" ? "All Faults" : ft}</option>
+              <option key={ft} value={ft}>
+                {ft === "All" ? "All Faults" : ft}
+              </option>
             ))}
           </select>
-          {/* Lọc theo status */}
+
+          {/* Status */}
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             className="h-10 rounded-lg border border-teal-200 bg-white px-3 text-sm text-teal-800 outline-none focus:border-teal-500"
           >
             {statuses.map((s) => (
-              <option key={s}>{s === "All" ? "All Statuses" : s}</option>
+              <option key={s} value={s}>
+                {s === "All" ? "All Statuses" : s}
+              </option>
             ))}
           </select>
+
+          <span className="text-xs text-teal-500">
+            ({filteredRows.length}/{allRows.length})
+          </span>
         </div>
       )}
 
@@ -182,6 +303,7 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
             <thead>
               <tr className="border-b border-cream-300 text-xs font-semibold uppercase tracking-wide text-teal-400">
                 <th className="px-4 py-3">#</th>
+
                 <th className="px-4 py-3">
                   <button
                     onClick={() => handleSort("id")}
@@ -191,6 +313,7 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
                     {renderSortIcon("id")}
                   </button>
                 </th>
+
                 <th className="px-4 py-3">
                   <button
                     onClick={() => handleSort("station")}
@@ -200,6 +323,7 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
                     {renderSortIcon("station")}
                   </button>
                 </th>
+
                 <th className="px-4 py-3">
                   <button
                     onClick={() => handleSort("score")}
@@ -209,6 +333,7 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
                     {renderSortIcon("score")}
                   </button>
                 </th>
+
                 <th className="px-4 py-3">
                   <button
                     onClick={() => handleSort("status")}
@@ -218,6 +343,7 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
                     {renderSortIcon("status")}
                   </button>
                 </th>
+
                 <th className="px-4 py-3">
                   <button
                     onClick={() => handleSort("fault")}
@@ -227,6 +353,7 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
                     {renderSortIcon("fault")}
                   </button>
                 </th>
+
                 <th className="px-4 py-3">
                   <button
                     onClick={() => handleSort("date")}
@@ -236,6 +363,7 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
                     {renderSortIcon("date")}
                   </button>
                 </th>
+
                 <th className="px-4 py-3">
                   <button
                     onClick={() => handleSort("gas")}
@@ -247,57 +375,85 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
                 </th>
               </tr>
             </thead>
+
             <tbody>
               {displayRows.map(({ summary, row }, i) => {
-                const status = scoreToStatus(summary.latest_score);
-                const risk = scoreToRisk(summary.latest_score);
+                const status = scoreToStatus(
+                  summary.latest_score
+                );
+                const risk = scoreToRisk(
+                  summary.latest_score
+                );
                 const style = STATUS_STYLES[status];
+
                 return (
                   <tr
                     key={summary.transformer_id}
                     className="border-b border-cream-200 last:border-0 hover:bg-cream-50"
                   >
-                    <td className="px-4 py-3 text-teal-400">{i + 1}</td>
+                    <td className="px-4 py-3 text-teal-400">
+                      {i + 1}
+                    </td>
+
                     <td className="px-4 py-3">
                       <Link
-                        href={`/transformer/${encodeURIComponent(summary.transformer_id)}`}
+                        href={`/transformer/${encodeURIComponent(
+                          summary.transformer_id
+                        )}`}
                         className="font-bold text-teal-900 hover:text-copper-600 hover:underline"
                       >
                         {summary.transformer_id}
                       </Link>
                     </td>
-                    <td className="px-4 py-3 text-teal-600">{stationOf(summary)}</td>
+
+                    <td className="px-4 py-3 text-teal-600">
+                      {stationOf(summary) || "Unknown"}
+                    </td>
+
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <div
-                          className="h-1.5 w-24 overflow-hidden rounded-full bg-cream-200"
-                        >
+                        <div className="h-1.5 w-24 overflow-hidden rounded-full bg-cream-200">
                           <div
                             className={`h-full rounded-full ${style.bar}`}
                             style={{ width: `${risk}%` }}
                           />
                         </div>
-                        <span className={`text-sm font-bold ${style.text}`}>{risk}</span>
+
+                        <span
+                          className={`text-sm font-bold ${style.text}`}
+                        >
+                          {risk}
+                        </span>
                       </div>
                     </td>
+
                     <td className="px-4 py-3">
                       <StatusBadge status={status} />
                     </td>
+
                     <td className="px-4 py-3 text-teal-700 font-medium">
                       {summary.fault_type || "—"}
                     </td>
+
                     <td className="px-4 py-3 text-teal-600">
-                      {formatDate(summary.latest_sample_day)}
+                      {formatDate(
+                        summary.latest_sample_day
+                      )}
                     </td>
+
                     <td className="px-4 py-3 text-teal-600">
                       {topGasLabel(row, status)}
                     </td>
                   </tr>
                 );
               })}
+
               {displayRows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-teal-400">
+                  <td
+                    colSpan={8}
+                    className="px-4 py-10 text-center text-sm text-teal-400"
+                  >
                     No transformers match the current filters.
                   </td>
                 </tr>
@@ -313,19 +469,45 @@ export function RankingTable({ payload, limit }: { payload: DgaPayload; limit?: 
 export function RiskLegend() {
   return (
     <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-teal-500">
-      <span className="font-semibold text-teal-700">Risk Legend:</span>
-      <LegendItem colorClass="bg-status-normal" label="0–30 (Normal)" />
-      <LegendItem colorClass="bg-status-watch" label="31–60 (Watch)" />
-      <LegendItem colorClass="bg-status-high" label="61–89 (High)" />
-      <LegendItem colorClass="bg-status-critical" label="90–100 (Critical)" />
+      <span className="font-semibold text-teal-700">
+        Risk Legend:
+      </span>
+
+      <LegendItem
+        colorClass="bg-status-normal"
+        label="0–30 (Normal)"
+      />
+
+      <LegendItem
+        colorClass="bg-status-watch"
+        label="31–60 (Watch)"
+      />
+
+      <LegendItem
+        colorClass="bg-status-high"
+        label="61–89 (High)"
+      />
+
+      <LegendItem
+        colorClass="bg-status-critical"
+        label="90–100 (Critical)"
+      />
     </div>
   );
 }
 
-function LegendItem({ colorClass, label }: { colorClass: string; label: string }) {
+function LegendItem({
+  colorClass,
+  label,
+}: {
+  colorClass: string;
+  label: string;
+}) {
   return (
     <span className="flex items-center gap-1.5">
-      <span className={`h-2 w-2 rounded-full ${colorClass}`} />
+      <span
+        className={`h-2 w-2 rounded-full ${colorClass}`}
+      />
       {label}
     </span>
   );

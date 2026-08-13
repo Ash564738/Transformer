@@ -20,21 +20,24 @@ import logging
 from pathlib import Path
 
 import pandas as pd
+from config import DATASET_DIR, DATABASE_DIR, MODEL_DIR, REPORT_DIR
 
 logger = logging.getLogger(__name__)
 
-ACCUMULATED_PATH = Path(__file__).resolve().parent / "data" / "accumulated_clean.csv"
+ACCUMULATED_PATH = DATASET_DIR / "processed" / "accumulated_clean.csv"
 
 _DATE_COLS = ["sample_day", "tested_day"]
 
 
 def _load_existing() -> pd.DataFrame | None:
     if not ACCUMULATED_PATH.exists():
+        logger.debug("No accumulated dataset file found at %s", ACCUMULATED_PATH)
         return None
     try:
         df = pd.read_csv(ACCUMULATED_PATH)
+        logger.debug("Loaded existing accumulated dataset: %d rows", len(df))
     except Exception:
-        logger.exception("Không đọc được accumulated_clean.csv, bỏ qua lịch sử cũ.")
+        logger.exception("Failed to read accumulated_clean.csv; ignoring previous history.")
         return None
     for col in _DATE_COLS:
         if col in df.columns:
@@ -48,6 +51,7 @@ def merge_with_accumulated(df_clean_new: pd.DataFrame) -> pd.DataFrame:
     upload's version), and persists the merged result for next time."""
     existing = _load_existing()
     if existing is None or existing.empty:
+        logger.info("No existing accumulated data; using new upload as initial dataset.")
         merged = df_clean_new.copy()
     else:
         # Align columns: different uploads can add/omit optional columns
@@ -64,7 +68,7 @@ def merge_with_accumulated(df_clean_new: pd.DataFrame) -> pd.DataFrame:
         merged = merged.sort_values(["transformer_id", "sample_day"], kind="mergesort").reset_index(drop=True)
 
     logger.info(
-        "Gộp dữ liệu tích lũy: %d dòng cũ + %d dòng mới -> %d dòng (bỏ %d dòng trùng transformer_id+sample_day).",
+        "Data accumulation: %d old rows + %d new rows -> %d rows (%d duplicates removed).",
         len(existing) if existing is not None else 0,
         len(df_clean_new),
         len(merged),
@@ -73,6 +77,7 @@ def merge_with_accumulated(df_clean_new: pd.DataFrame) -> pd.DataFrame:
 
     ACCUMULATED_PATH.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(ACCUMULATED_PATH, index=False)
+    logger.info("Accumulated dataset saved to %s", ACCUMULATED_PATH)
     return merged
 
 
@@ -82,4 +87,6 @@ def reset_accumulated_dataset() -> None:
     instead of silently merging into whatever was there before."""
     if ACCUMULATED_PATH.exists():
         ACCUMULATED_PATH.unlink()
-        logger.info("Đã xoá accumulated_clean.csv theo yêu cầu reset.")
+        logger.info("Deleted accumulated dataset file: %s", ACCUMULATED_PATH)
+    else:
+        logger.info("No accumulated dataset file to delete.")

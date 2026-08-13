@@ -15,7 +15,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from feature_engineering import (
-    preprocess_types, sort_and_deduplicate, filter_rows_for_model,
+    add_nb_event_features, preprocess_types, sort_and_deduplicate, filter_rows_for_model,
     add_missingness_flags, impute_optional_context_by_transformer,
     add_tdcg, add_rating_features, add_metadata_features,
     add_ratio_features, add_duval_input_features,
@@ -24,17 +24,18 @@ from feature_engineering import (
     add_quality_flags, CORE_GASES, OPTIONAL_NUMERIC
 )
 from consensus import apply_consensus
-from config import BACKEND_DATA_DIR, BACKEND_ROOT
+from config import DATASET_DIR, DATABASE_DIR, MODEL_DIR, REPORT_DIR
 
-UNLABELED_PATH = Path(BACKEND_DATA_DIR) / "dga_unlabeled.parquet"
-ACCUMULATED_CSV = Path(BACKEND_ROOT) / "dataset" / "accumulated_clean.csv"
-CLEAN_PARQUET = Path(BACKEND_DATA_DIR) / "dga_clean.parquet"
+UNLABELED_PATH = Path(DATASET_DIR) / "processed" / "dga_unlabeled.parquet"
+ACCUMULATED_CSV = Path(DATASET_DIR) / "processed" / "accumulated_clean.csv"
+CLEAN_PARQUET = Path(DATASET_DIR) / "processed" / "dga_clean.parquet"
 
 def build_features_and_consensus(df: pd.DataFrame) -> pd.DataFrame:
     """Áp dụng toàn bộ pipeline feature engineering + consensus."""
     df = preprocess_types(df)
     df = sort_and_deduplicate(df)
     df = filter_rows_for_model(df, max_missing_core=3)
+    df = add_nb_event_features(df)
     df = add_missingness_flags(df, OPTIONAL_NUMERIC + ["year_energized", "tdcg_raw"])
     df = impute_optional_context_by_transformer(df)
     df = add_tdcg(df)
