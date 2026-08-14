@@ -1,92 +1,249 @@
 # dataset_accumulator.py
-"""Accumulates cleaned DGA data across /predict calls, instead of each
-upload silently replacing everything that came before.
+from __future__ import annotations
 
-Why this matters: a real user doesn't re-upload their entire historical
-dataset every time — they upload whatever new batch of lab readings they
-just got, which is often a different file with a different shape than the
-last one. clean_dataset() already normalizes column names/formats per file
-independently, so by the time a DataFrame reaches merge_with_accumulated()
-it's already in the same shape regardless of which raw file it came from —
-that's what makes merging safe here rather than in inference_service.py's
-raw upload handling.
-
-Dedup key is (transformer_id, sample_day): the same transformer's reading
-for the same day is the same lab sample, no matter which upload it arrived
-in. On a genuine collision (same key, different gas values — e.g. a
-corrected re-upload), the newest upload wins.
-"""
 import logging
 from pathlib import Path
 
 import pandas as pd
-from config import DATASET_DIR, DATABASE_DIR, MODEL_DIR, REPORT_DIR
 
-logger = logging.getLogger(__name__)
+from config import DATASET_DIR
 
-ACCUMULATED_PATH = DATASET_DIR / "processed" / "accumulated_clean.csv"
-
-_DATE_COLS = ["sample_day", "tested_day"]
-
-
-def _load_existing() -> pd.DataFrame | None:
-    if not ACCUMULATED_PATH.exists():
-        logger.debug("No accumulated dataset file found at %s", ACCUMULATED_PATH)
-        return None
-    try:
-        df = pd.read_csv(ACCUMULATED_PATH)
-        logger.debug("Loaded existing accumulated dataset: %d rows", len(df))
-    except Exception:
-        logger.exception("Failed to read accumulated_clean.csv; ignoring previous history.")
-        return None
-    for col in _DATE_COLS:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-    return df
+logger = logging.getLogger(
+    __name__
+)
 
 
-def merge_with_accumulated(df_clean_new: pd.DataFrame) -> pd.DataFrame:
-    """Merges a freshly-cleaned upload into the accumulated history, drops
-    duplicate (transformer_id, sample_day) samples (keeping the newest
-    upload's version), and persists the merged result for next time."""
+ACCUMULATED_PATH = (
+    DATASET_DIR
+    / "processed"
+    / "accumulated_clean.parquet"
+)
+
+LEGACY_CSV_PATH = (
+    DATASET_DIR
+    / "processed"
+    / "accumulated_clean.csv"
+)
+
+
+_DATE_COLS = [
+    "sample_day",
+    "tested_day",
+]
+
+
+def _load_existing():
+
+    if ACCUMULATED_PATH.exists():
+
+        try:
+
+            df = pd.read_parquet(
+                ACCUMULATED_PATH
+            )
+
+            for column in (
+                _DATE_COLS
+            ):
+
+                if column in df.columns:
+                    df[column] = (
+                        pd.to_datetime(
+                            df[column],
+                            errors="coerce",
+                        )
+                    )
+
+            return df
+
+        except Exception:
+
+            logger.exception(
+                "Failed to read accumulated parquet."
+            )
+
+    # Backward compatibility.
+    if LEGACY_CSV_PATH.exists():
+
+        try:
+
+            df = pd.read_csv(
+                LEGACY_CSV_PATH
+            )
+
+            for column in (
+                _DATE_COLS
+            ):
+
+                if column in df.columns:
+                    df[column] = (
+                        pd.to_datetime(
+                            df[column],
+                            errors="coerce",
+                        )
+                    )
+
+            return df
+
+        except Exception:
+
+            logger.exception(
+                "Failed to read legacy accumulated CSV."
+            )
+
+    return None
+
+
+def merge_with_accumulated(
+    df_clean_new: pd.DataFrame,
+) -> pd.DataFrame:
+
+    new = df_clean_new.copy()
+
     existing = _load_existing()
+
     if existing is None or existing.empty:
-        logger.info("No existing accumulated data; using new upload as initial dataset.")
-        merged = df_clean_new.copy()
+
+        merged = new
+
+        old_count = 0
+
     else:
-        # Align columns: different uploads can add/omit optional columns
-        # (e.g. one file has NB notes, another doesn't) — outer-join the
-        # column sets so neither side loses data, missing cells become NaN.
-        merged = pd.concat([existing, df_clean_new], ignore_index=True, sort=False)
 
-    before = len(merged)
-    if "transformer_id" in merged.columns and "sample_day" in merged.columns:
-        merged = merged.drop_duplicates(subset=["transformer_id", "sample_day"], keep="last")
-    duplicates_dropped = before - len(merged)
+        old_count = len(
+            existing
+        )
 
-    if "transformer_id" in merged.columns and "sample_day" in merged.columns:
-        merged = merged.sort_values(["transformer_id", "sample_day"], kind="mergesort").reset_index(drop=True)
+        # Outer union of columns.
+        merged = pd.concat(
+            [
+                existing,
+                new,
+            ],
+            ignore_index=True,
+            sort=False,
+        )
+
+    required = {
+        "transformer_id",
+        "sample_day",
+    }
+
+    missing = (
+        required
+        - set(
+            merged.columns
+        )
+    )
+
+    if missing:
+        raise ValueError(
+            f"Accumulated dataset missing: {sorted(missing)}"
+        )
+
+    merged["sample_day"] = (
+        pd.to_datetime(
+            merged["sample_day"],
+            errors="coerce",
+        )
+    )
+
+    if "tested_day" in merged.columns:
+
+        merged["tested_day"] = (
+            pd.to_datetime(
+                merged["tested_day"],
+                errors="coerce",
+            )
+        )
+
+    merged = merged.dropna(
+        subset=[
+            "transformer_id",
+            "sample_day",
+        ]
+    )
+
+    before = len(
+        merged
+    )
+
+    merged = (
+        merged.sort_values(
+            [
+                "transformer_id",
+                "sample_day",
+            ],
+            kind="mergesort",
+        )
+        .drop_duplicates(
+            subset=[
+                "transformer_id",
+                "sample_day",
+            ],
+            keep="last",
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    duplicates_dropped = (
+        before - len(
+            merged
+        )
+    )
+
+    ACCUMULATED_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    # Atomic-ish write.
+    temp_path = (
+        ACCUMULATED_PATH.with_suffix(
+            ".tmp.parquet"
+        )
+    )
+
+    merged.to_parquet(
+        temp_path,
+        index=False,
+    )
+
+    temp_path.replace(
+        ACCUMULATED_PATH
+    )
+
+    # Keep CSV only as a backward-compatible mirror.
+    merged.to_csv(
+        LEGACY_CSV_PATH,
+        index=False,
+    )
 
     logger.info(
-        "Data accumulation: %d old rows + %d new rows -> %d rows (%d duplicates removed).",
-        len(existing) if existing is not None else 0,
-        len(df_clean_new),
+        "Accumulation: %d old + %d new -> %d rows; %d duplicate keys removed.",
+        old_count,
+        len(new),
         len(merged),
         duplicates_dropped,
     )
 
-    ACCUMULATED_PATH.parent.mkdir(parents=True, exist_ok=True)
-    merged.to_csv(ACCUMULATED_PATH, index=False)
-    logger.info("Accumulated dataset saved to %s", ACCUMULATED_PATH)
     return merged
 
 
-def reset_accumulated_dataset() -> None:
-    """Wipes accumulated history — used when the user explicitly clears the
-    loaded dataset, so 'Clear data' actually starts fresh next upload
-    instead of silently merging into whatever was there before."""
-    if ACCUMULATED_PATH.exists():
-        ACCUMULATED_PATH.unlink()
-        logger.info("Deleted accumulated dataset file: %s", ACCUMULATED_PATH)
-    else:
-        logger.info("No accumulated dataset file to delete.")
+def reset_accumulated_dataset():
+
+    for path in [
+        ACCUMULATED_PATH,
+        LEGACY_CSV_PATH,
+    ]:
+
+        if path.exists():
+
+            path.unlink()
+
+            logger.info(
+                "Deleted accumulated dataset: %s",
+                path,
+            )

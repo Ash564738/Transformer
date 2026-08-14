@@ -1,5 +1,9 @@
 # evaluation.py
+from __future__ import annotations
+
 import logging
+from typing import Callable, Iterable, Optional, Sequence
+
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
@@ -8,133 +12,755 @@ from sklearn.utils import resample
 logger = logging.getLogger(__name__)
 
 
-def precision_recall_lift(scores, events, k):
-    """Compute Precision@k, Recall@k, and Lift for given anomaly scores."""
-    order = np.argsort(scores)[::-1]
+# ============================================================================
+# Helpers
+# ============================================================================
+
+def _as_1d_float(
+    values,
+) -> np.ndarray:
+
+    arr = np.asarray(
+        values,
+        dtype=float,
+    ).reshape(-1)
+
+    return arr
+
+
+def _as_binary_events(
+    events,
+) -> np.ndarray:
+
+    arr = np.asarray(
+        events
+    ).reshape(-1)
+
+    return (
+        arr.astype(bool)
+    )
+
+
+# ============================================================================
+# Top-K
+# ============================================================================
+
+def precision_recall_lift(
+    scores,
+    events,
+    k: int,
+):
+    scores = _as_1d_float(
+        scores
+    )
+
+    events = _as_binary_events(
+        events
+    )
+
+    if len(scores) != len(events):
+        raise ValueError(
+            "scores and events must have the same length."
+        )
+
+    n = len(scores)
+
+    if n == 0:
+        return (
+            0.0,
+            0.0,
+            1.0,
+        )
+
+    k = int(
+        np.clip(
+            k,
+            1,
+            n,
+        )
+    )
+
+    finite_scores = np.nan_to_num(
+        scores,
+        nan=-np.inf,
+        posinf=np.inf,
+        neginf=-np.inf,
+    )
+
+    order = np.argsort(
+        finite_scores
+    )[::-1]
+
     topk = order[:k]
-    tp = events[topk].sum()
-    precision = tp / k
-    recall = tp / events.sum() if events.sum() > 0 else 0.0
-    prevalence = events.mean()
-    lift = precision / prevalence if prevalence > 0 else 1.0
-    logger.debug("P@%d=%.4f, R@%d=%.4f, Lift=%.2f (prevalence=%.4f)", k, precision, k, recall, lift, prevalence)
-    return precision, recall, lift
+
+    tp = int(
+        events[topk].sum()
+    )
+
+    precision = (
+        tp / k
+    )
+
+    total_events = int(
+        events.sum()
+    )
+
+    recall = (
+        tp / total_events
+        if total_events > 0
+        else 0.0
+    )
+
+    prevalence = float(
+        events.mean()
+    )
+
+    lift = (
+        precision / prevalence
+        if prevalence > 0
+        else 1.0
+    )
+
+    return (
+        float(precision),
+        float(recall),
+        float(lift),
+    )
 
 
-def topk_stability(scores1, scores2, k):
-    """Jaccard index of Top-K elements between two score vectors."""
-    topk1 = set(np.argsort(scores1)[::-1][:k])
-    topk2 = set(np.argsort(scores2)[::-1][:k])
-    inter = len(topk1 & topk2)
-    union = len(topk1 | topk2)
-    stability = inter / union if union > 0 else 1.0
-    logger.debug("Top-%d stability: %.4f", k, stability)
-    return stability
+def topk_stability(
+    scores1,
+    scores2,
+    k: int,
+):
+
+    scores1 = _as_1d_float(
+        scores1
+    )
+
+    scores2 = _as_1d_float(
+        scores2
+    )
+
+    n = min(
+        len(scores1),
+        len(scores2),
+    )
+
+    if n == 0:
+        return 1.0
+
+    k = int(
+        np.clip(
+            k,
+            1,
+            n,
+        )
+    )
+
+    idx1 = np.argsort(
+        np.nan_to_num(
+            scores1,
+            nan=-np.inf,
+        )
+    )[::-1][:k]
+
+    idx2 = np.argsort(
+        np.nan_to_num(
+            scores2,
+            nan=-np.inf,
+        )
+    )[::-1][:k]
+
+    set1 = set(
+        idx1.tolist()
+    )
+
+    set2 = set(
+        idx2.tolist()
+    )
+
+    union = (
+        len(set1 | set2)
+    )
+
+    if union == 0:
+        return 1.0
+
+    return float(
+        len(set1 & set2)
+        / union
+    )
 
 
-def rank_correlation(scores1, scores2):
-    """Spearman rank correlation between two score vectors."""
-    rho = spearmanr(scores1, scores2).correlation
-    logger.debug("Spearman ρ = %.4f", rho)
-    return rho
+# ============================================================================
+# Rank correlation
+# ============================================================================
+
+def rank_correlation(
+    scores1,
+    scores2,
+):
+
+    scores1 = _as_1d_float(
+        scores1
+    )
+
+    scores2 = _as_1d_float(
+        scores2
+    )
+
+    if len(scores1) != len(scores2):
+        raise ValueError(
+            "scores1 and scores2 must have equal length."
+        )
+
+    if len(scores1) < 2:
+        return 1.0
+
+    rho = spearmanr(
+        scores1,
+        scores2,
+        nan_policy="omit",
+    ).statistic
+
+    if not np.isfinite(rho):
+        return 0.0
+
+    return float(rho)
 
 
-def temporal_consistency(scores, tdcg, transformer_ids):
-    """TC metric: proportion of consecutive samples where score doesn't drop when TDCG increases."""
-    df = pd.DataFrame({'score': scores, 'tdcg': tdcg, 'id': transformer_ids})
+# ============================================================================
+# Temporal consistency
+# ============================================================================
+
+def temporal_consistency(
+    scores,
+    tdcg,
+    transformer_ids,
+    sample_days: Optional[
+        Sequence
+    ] = None,
+):
+
+    scores = _as_1d_float(
+        scores
+    )
+
+    tdcg = _as_1d_float(
+        tdcg
+    )
+
+    ids = np.asarray(
+        transformer_ids
+    )
+
+    if not (
+        len(scores)
+        == len(tdcg)
+        == len(ids)
+    ):
+        raise ValueError(
+            "scores, tdcg and transformer_ids must have equal length."
+        )
+
+    if sample_days is None:
+
+        days = np.arange(
+            len(scores)
+        )
+
+    else:
+
+        days = pd.to_datetime(
+            sample_days,
+            errors="coerce",
+        )
+
+    frame = pd.DataFrame(
+        {
+            "score": scores,
+            "tdcg": tdcg,
+            "id": ids,
+            "day": days,
+        }
+    )
+
     consistent = 0
     total = 0
-    for _, grp in df.groupby('id'):
-        grp = grp.sort_index()
-        for i in range(len(grp)-1):
-            if grp['tdcg'].iloc[i+1] > grp['tdcg'].iloc[i]:
-                if grp['score'].iloc[i+1] >= grp['score'].iloc[i]:
-                    consistent += 1
+
+    for _, group in frame.groupby(
+        "id"
+    ):
+
+        if sample_days is not None:
+
+            group = group.sort_values(
+                "day"
+            )
+
+        else:
+
+            group = group.sort_index()
+
+        group = group.reset_index(
+            drop=True
+        )
+
+        for i in range(
+            len(group) - 1
+        ):
+
+            current_tdcg = (
+                group.loc[
+                    i,
+                    "tdcg"
+                ]
+            )
+
+            next_tdcg = (
+                group.loc[
+                    i + 1,
+                    "tdcg"
+                ]
+            )
+
+            current_score = (
+                group.loc[
+                    i,
+                    "score"
+                ]
+            )
+
+            next_score = (
+                group.loc[
+                    i + 1,
+                    "score"
+                ]
+            )
+
+            if not (
+                np.isfinite(
+                    current_tdcg
+                )
+                and np.isfinite(
+                    next_tdcg
+                )
+                and np.isfinite(
+                    current_score
+                )
+                and np.isfinite(
+                    next_score
+                )
+            ):
+                continue
+
+            if next_tdcg > current_tdcg:
+
                 total += 1
-    tc = consistent / total if total > 0 else 0.0
-    logger.debug("Temporal consistency (TC): %.4f (%d/%d pairs)", tc, consistent, total)
-    return tc
+
+                if (
+                    next_score
+                    >= current_score
+                ):
+                    consistent += 1
+
+    return float(
+        consistent / total
+        if total > 0
+        else 0.0
+    )
 
 
-def gas_increase_consistency(model, X, tdcg_cols, n_perturb=100):
-    """GIC: fraction of samples where score increases when gas concentrations are increased by 10%."""
-    n = X.shape[0]
-    idx = np.random.choice(n, min(n_perturb, n), replace=False)
+# ============================================================================
+# Gas increase consistency
+# ============================================================================
+
+def gas_increase_consistency(
+    model,
+    X,
+    gas_columns,
+    n_perturb: int = 100,
+    increase_fraction: float = 0.10,
+    random_state: int = 42,
+):
+    """
+    Stress-test metric.
+
+    Increase selected gas features by 10% and measure how often
+    the anomaly score increases.
+
+    This is NOT diagnostic accuracy and does NOT prove physical monotonicity.
+    """
+
+    X = np.asarray(
+        X,
+        dtype=float,
+    )
+
+    if X.ndim != 2:
+        raise ValueError(
+            "X must be 2-dimensional."
+        )
+
+    n = len(X)
+
+    if n == 0:
+        return 0.0
+
+    rng = np.random.default_rng(
+        random_state
+    )
+
+    sample_count = min(
+        n_perturb,
+        n,
+    )
+
+    indices = rng.choice(
+        n,
+        size=sample_count,
+        replace=False,
+    )
+
+    # Obtain original scores in a single batch.
+    original_scores = model.predict(
+        X[indices]
+    )
+
     consistent = 0
-    for i in idx:
-        x_orig = X[i].copy()
-        s_orig = model.predict(x_orig.reshape(1, -1))[0]
-        x_pert = x_orig.copy()
-        for j in tdcg_cols:
-            x_pert[j] *= 1.1
-        s_pert = model.predict(x_pert.reshape(1, -1))[0]
-        if s_pert >= s_orig:
-            consistent += 1
-    gic = consistent / len(idx) if len(idx) > 0 else 0.0
-    logger.debug("Gas increase consistency (GIC): %.4f (%d/%d perturbations)", gic, consistent, len(idx))
-    return gic
 
+    for local_index, row_index in enumerate(
+        indices
+    ):
+
+        x_original = X[
+            row_index
+        ].copy()
+
+        x_perturbed = (
+            x_original.copy()
+        )
+
+        for column_index in gas_columns:
+
+            if (
+                not isinstance(
+                    column_index,
+                    (int, np.integer),
+                )
+                or column_index < 0
+                or column_index >= X.shape[1]
+            ):
+                continue
+
+            value = (
+                x_perturbed[
+                    column_index
+                ]
+            )
+
+            if (
+                np.isfinite(value)
+                and value >= 0
+            ):
+                x_perturbed[
+                    column_index
+                ] = (
+                    value
+                    * (
+                        1.0
+                        + increase_fraction
+                    )
+                )
+
+        perturbed_score = model.predict(
+            x_perturbed.reshape(
+                1,
+                -1,
+            )
+        )[0]
+
+        if (
+            perturbed_score
+            >= original_scores[
+                local_index
+            ]
+        ):
+            consistent += 1
+
+    return float(
+        consistent
+        / sample_count
+        if sample_count > 0
+        else 0.0
+    )
+
+
+# ============================================================================
+# Weak-label agreement
+# ============================================================================
 
 def evaluate_agreement_with_weak_labels(
     df: pd.DataFrame,
     weak_label_col: str,
-    predicted_col: str = "consensus_fault"
+    predicted_col: str = "consensus_fault",
 ) -> dict:
-    """
-    Evaluate agreement between model predictions and a weak label (e.g., from IEC method).
-    This is NOT diagnostic accuracy; it only measures consistency with the chosen weak label.
-    """
-    from sklearn.metrics import accuracy_score, f1_score, cohen_kappa_score
 
-    mask = df[weak_label_col].notna() & df[predicted_col].notna()
-    y_true = df.loc[mask, weak_label_col]
-    y_pred = df.loc[mask, predicted_col]
+    from sklearn.metrics import (
+        accuracy_score,
+        cohen_kappa_score,
+        f1_score,
+    )
+
+    if (
+        weak_label_col not in df.columns
+        or predicted_col not in df.columns
+    ):
+        return {
+            "accuracy": None,
+            "macro_f1": None,
+            "cohen_kappa": None,
+            "n": 0,
+        }
+
+    mask = (
+        df[weak_label_col].notna()
+        & df[predicted_col].notna()
+    )
+
+    y_true = (
+        df.loc[
+            mask,
+            weak_label_col,
+        ]
+        .astype(str)
+    )
+
+    y_pred = (
+        df.loc[
+            mask,
+            predicted_col,
+        ]
+        .astype(str)
+    )
 
     if len(y_true) == 0:
-        logger.warning("No valid samples for agreement evaluation (column '%s').", weak_label_col)
-        return {"accuracy": None, "macro_f1": None, "cohen_kappa": None}
+        return {
+            "accuracy": None,
+            "macro_f1": None,
+            "cohen_kappa": None,
+            "n": 0,
+        }
 
-    acc = accuracy_score(y_true, y_pred)
-    f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
-    kappa = cohen_kappa_score(y_true, y_pred)
+    return {
+        "accuracy": float(
+            accuracy_score(
+                y_true,
+                y_pred,
+            )
+        ),
+        "macro_f1": float(
+            f1_score(
+                y_true,
+                y_pred,
+                average="macro",
+                zero_division=0,
+            )
+        ),
+        "cohen_kappa": float(
+            cohen_kappa_score(
+                y_true,
+                y_pred,
+            )
+        ),
+        "n": int(
+            len(y_true)
+        ),
+    }
 
-    logger.info("Weak-label agreement (vs %s): Accuracy=%.3f, Macro F1=%.3f, Cohen’s Kappa=%.3f",
-                weak_label_col, acc, f1, kappa)
-    return {"accuracy": acc, "macro_f1": f1, "cohen_kappa": kappa}
 
+# ============================================================================
+# Real ground truth
+# ============================================================================
 
 def evaluate_diagnostic_performance(
     df: pd.DataFrame,
     ground_truth_col: str,
-    predicted_col: str = "consensus_fault"
+    predicted_col: str = "consensus_fault",
 ) -> dict:
-    """
-    Evaluate real-world diagnostic performance against a ground truth column (e.g., maintenance inspection results).
-    """
-    from sklearn.metrics import accuracy_score, f1_score, cohen_kappa_score
 
-    mask = df[ground_truth_col].notna() & df[predicted_col].notna()
-    y_true = df.loc[mask, ground_truth_col]
-    y_pred = df.loc[mask, predicted_col]
+    from sklearn.metrics import (
+        accuracy_score,
+        cohen_kappa_score,
+        f1_score,
+    )
+
+    if (
+        ground_truth_col not in df.columns
+        or predicted_col not in df.columns
+    ):
+        return {
+            "accuracy": None,
+            "macro_f1": None,
+            "cohen_kappa": None,
+            "n": 0,
+        }
+
+    mask = (
+        df[
+            ground_truth_col
+        ].notna()
+        & df[
+            predicted_col
+        ].notna()
+    )
+
+    y_true = (
+        df.loc[
+            mask,
+            ground_truth_col,
+        ]
+        .astype(str)
+    )
+
+    y_pred = (
+        df.loc[
+            mask,
+            predicted_col,
+        ]
+        .astype(str)
+    )
 
     if len(y_true) == 0:
-        logger.warning("No ground truth samples available for evaluation (column '%s').", ground_truth_col)
-        return {"accuracy": None, "macro_f1": None, "cohen_kappa": None}
+        return {
+            "accuracy": None,
+            "macro_f1": None,
+            "cohen_kappa": None,
+            "n": 0,
+        }
 
-    acc = accuracy_score(y_true, y_pred)
-    f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
-    kappa = cohen_kappa_score(y_true, y_pred)
+    return {
+        "accuracy": float(
+            accuracy_score(
+                y_true,
+                y_pred,
+            )
+        ),
+        "macro_f1": float(
+            f1_score(
+                y_true,
+                y_pred,
+                average="macro",
+                zero_division=0,
+            )
+        ),
+        "cohen_kappa": float(
+            cohen_kappa_score(
+                y_true,
+                y_pred,
+            )
+        ),
+        "n": int(
+            len(y_true)
+        ),
+    }
 
-    logger.info("Diagnostic performance vs %s: Accuracy=%.3f, Macro F1=%.3f, Cohen’s Kappa=%.3f",
-                ground_truth_col, acc, f1, kappa)
-    return {"accuracy": acc, "macro_f1": f1, "cohen_kappa": kappa}
 
+# ============================================================================
+# Bootstrap
+# ============================================================================
 
-def bootstrap_confidence_interval(data, metric_fn, n_bootstrap=1000, alpha=0.05):
-    """Compute bootstrap confidence interval for a given metric function."""
-    vals = np.array([metric_fn(resample(data)) for _ in range(n_bootstrap)])
-    lower = np.percentile(vals, 100 * alpha / 2)
-    upper = np.percentile(vals, 100 * (1 - alpha / 2))
-    mean = np.mean(vals)
-    logger.debug("Bootstrap CI (α=%.2f): mean=%.4f, [%.4f, %.4f]", alpha, mean, lower, upper)
-    return mean, lower, upper
+def bootstrap_confidence_interval(
+    data,
+    metric_fn: Callable,
+    n_bootstrap: int = 1000,
+    alpha: float = 0.05,
+    random_state: int = 42,
+):
+
+    data = np.asarray(
+        data
+    )
+
+    if data.size == 0:
+        return (
+            np.nan,
+            np.nan,
+            np.nan,
+        )
+
+    rng = np.random.default_rng(
+        random_state
+    )
+
+    values = []
+
+    for _ in range(
+        n_bootstrap
+    ):
+
+        sample = resample(
+            data,
+            replace=True,
+            n_samples=len(data),
+            random_state=int(
+                rng.integers(
+                    0,
+                    2**32 - 1,
+                )
+            ),
+        )
+
+        value = metric_fn(
+            sample
+        )
+
+        if np.isfinite(value):
+            values.append(
+                float(value)
+            )
+
+    if not values:
+        return (
+            np.nan,
+            np.nan,
+            np.nan,
+        )
+
+    values = np.asarray(
+        values,
+        dtype=float,
+    )
+
+    lower = float(
+        np.percentile(
+            values,
+            100
+            * alpha
+            / 2,
+        )
+    )
+
+    upper = float(
+        np.percentile(
+            values,
+            100
+            * (
+                1.0
+                - alpha / 2
+            ),
+        )
+    )
+
+    mean = float(
+        np.mean(
+            values
+        )
+    )
+
+    return (
+        mean,
+        lower,
+        upper,
+    )

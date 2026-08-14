@@ -1,9 +1,9 @@
 # weak_supervision.py
 from __future__ import annotations
 
+import importlib
 import logging
 from typing import Dict, List, Optional, Tuple
-import importlib
 
 import numpy as np
 import pandas as pd
@@ -14,28 +14,84 @@ from logging_config import init_logging
 init_logging()
 logger = logging.getLogger(__name__)
 
-# ---------- Snorkel detection ----------
+
+# ============================================================================
+# Snorkel detection
+# ============================================================================
+
 SNORKEL_AVAILABLE = False
 LabelModel = None
 SNORKEL_IMPORT_ERROR = None
+
 try:
-    if importlib.util.find_spec("snorkel") is not None:
+
+    if importlib.util.find_spec(
+        "snorkel"
+    ) is not None:
+
         try:
             from snorkel.labeling.model import LabelModel
+
             SNORKEL_AVAILABLE = True
-            logger.debug("Snorkel detected and LabelModel imported successfully.")
-        except Exception as ex:
-            logger.exception("Snorkel import failed: %s", ex)
+
+            logger.debug(
+                "Snorkel LabelModel imported successfully."
+            )
+
+        except Exception as exc:
+
             LabelModel = None
             SNORKEL_AVAILABLE = False
-            SNORKEL_IMPORT_ERROR = str(ex)
-    else:
-        logger.debug("Snorkel not found by importlib.util.find_spec")
-except Exception:
-    logger.exception("Unexpected error while checking snorkel availability")
+            SNORKEL_IMPORT_ERROR = str(exc)
+
+            logger.exception(
+                "Snorkel import failed: %s",
+                exc,
+            )
+
+except Exception as exc:
+
     SNORKEL_AVAILABLE = False
+    SNORKEL_IMPORT_ERROR = str(exc)
+
+    logger.exception(
+        "Unexpected Snorkel detection error."
+    )
+
 
 ABSTAIN = -1
+
+
+# ============================================================================
+# Weak-label groups
+# ============================================================================
+
+WEAK_GROUPS = [
+    "NORMAL",
+    "DISCHARGE",
+    "THERMAL",
+    "CELLULOSE",
+    "STRAY_GASSING",
+    "MIXED",
+]
+
+
+WEAK_GROUP_TO_INDEX = {
+    group: idx
+    for idx, group in enumerate(
+        WEAK_GROUPS
+    )
+}
+
+
+# ============================================================================
+# IMPORTANT:
+#
+# Duval Pentagon P1 and P2 are NOT independent labeling functions.
+#
+# Both are generated from the same centroid and same five gases.
+# Therefore only ONE Pentagon output is included in the weak label matrix.
+# ============================================================================
 
 DEFAULT_WEAK_METHODS = {
     "keygas_fault": "keygas_fault",
@@ -43,211 +99,748 @@ DEFAULT_WEAK_METHODS = {
     "rogers_fault": "rogers_fault",
     "doernenburg_fault": "doernenburg_fault",
     "duval_triangle_fault": "duval_triangle_fault",
-    "duval_pentagon_p1_fault": "fault_p1",
-    "duval_pentagon_p2_fault": "duval_pentagon_fault",
+    "duval_pentagon_fault": "duval_pentagon_p2_fault",
 }
 
-WEAK_GROUPS = ["NORMAL", "DISCHARGE", "THERMAL", "CELLULOSE", "STRAY_GASSING", "MIXED"]
 
+# ============================================================================
+# Fault normalization
+# ============================================================================
 
-def _normalize_vote(raw_label: str) -> str:
-    label = normalize_fault(raw_label)
-    group = unify_fault(label)
+def _normalize_vote(
+    raw_label,
+) -> str:
+
+    label = normalize_fault(
+        raw_label
+    )
+
+    group = unify_fault(
+        label
+    )
+
     return group
 
 
+# ============================================================================
+# Label matrix
+# ============================================================================
+
 def build_label_matrix(
     df: pd.DataFrame,
-    label_columns: Optional[Dict[str, str]] = None,
-    groups: Optional[List[str]] = None,
-) -> Tuple[np.ndarray, List[str], List[str]]:
-    """
-    Build a Snorkel-compatible label matrix from traditional DGA votes only.
-    No extra rule-based LFs are used.
-    """
-    label_columns = label_columns or DEFAULT_WEAK_METHODS
-    groups = groups or WEAK_GROUPS
-    group_to_int = {g: i for i, g in enumerate(groups)}
+    label_columns: Optional[
+        Dict[str, str]
+    ] = None,
+    groups: Optional[
+        List[str]
+    ] = None,
+) -> Tuple[
+    np.ndarray,
+    List[str],
+    List[str],
+]:
 
-    all_lfs = list(label_columns.keys())
-    logger.info("Building label matrix with %d labeling functions (traditional DGA methods only)", len(all_lfs))
-    logger.debug("Labeling functions: %s", all_lfs)
+    label_columns = (
+        label_columns
+        or DEFAULT_WEAK_METHODS.copy()
+    )
+
+    groups = (
+        groups
+        or WEAK_GROUPS.copy()
+    )
+
+    group_to_int = {
+        group: idx
+        for idx, group in enumerate(
+            groups
+        )
+    }
+
+    all_lfs = list(
+        label_columns.keys()
+    )
+
+    logger.info(
+        "Building weak-label matrix: "
+        "%d LFs, %d groups",
+        len(all_lfs),
+        len(groups),
+    )
 
     labels = []
+
     for _, row in df.iterrows():
+
         row_labels = []
-        for lf in all_lfs:
-            group = _normalize_vote(row.get(label_columns[lf], None))
-            if group in group_to_int and group != "ABSTAIN":
-                row_labels.append(group_to_int[group])
+
+        for lf_name in all_lfs:
+
+            source_column = (
+                label_columns[lf_name]
+            )
+
+            group = _normalize_vote(
+                row.get(
+                    source_column,
+                    None,
+                )
+            )
+
+            if (
+                group in group_to_int
+                and group != "ABSTAIN"
+            ):
+                row_labels.append(
+                    group_to_int[group]
+                )
             else:
-                row_labels.append(ABSTAIN)
-        labels.append(row_labels)
+                row_labels.append(
+                    ABSTAIN
+                )
 
-    L = np.asarray(labels, dtype=np.int64)
-    total_non_abstain = (L != ABSTAIN).sum(axis=1)
-    logger.info("Label matrix built: shape=%s, rows with at least one non-abstain label=%d (%.1f%%)",
-                L.shape, (total_non_abstain > 0).sum(), 100 * (total_non_abstain > 0).mean())
-    return L, all_lfs, groups
+        labels.append(
+            row_labels
+        )
+
+    if not labels:
+
+        L = np.empty(
+            (
+                0,
+                len(all_lfs),
+            ),
+            dtype=np.int64,
+        )
+
+    else:
+
+        L = np.asarray(
+            labels,
+            dtype=np.int64,
+        )
+
+    coverage = (
+        (L != ABSTAIN)
+        .sum(axis=1)
+        if len(L)
+        else np.array([])
+    )
+
+    if len(coverage):
+
+        logger.info(
+            "Rows with >=1 weak label: %d / %d (%.1f%%)",
+            int(
+                (coverage > 0).sum()
+            ),
+            len(coverage),
+            100.0
+            * np.mean(
+                coverage > 0
+            ),
+        )
+
+    return (
+        L,
+        all_lfs,
+        groups,
+    )
 
 
-def _simple_label_model(L: np.ndarray, cardinality: int, n_iter: int = 80) -> np.ndarray:
-    """Simplified generative EM model."""
+# ============================================================================
+# Built-in simple weak supervision model
+# ============================================================================
+
+def _simple_label_model(
+    L: np.ndarray,
+    cardinality: int,
+    n_iter: int = 100,
+) -> np.ndarray:
+
+    if cardinality <= 0:
+        raise ValueError(
+            "cardinality must be > 0."
+        )
+
     n, m = L.shape
-    if n == 0 or m == 0:
-        logger.warning("Empty label matrix; returning uniform probabilities.")
-        return np.ones((n, cardinality)) / cardinality
 
-    logger.debug("Running simple EM label model for %d iterations...", n_iter)
-    priors = np.full(cardinality, 1.0 / cardinality, dtype=float)
-    for i in range(cardinality):
-        priors[i] = np.mean(np.any(L == i, axis=1))
-    priors = np.clip(priors, 1e-3, None)
+    if n == 0 or m == 0:
+        return np.full(
+            (
+                n,
+                cardinality,
+            ),
+            1.0 / cardinality,
+            dtype=float,
+        )
+
+    logger.debug(
+        "Running built-in weak-label EM for %d iterations.",
+        n_iter,
+    )
+
+    # ------------------------------------------------------------------
+    # Prior from observed vote frequency.
+    # ------------------------------------------------------------------
+
+    priors = np.ones(
+        cardinality,
+        dtype=float,
+    )
+
+    for class_idx in range(
+        cardinality
+    ):
+        priors[class_idx] = np.mean(
+            np.any(
+                L == class_idx,
+                axis=1,
+            )
+        )
+
+    priors = np.clip(
+        priors,
+        1e-3,
+        None,
+    )
+
     priors /= priors.sum()
 
-    lf_acc = np.full((m, cardinality), 0.7, dtype=float)
-    lf_abstain = np.full(m, 0.2, dtype=float)
+    # ------------------------------------------------------------------
+    # LF parameters.
+    #
+    # We model:
+    #
+    #   accuracy[j, k]
+    #   abstain_probability[j]
+    # ------------------------------------------------------------------
 
-    for iteration in range(n_iter):
-        log_p = np.log(priors)[None, :].repeat(n, axis=0)
+    lf_accuracy = np.full(
+        (
+            m,
+            cardinality,
+        ),
+        0.65,
+        dtype=float,
+    )
+
+    lf_abstain = (
+        1.0
+        - np.mean(
+            L != ABSTAIN,
+            axis=0,
+        )
+    )
+
+    probabilities = np.full(
+        (
+            n,
+            cardinality,
+        ),
+        1.0 / cardinality,
+        dtype=float,
+    )
+
+    for _ in range(n_iter):
+
+        log_probability = np.log(
+            priors
+        )[None, :].repeat(
+            n,
+            axis=0,
+        )
+
         for j in range(m):
-            label_j = L[:, j]
-            obs = label_j != ABSTAIN
-            if not np.any(obs):
-                continue
-            for k in range(cardinality):
-                correct = label_j == k
-                incorrect = (label_j != k) & obs
-                log_p[correct, k] += np.log(lf_acc[j, k] + 1e-9)
-                if np.any(incorrect):
-                    log_p[incorrect, k] += np.log(
-                        (1 - lf_acc[j, k]) / max(cardinality - 1, 1) + 1e-9
-                    )
-            log_p[~obs, :] += np.log(lf_abstain[j] + 1e-9)
 
-        log_p -= log_p.max(axis=1, keepdims=True)
-        p = np.exp(log_p)
-        p /= p.sum(axis=1, keepdims=True)
+            labels_j = L[:, j]
+            observed = (
+                labels_j != ABSTAIN
+            )
 
-        priors = p.mean(axis=0)
-        for j in range(m):
-            label_j = L[:, j]
-            obs = label_j != ABSTAIN
-            if not np.any(obs):
+            if not observed.any():
                 continue
-            for k in range(cardinality):
-                weighted_correct = p[obs, k][label_j[obs] == k].sum()
-                lf_acc[j, k] = np.clip(
-                    weighted_correct / max(p[obs, k].sum(), 1e-6), 1e-3, 0.999
+
+            # Abstain likelihood.
+            if lf_abstain[j] > 0:
+                log_probability[
+                    ~observed,
+                    :,
+                ] += np.log(
+                    lf_abstain[j]
+                    + 1e-12
                 )
-            lf_abstain[j] = 1.0 - np.mean(obs)
 
-    logger.info("Simple EM label model completed. Final priors: %s", priors.round(4))
-    return p
+            observed_indices = np.where(
+                observed
+            )[0]
 
+            for k in range(
+                cardinality
+            ):
+
+                accuracy = np.clip(
+                    lf_accuracy[j, k],
+                    1e-3,
+                    0.999,
+                )
+
+                correct = (
+                    labels_j[
+                        observed_indices
+                    ]
+                    == k
+                )
+
+                incorrect_prob = (
+                    1.0 - accuracy
+                ) / max(
+                    cardinality - 1,
+                    1,
+                )
+
+                for row_idx, is_correct in zip(
+                    observed_indices,
+                    correct,
+                ):
+
+                    if is_correct:
+                        log_probability[
+                            row_idx,
+                            k,
+                        ] += np.log(
+                            accuracy
+                        )
+                    else:
+                        log_probability[
+                            row_idx,
+                            k,
+                        ] += np.log(
+                            incorrect_prob
+                        )
+
+        log_probability -= (
+            np.max(
+                log_probability,
+                axis=1,
+                keepdims=True,
+            )
+        )
+
+        probabilities = np.exp(
+            log_probability
+        )
+
+        probabilities /= np.clip(
+            probabilities.sum(
+                axis=1,
+                keepdims=True,
+            ),
+            1e-12,
+            None,
+        )
+
+        priors = probabilities.mean(
+            axis=0
+        )
+
+        # --------------------------------------------------------------
+        # Update LF accuracy
+        # --------------------------------------------------------------
+
+        for j in range(m):
+
+            labels_j = L[:, j]
+            observed = (
+                labels_j != ABSTAIN
+            )
+
+            if not observed.any():
+                continue
+
+            observed_prob = probabilities[
+                observed
+            ]
+
+            observed_labels = labels_j[
+                observed
+            ]
+
+            for k in range(
+                cardinality
+            ):
+
+                denominator = (
+                    observed_prob[
+                        :,
+                        k,
+                    ].sum()
+                )
+
+                numerator = (
+                    observed_prob[
+                        observed_labels == k,
+                        k,
+                    ].sum()
+                )
+
+                lf_accuracy[j, k] = np.clip(
+                    numerator
+                    / max(
+                        denominator,
+                        1e-9,
+                    ),
+                    1e-3,
+                    0.999,
+                )
+
+            lf_abstain[j] = (
+                1.0
+                - np.mean(
+                    observed
+                )
+            )
+
+    logger.info(
+        "Built-in weak-label model completed. Priors=%s",
+        np.round(
+            priors,
+            4,
+        ),
+    )
+
+    return probabilities
+
+
+# ============================================================================
+# Label model fitting
+# ============================================================================
 
 def fit_label_model(
     L: np.ndarray,
     cardinality: int,
     use_snorkel: bool = True,
     **kwargs,
-) -> Tuple[Optional[object], np.ndarray]:
-    logger.info("Fitting label model (use_snorkel=%s, cardinality=%d)", use_snorkel, cardinality)
+) -> Tuple[
+    Optional[object],
+    np.ndarray,
+]:
+
+    if use_snorkel and SNORKEL_AVAILABLE:
+
+        label_model = LabelModel(
+            cardinality=cardinality,
+            verbose=False,
+        )
+
+        label_model.fit(
+            L_train=L,
+            n_epochs=200,
+            log_freq=50,
+            **kwargs,
+        )
+
+        probabilities = (
+            label_model.predict_proba(
+                L
+            )
+        )
+
+        logger.info(
+            "Snorkel LabelModel fitted."
+        )
+
+        return (
+            label_model,
+            probabilities,
+        )
+
     if use_snorkel:
-        if not SNORKEL_AVAILABLE:
-            if SNORKEL_IMPORT_ERROR:
-                logger.warning(
-                    "Snorkel is installed but LabelModel is unavailable (%s); falling back to the built-in weak supervision estimator.",
-                    SNORKEL_IMPORT_ERROR,
-                )
-            else:
-                logger.warning(
-                    "Snorkel is not installed; falling back to the built-in weak supervision estimator."
-                )
-        elif LabelModel is None:
-            raise RuntimeError("Snorkel is not importable despite availability flag.")
+
+        if SNORKEL_IMPORT_ERROR:
+            logger.warning(
+                "Snorkel unavailable: %s. "
+                "Using built-in estimator.",
+                SNORKEL_IMPORT_ERROR,
+            )
         else:
-            label_model = LabelModel(cardinality=cardinality, verbose=False)
-            label_model.fit(L_train=L, n_epochs=200, log_freq=50, **kwargs)
-            probs = label_model.predict_proba(L)
-            logger.info("Snorkel LabelModel fitted successfully.")
-            return label_model, probs
+            logger.warning(
+                "Snorkel not installed. "
+                "Using built-in estimator."
+            )
 
-    probs = _simple_label_model(L, cardinality)
-    return None, probs
+    probabilities = _simple_label_model(
+        L,
+        cardinality,
+    )
 
+    return (
+        None,
+        probabilities,
+    )
+
+
+# ============================================================================
+# Attach probabilities
+# ============================================================================
 
 def attach_probabilistic_labels(
     df: pd.DataFrame,
     probs: np.ndarray,
     groups: List[str],
     prefix: str = "weak_prob",
+    confidence_threshold: float = 0.70,
 ) -> pd.DataFrame:
-    logger.info("Attaching probabilistic labels to DataFrame (%d samples)", len(df))
-    for idx, group in enumerate(groups):
-        df[f"{prefix}_{group.lower()}"] = probs[:, idx]
+
+    df = df.copy()
+
+    if probs.shape[0] != len(df):
+        raise ValueError(
+            "Probability matrix row count does not match DataFrame."
+        )
+
+    for idx, group in enumerate(
+        groups
+    ):
+
+        df[
+            f"{prefix}_{group.lower()}"
+        ] = probs[:, idx]
+
+    best_idx = np.argmax(
+        probs,
+        axis=1,
+    )
+
+    confidence = np.max(
+        probs,
+        axis=1,
+    )
+
+    df["weak_fault_confidence"] = (
+        confidence
+    )
+
+    df["weak_fault_is_ABSTAIN"] = (
+        confidence
+        < confidence_threshold
+    )
 
     df["weak_fault_group"] = [
-        groups[i] if i >= 0 else "ABSTAIN" for i in np.argmax(probs, axis=1)
+        groups[idx]
+        if confidence[row_idx]
+        >= confidence_threshold
+        else "ABSTAIN"
+        for row_idx, idx in enumerate(
+            best_idx
+        )
     ]
-    df["weak_fault_confidence"] = probs.max(axis=1)
-    df["weak_fault_is_ABSTAIN"] = df["weak_fault_confidence"] < 0.5
 
-    group_counts = df["weak_fault_group"].value_counts()
-    logger.info("Weak label distribution:\n%s", group_counts.to_string())
-    logger.info("Mean confidence: %.3f, ABSTAIN fraction: %.3f",
-                df["weak_fault_confidence"].mean(), df["weak_fault_is_ABSTAIN"].mean())
+    logger.info(
+        "Weak label distribution:\n%s",
+        df[
+            "weak_fault_group"
+        ]
+        .value_counts(
+            dropna=False
+        )
+        .to_string(),
+    )
+
+    logger.info(
+        "Weak-label confidence: "
+        "mean=%.3f, accepted=%.1f%%",
+        df[
+            "weak_fault_confidence"
+        ].mean(),
+        100.0
+        * (
+            ~df[
+                "weak_fault_is_ABSTAIN"
+            ]
+        ).mean(),
+    )
+
     return df
 
 
+# ============================================================================
+# Full pipeline
+# ============================================================================
+
 def weak_supervision_pipeline(
     df: pd.DataFrame,
-    label_columns: Optional[Dict[str, str]] = None,
-    groups: Optional[List[str]] = None,
+    label_columns: Optional[
+        Dict[str, str]
+    ] = None,
+    groups: Optional[
+        List[str]
+    ] = None,
     use_snorkel: bool = True,
-) -> Tuple[pd.DataFrame, Optional[object], List[str]]:
-    logger.info("Starting weak supervision pipeline (use_snorkel=%s)", use_snorkel)
-    L, lf_names, groups = build_label_matrix(
-        df, label_columns=label_columns, groups=groups
-    )
-    label_model, probs = fit_label_model(L, len(groups), use_snorkel=use_snorkel)
-    df = attach_probabilistic_labels(df, probs, groups)
-    logger.info("Weak supervision pipeline completed successfully.")
-    return df, label_model, groups
+    confidence_threshold: float = 0.70,
+) -> Tuple[
+    pd.DataFrame,
+    Optional[object],
+    List[str],
+]:
 
+    logger.info(
+        "Starting weak supervision pipeline."
+    )
+
+    L, lf_names, groups = build_label_matrix(
+        df,
+        label_columns=label_columns,
+        groups=groups,
+    )
+
+    label_model, probabilities = (
+        fit_label_model(
+            L,
+            cardinality=len(groups),
+            use_snorkel=use_snorkel,
+        )
+    )
+
+    df = attach_probabilistic_labels(
+        df,
+        probabilities,
+        groups,
+        confidence_threshold=confidence_threshold,
+    )
+
+    return (
+        df,
+        label_model,
+        groups,
+    )
+
+
+# ============================================================================
+# Student targets
+# ============================================================================
 
 def create_student_training_targets(
     df: pd.DataFrame,
     target_group: str = "weak_fault_group",
     weight_column: str = "weak_fault_confidence",
-    groups: Optional[List[str]] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Bổ sung: tính class weights dựa trên phân phối nhãn để giảm lệch.
-    """
-    if target_group not in df.columns:
-        raise ValueError(f"Missing weak supervision target column: {target_group}")
+    groups: Optional[
+        List[str]
+    ] = None,
+) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+]:
 
-    groups = groups or WEAK_GROUPS
-    group_to_idx = {group: idx for idx, group in enumerate(groups)}
-    y = df[target_group].map(group_to_idx)
-    if y.isna().any():
-        unknown = sorted(df.loc[y.isna(), target_group].astype(str).unique())
-        logger.error("Unknown weak supervision labels found: %s", unknown)
-        raise ValueError(f"Unknown weak supervision labels: {unknown}")
-
-    conf_weights = df[weight_column].fillna(0.0).astype(float).values
-
-    from sklearn.utils.class_weight import compute_class_weight
-    classes = np.unique(y)
-    class_weights = compute_class_weight('balanced', classes=classes, y=y)
-    class_weight_map = {cls: w for cls, w in zip(classes, class_weights)}
-    sample_weights = conf_weights * np.array([class_weight_map[label] for label in y])
-
-    logger.info(
-        "Student training targets created: %d samples, mean weight=%.3f (balanced). "
-        "Class weights: %s",
-        len(y), sample_weights.mean(),
-        {groups[i]: round(class_weight_map.get(i, 1.0), 3) for i in range(len(groups))}
+    groups = (
+        groups
+        or WEAK_GROUPS
     )
-    return y.astype(int).values, sample_weights
+
+    if target_group not in df.columns:
+        raise ValueError(
+            f"Missing weak-label target: {target_group}"
+        )
+
+    if weight_column not in df.columns:
+        raise ValueError(
+            f"Missing weak-label weight: {weight_column}"
+        )
+
+    group_to_idx = {
+        group: idx
+        for idx, group in enumerate(
+            groups
+        )
+    }
+
+    clean_df = df[
+        df[target_group].isin(
+            group_to_idx.keys()
+        )
+    ].copy()
+
+    if clean_df.empty:
+        raise ValueError(
+            "No accepted weak-labeled samples remain."
+        )
+
+    y = (
+        clean_df[
+            target_group
+        ]
+        .map(
+            group_to_idx
+        )
+        .astype(int)
+        .to_numpy()
+    )
+
+    confidence = (
+        pd.to_numeric(
+            clean_df[
+                weight_column
+            ],
+            errors="coerce",
+        )
+        .fillna(0.0)
+        .clip(
+            0.0,
+            1.0,
+        )
+        .to_numpy()
+    )
+
+    # ------------------------------------------------------------------
+    # Balanced class weights without requiring external labels.
+    # ------------------------------------------------------------------
+
+    class_counts = np.bincount(
+        y,
+        minlength=len(groups),
+    )
+
+    n_samples = len(y)
+
+    class_weights = np.ones(
+        len(groups),
+        dtype=float,
+    )
+
+    nonzero = (
+        class_counts > 0
+    )
+
+    class_weights[
+        nonzero
+    ] = (
+        n_samples
+        / (
+            len(
+                class_counts[
+                    nonzero
+                ]
+            )
+            * class_counts[
+                nonzero
+            ]
+        )
+    )
+
+    sample_weights = (
+        confidence
+        * class_weights[y]
+    )
+
+    # Avoid zero-weight samples.
+    # Their confidence is still reflected in the relative weight.
+    sample_weights = np.clip(
+        sample_weights,
+        1e-4,
+        None,
+    )
+
+    return (
+        y,
+        sample_weights,
+    )

@@ -1,8 +1,8 @@
 # dga/doernenburg.py
-
 from __future__ import annotations
 
 import logging
+from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -12,271 +12,337 @@ from config import config as cfg
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# SAFE GAS / RATIO HELPERS
+# ============================================================
+
+def _gas(row: pd.Series, name: str) -> float:
+    value = row.get(name, np.nan)
+
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+
+    if not np.isfinite(value) or value < 0:
+        return np.nan
+
+    return value
+
+
 def _safe_ratio(num: float, den: float) -> float:
     """
-    Safely calculate num / den.
+    Ratio behavior:
 
-    Returns NaN when either value is missing or denominator
-    is zero/non-positive.
+        valid / positive -> finite ratio
+        positive / zero  -> +inf
+        zero / zero      -> NaN
+        missing          -> NaN
     """
-    if pd.isna(num) or pd.isna(den) or den <= 0:
+
+    if pd.isna(num) or pd.isna(den):
+        return np.nan
+
+    if den == 0:
+        if num > 0:
+            return np.inf
         return np.nan
 
     return float(num) / float(den)
 
 
-def _gas(row: pd.Series, name: str) -> float:
+# ============================================================
+# DOERNENBURG APPLICABILITY
+# ============================================================
+
+def _applicable_to_doernenburg(
+    gases: Dict[str, float],
+) -> bool:
     """
-    Read a gas concentration safely.
+    IEEE C57.104-2019 Doernenburg applicability gate.
 
-    Missing / invalid / negative values are treated as zero.
+    At least one of:
+        H2
+        CH4
+        C2H2
+        C2H4
+
+    must exceed 2 * L1.
+
+    At least one OTHER gas among the same four gases must
+    exceed its L1 value.
     """
-    value = row.get(name, 0)
 
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return 0.0
+    primary = {
+        "h2": gases["h2"],
+        "ch4": gases["ch4"],
+        "c2h2": gases["c2h2"],
+        "c2h4": gases["c2h4"],
+    }
 
-    if not np.isfinite(value) or value < 0:
-        return 0.0
+    l1 = cfg.L1_DOERNENBURG
 
-    return value
+    high_gases = [
+        gas
+        for gas, value in primary.items()
+        if np.isfinite(value)
+        and value >= 2.0 * l1[gas]
+    ]
+
+    if not high_gases:
+        return False
+
+    for high_gas in high_gases:
+        for other_gas, other_value in primary.items():
+            if other_gas == high_gas:
+                continue
+
+            if (
+                np.isfinite(other_value)
+                and other_value >= l1[other_gas]
+            ):
+                return True
+
+    return False
 
 
-def doernenburg_method(row: pd.Series) -> str:
+# ============================================================
+# RATIO VALIDITY
+# ============================================================
+
+def _ratio_valid(
+    numerator: float,
+    denominator: float,
+    numerator_name: str,
+    denominator_name: str,
+) -> bool:
     """
-    Doernenburg Ratio Method for dissolved gases in transformer oil.
-
-    Ratios:
-        R1 = CH4 / H2
-        R2 = C2H2 / C2H4
-        R3 = C2H2 / CH4
-        R4 = C2H6 / C2H2
-
-    IEEE C57.104 dissolved-gas L1 values:
-        H2   = 100 ppm
-        CH4  = 120 ppm
-        C2H2 = 1 ppm
-        C2H4 = 50 ppm
-        C2H6 = 65 ppm
-
-    The method returns:
-        T3       -> thermal decomposition
-        PD       -> corona / low-intensity partial discharge
-        D2       -> arcing / high-intensity discharge
-        NORMAL   -> no Doernenburg applicability evidence
-        ABSTAIN  -> insufficient / inconsistent ratio evidence
+    A Doernenburg ratio is considered valid when at least one
+    of the gases forming that ratio exceeds its L1 limit.
     """
 
     l1 = cfg.L1_DOERNENBURG
 
-    h2 = _gas(row, "h2")
-    ch4 = _gas(row, "ch4")
-    c2h2 = _gas(row, "c2h2")
-    c2h4 = _gas(row, "c2h4")
-    c2h6 = _gas(row, "c2h6")
+    if pd.isna(numerator) or pd.isna(denominator):
+        return False
 
-    # ------------------------------------------------------------
-    # STEP 2 — Doernenburg applicability gate
-    #
-    # IEEE C57.104:
-    #
-    # At least one of H2, CH4, C2H2 or C2H4 must exceed
-    # twice its L1 value AND one of the other gases must
-    # exceed its L1 value.
-    #
-    # For C2H2, L1 = 1 ppm, therefore the 2x threshold is
-    # 2 ppm, NOT 35 ppm.
-    # ------------------------------------------------------------
+    return (
+        numerator >= l1[numerator_name]
+        or denominator >= l1[denominator_name]
+    )
 
-    primary_gases = {
-        "h2": h2,
-        "ch4": ch4,
-        "c2h2": c2h2,
-        "c2h4": c2h4,
+
+# ============================================================
+# DIAGNOSTIC PATTERNS
+# ============================================================
+
+def _thermal_pattern(
+    r1: float,
+    r2: float,
+    r3: float,
+    r4: float,
+) -> bool:
+    return (
+        np.isfinite(r1)
+        and np.isfinite(r2)
+        and np.isfinite(r3)
+        and (
+            r4 > 0.4
+        )
+        and r1 > 1.0
+        and r2 < 0.75
+        and r3 < 0.3
+    )
+
+
+def _pd_pattern(
+    r1: float,
+    r2: float,
+    r3: float,
+    r4: float,
+) -> bool:
+    """
+    IEEE Doernenburg PD:
+
+        R1 < 0.1
+        R2 not significant
+        R3 < 0.3
+        R4 > 0.4
+    """
+
+    return (
+        np.isfinite(r1)
+        and np.isfinite(r3)
+        and (
+            r4 > 0.4
+        )
+        and r1 < 0.1
+        and r3 < 0.3
+    )
+
+
+def _arcing_pattern(
+    r1: float,
+    r2: float,
+    r3: float,
+    r4: float,
+) -> bool:
+    """
+    IEEE Doernenburg arcing:
+
+        0.1 < R1 < 1.0
+        R2 > 0.75
+        R3 > 0.3
+        R4 < 0.4
+    """
+
+    return (
+        np.isfinite(r1)
+        and np.isfinite(r2)
+        and np.isfinite(r3)
+        and np.isfinite(r4)
+        and 0.1 < r1 < 1.0
+        and r2 > 0.75
+        and r3 > 0.3
+        and r4 < 0.4
+    )
+
+
+# ============================================================
+# PUBLIC METHOD
+# ============================================================
+
+def doernenburg_method(row: pd.Series) -> str:
+    """
+    IEEE C57.104-2019 Doernenburg ratio method.
+
+    Input:
+        Mineral-oil DGA concentrations in ppm.
+
+    Output:
+        T3
+        PD
+        D2
+        ABSTAIN
+
+    NORMAL is deliberately not returned by this method.
+
+    Doernenburg is a fault-identification method. Failure to
+    satisfy its applicability or ratio criteria means that
+    the method is inconclusive, not that the transformer is
+    normal.
+    """
+
+    gases = {
+        name: _gas(row, name)
+        for name in [
+            "h2",
+            "ch4",
+            "c2h2",
+            "c2h4",
+            "c2h6",
+        ]
     }
 
-    exceeds_2x = any(
-        value >= 2.0 * l1[name]
-        for name, value in primary_gases.items()
-    )
+    # --------------------------------------------------------
+    # Missing / invalid required gases
+    # --------------------------------------------------------
 
-    # The "other" gas must exceed its normal L1 threshold.
-    exceeds_l1 = any(
-        value >= l1[name]
-        for name, value in primary_gases.items()
-    )
-
-    if not exceeds_2x or not exceeds_l1:
+    if not all(np.isfinite(value) for value in gases.values()):
         return "ABSTAIN"
 
-    # ------------------------------------------------------------
-    # STEP 3 — Ratio validity
+    # --------------------------------------------------------
+    # Applicability gate
+    # --------------------------------------------------------
+
+    if not _applicable_to_doernenburg(gases):
+        return "ABSTAIN"
+
+    h2 = gases["h2"]
+    ch4 = gases["ch4"]
+    c2h2 = gases["c2h2"]
+    c2h4 = gases["c2h4"]
+    c2h6 = gases["c2h6"]
+
+    # --------------------------------------------------------
+    # Ratios
     #
-    # A ratio is considered valid when at least one gas forming
-    # that ratio exceeds its L1 concentration.
-    # ------------------------------------------------------------
+    # R1 = CH4 / H2
+    # R2 = C2H2 / C2H4
+    # R3 = C2H2 / CH4
+    # R4 = C2H6 / C2H2
+    # --------------------------------------------------------
 
     r1 = _safe_ratio(ch4, h2)
     r2 = _safe_ratio(c2h2, c2h4)
     r3 = _safe_ratio(c2h2, ch4)
     r4 = _safe_ratio(c2h6, c2h2)
 
-    r1_valid = (
-        ch4 >= l1["ch4"] or
-        h2 >= l1["h2"]
-    )
+    # --------------------------------------------------------
+    # Every ratio must have at least one gas above L1.
+    # --------------------------------------------------------
 
-    r2_valid = (
-        c2h2 >= l1["c2h2"] or
-        c2h4 >= l1["c2h4"]
-    )
+    ratios_valid = all([
+        _ratio_valid(ch4, h2, "ch4", "h2"),
+        _ratio_valid(c2h2, c2h4, "c2h2", "c2h4"),
+        _ratio_valid(c2h2, ch4, "c2h2", "ch4"),
+        _ratio_valid(c2h6, c2h2, "c2h6", "c2h2"),
+    ])
 
-    r3_valid = (
-        c2h2 >= l1["c2h2"] or
-        ch4 >= l1["ch4"]
-    )
-
-    r4_valid = (
-        c2h6 >= l1["c2h6"] or
-        c2h2 >= l1["c2h2"]
-    )
-
-    # If no ratio can actually be evaluated, abstain.
-    if not any([
-        r1_valid,
-        r2_valid,
-        r3_valid,
-        r4_valid,
-    ]):
+    if not ratios_valid:
         return "ABSTAIN"
 
-    # ------------------------------------------------------------
-    # STEP 4 / 5 — Fault classification
-    #
-    # Oil ratio limits from IEEE C57.104:
-    #
-    # Thermal:
-    #   R1 > 1.0
-    #   R2 < 0.75
-    #   R3 < 0.3
-    #   R4 > 0.4
-    #
-    # PD / Corona:
-    #   R1 < 0.1
-    #   R3 < 0.3
-    #   R4 > 0.4
-    #   R2 is not significant
-    #
-    # Arcing:
-    #   0.1 < R1 < 1.0
-    #   R2 > 0.75
-    #   R3 > 0.3
-    #   R4 < 0.4
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
+    # Evaluate complete patterns.
+    # --------------------------------------------------------
 
-    # Thermal decomposition
-    if (
-        r1_valid
-        and r2_valid
-        and r3_valid
-        and r4_valid
-        and np.isfinite(r1)
-        and np.isfinite(r2)
-        and np.isfinite(r3)
-        and np.isfinite(r4)
-    ):
-        if (
-            r1 > 1.0
-            and r2 < 0.75
-            and r3 < 0.3
-            and r4 > 0.4
-        ):
-            return "T3"
+    if _thermal_pattern(r1, r2, r3, r4):
+        return "T3"
 
-    # Partial discharge / corona
-    #
-    # R2 is explicitly "not significant" for this diagnosis.
-    if (
-        r1_valid
-        and r3_valid
-        and r4_valid
-        and np.isfinite(r1)
-        and np.isfinite(r3)
-        and np.isfinite(r4)
-    ):
-        if (
-            r1 < 0.1
-            and r3 < 0.3
-            and r4 > 0.4
-        ):
-            return "PD"
+    if _pd_pattern(r1, r2, r3, r4):
+        return "PD"
 
-    # Arcing / high-intensity discharge
-    if (
-        r1_valid
-        and r2_valid
-        and r3_valid
-        and r4_valid
-        and np.isfinite(r1)
-        and np.isfinite(r2)
-        and np.isfinite(r3)
-        and np.isfinite(r4)
-    ):
-        if (
-            0.1 < r1 < 1.0
-            and r2 > 0.75
-            and r3 > 0.3
-            and r4 < 0.4
-        ):
-            return "D2"
-
-    # ------------------------------------------------------------
-    # No complete Doernenburg pattern.
-    #
-    # Do NOT call this NORMAL. The method simply could not
-    # establish one of its diagnostic patterns.
-    # ------------------------------------------------------------
+    if _arcing_pattern(r1, r2, r3, r4):
+        return "D2"
 
     return "ABSTAIN"
 
 
-def apply_doernenburg(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Apply Doernenburg ratios and fault classification to a DataFrame.
-    """
+# ============================================================
+# DATAFRAME APPLICATION
+# ============================================================
 
+def apply_doernenburg(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     df["dr_r1_ch4_h2"] = df.apply(
-        lambda r: _safe_ratio(
-            _gas(r, "ch4"),
-            _gas(r, "h2"),
+        lambda row: _safe_ratio(
+            _gas(row, "ch4"),
+            _gas(row, "h2"),
         ),
         axis=1,
     )
 
     df["dr_r2_c2h2_c2h4"] = df.apply(
-        lambda r: _safe_ratio(
-            _gas(r, "c2h2"),
-            _gas(r, "c2h4"),
+        lambda row: _safe_ratio(
+            _gas(row, "c2h2"),
+            _gas(row, "c2h4"),
         ),
         axis=1,
     )
 
     df["dr_r3_c2h2_ch4"] = df.apply(
-        lambda r: _safe_ratio(
-            _gas(r, "c2h2"),
-            _gas(r, "ch4"),
+        lambda row: _safe_ratio(
+            _gas(row, "c2h2"),
+            _gas(row, "ch4"),
         ),
         axis=1,
     )
 
     df["dr_r4_c2h6_c2h2"] = df.apply(
-        lambda r: _safe_ratio(
-            _gas(r, "c2h6"),
-            _gas(r, "c2h2"),
+        lambda row: _safe_ratio(
+            _gas(row, "c2h6"),
+            _gas(row, "c2h2"),
         ),
         axis=1,
     )
@@ -286,29 +352,6 @@ def apply_doernenburg(df: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
 
-    logger.debug("Doernenburg fault applied.")
-
-    if logger.isEnabledFor(logging.DEBUG):
-        cols = [
-            "h2",
-            "ch4",
-            "c2h2",
-            "c2h4",
-            "c2h6",
-            "dr_r1_ch4_h2",
-            "dr_r2_c2h2_c2h4",
-            "dr_r3_c2h2_ch4",
-            "dr_r4_c2h6_c2h2",
-            "doernenburg_fault",
-        ]
-
-        available_cols = [
-            col for col in cols if col in df.columns
-        ]
-
-        logger.debug(
-            "Sample Doernenburg results:\n%s",
-            df[available_cols].head(5).to_string(),
-        )
+    logger.debug("Doernenburg diagnostic applied.")
 
     return df

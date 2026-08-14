@@ -1,5 +1,4 @@
 # dga/iec60599.py
-
 from __future__ import annotations
 
 import logging
@@ -9,53 +8,100 @@ import pandas as pd
 
 from config import config as cfg
 
-
 logger = logging.getLogger(__name__)
 
 
-def _safe_ratio(num: float, den: float) -> float:
-    """
-    Safely calculate a DGA gas ratio.
-
-    Returns:
-        NaN  -> missing / invalid input
-        inf  -> positive numerator with zero denominator
-        0.0  -> zero numerator and zero denominator
-        num / den -> otherwise
-    """
-    if pd.isna(num) or pd.isna(den):
-        return np.nan
-
-    if den <= 0:
-        return np.inf if num > 0 else 0.0
-
-    return float(num) / float(den)
-
+# ============================================================
+# SAFE INPUT
+# ============================================================
 
 def _gas(row: pd.Series, name: str) -> float:
     """
-    Safely read a gas concentration from a row.
+    Read one DGA gas safely.
 
-    Missing, invalid, non-finite, or negative values are treated as 0.
+    Missing / invalid / non-finite / negative values are treated
+    as NaN rather than zero.
+
+    This is important because an absent gas measurement must not
+    silently become a measured 0 ppm value.
     """
-    value = row.get(name, 0)
+    value = row.get(name, np.nan)
 
     try:
         value = float(value)
     except (TypeError, ValueError):
-        return 0.0
+        return np.nan
 
     if not np.isfinite(value) or value < 0:
-        return 0.0
+        return np.nan
 
     return value
 
 
+def _safe_ratio(num: float, den: float) -> float:
+    """
+    Calculate a DGA ratio safely.
+
+    Returns:
+        NaN  -> invalid/missing or 0/0
+        +inf -> positive numerator / zero denominator
+        ratio -> otherwise
+    """
+    if pd.isna(num) or pd.isna(den):
+        return np.nan
+
+    if den == 0:
+        if num > 0:
+            return np.inf
+
+        return np.nan
+
+    return float(num) / float(den)
+
+
+# ============================================================
+# IEC 60599:2022 APPLICABILITY
+# ============================================================
+
+def _applicable(row: pd.Series) -> bool:
+    """
+    Conservative applicability gate.
+
+    The IEC ratio method should not be forced onto a sample with
+    negligible gas levels.
+
+    We require at least one characteristic gas to reach the
+    configured L1 screening level.
+
+    L1 values are from the IEEE C57.104-2019 configuration and
+    are used here only as a conservative minimum-gas gate.
+
+    The gate itself is NOT claimed to be the complete IEC
+    60599:2022 condition-assessment procedure.
+    """
+
+    for gas_name in cfg.DIAGNOSTIC_GASES:
+        value = _gas(row, gas_name)
+
+        if (
+            np.isfinite(value)
+            and value >= cfg.L1_LIMITS[gas_name]
+        ):
+            return True
+
+    return False
+
+
+# ============================================================
+# IEC RATIO METHOD
+# ============================================================
+
 def iec_ratio_method(row: pd.Series) -> str:
     """
-    IEC 60599 three-ratio method.
+    IEC 60599:2022 three-ratio diagnostic method.
 
     Ratios:
+
         R1 = C2H2 / C2H4
         R2 = CH4 / H2
         R3 = C2H4 / C2H6
@@ -63,9 +109,9 @@ def iec_ratio_method(row: pd.Series) -> str:
     IEC 60599:2022 interpretation:
 
         PD:
-            R1 < 0.1
-            R2 < 0.2
-            R3 = NS
+            R1 = NS
+            R2 < 0.1
+            R3 < 0.2
 
         D1:
             R1 > 1
@@ -92,11 +138,19 @@ def iec_ratio_method(row: pd.Series) -> str:
             R2 > 1
             R3 > 4
 
-    If the gas concentrations do not meet the applicability
-    condition, the method abstains rather than declaring NORMAL.
+    Important:
+
+        NS means "not significant".
+
+        The method therefore intentionally does NOT require R1
+        to be finite for PD and T1.
+
+        Failure to match a diagnostic zone returns ABSTAIN,
+        not NORMAL.
     """
 
-    l1 = cfg.L1_LIMITS
+    if not _applicable(row):
+        return "ABSTAIN"
 
     h2 = _gas(row, "h2")
     ch4 = _gas(row, "ch4")
@@ -104,57 +158,50 @@ def iec_ratio_method(row: pd.Series) -> str:
     c2h4 = _gas(row, "c2h4")
     c2h6 = _gas(row, "c2h6")
 
-    # ------------------------------------------------------------
-    # IEC applicability gate
-    #
-    # Apply the ratio interpretation only when at least one
-    # characteristic gas reaches its L1 concentration.
-    # ------------------------------------------------------------
+    values = [
+        h2,
+        ch4,
+        c2h2,
+        c2h4,
+        c2h6,
+    ]
 
-    applicable = any(
-        [
-            h2 >= l1["h2"],
-            ch4 >= l1["ch4"],
-            c2h2 >= l1["c2h2"],
-            c2h4 >= l1["c2h4"],
-            c2h6 >= l1["c2h6"],
-        ]
-    )
-
-    if not applicable:
+    if not all(np.isfinite(value) for value in values):
         return "ABSTAIN"
 
-    # ------------------------------------------------------------
-    # IEC 60599 ratios
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
+    # IEC ratios
+    # --------------------------------------------------------
 
     r1 = _safe_ratio(c2h2, c2h4)
     r2 = _safe_ratio(ch4, h2)
     r3 = _safe_ratio(c2h4, c2h6)
 
-    # ------------------------------------------------------------
-    # PD — Partial Discharges
+    # --------------------------------------------------------
+    # PD
     #
-    # R1 < 0.1
-    # R2 < 0.2
-    # R3 = NS
-    # ------------------------------------------------------------
+    # R1 = NS
+    # R2 < 0.1
+    # R3 < 0.2
+    #
+    # R1 is deliberately ignored.
+    # --------------------------------------------------------
 
     if (
-        np.isfinite(r1)
-        and np.isfinite(r2)
-        and r1 < 0.1
-        and r2 < 0.2
+        np.isfinite(r2)
+        and np.isfinite(r3)
+        and r2 < 0.1
+        and r3 < 0.2
     ):
         return "PD"
 
-    # ------------------------------------------------------------
-    # D1 — Discharges of low energy
+    # --------------------------------------------------------
+    # D1
     #
     # R1 > 1
     # R2 = 0.1 ... 0.5
     # R3 > 1
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
 
     if (
         np.isfinite(r1)
@@ -166,13 +213,13 @@ def iec_ratio_method(row: pd.Series) -> str:
     ):
         return "D1"
 
-    # ------------------------------------------------------------
-    # D2 — Discharges of high energy
+    # --------------------------------------------------------
+    # D2
     #
     # R1 = 0.6 ... 2.5
-    # R2 = 0.1 ... 1
+    # R2 = 0.1 ... 1.0
     # R3 > 2
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
 
     if (
         np.isfinite(r1)
@@ -184,16 +231,15 @@ def iec_ratio_method(row: pd.Series) -> str:
     ):
         return "D2"
 
-    # ------------------------------------------------------------
-    # T1 — Thermal fault, < 300 °C
+    # --------------------------------------------------------
+    # T1
     #
     # R1 = NS
     # R2 > 1
     # R3 < 1
     #
-    # R1 is intentionally NOT tested because IEC defines it
-    # as non-significant for this diagnosis.
-    # ------------------------------------------------------------
+    # R1 is intentionally ignored.
+    # --------------------------------------------------------
 
     if (
         np.isfinite(r2)
@@ -203,13 +249,13 @@ def iec_ratio_method(row: pd.Series) -> str:
     ):
         return "T1"
 
-    # ------------------------------------------------------------
-    # T2 — Thermal fault, 300 ... 700 °C
+    # --------------------------------------------------------
+    # T2
     #
     # R1 < 0.1
     # R2 > 1
     # R3 = 1 ... 4
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
 
     if (
         np.isfinite(r1)
@@ -221,13 +267,13 @@ def iec_ratio_method(row: pd.Series) -> str:
     ):
         return "T2"
 
-    # ------------------------------------------------------------
-    # T3 — Thermal fault, > 700 °C
+    # --------------------------------------------------------
+    # T3
     #
     # R1 < 0.2
     # R2 > 1
     # R3 > 4
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
 
     if (
         np.isfinite(r1)
@@ -239,43 +285,51 @@ def iec_ratio_method(row: pd.Series) -> str:
     ):
         return "T3"
 
-    # ------------------------------------------------------------
-    # No IEC fault zone matched.
-    #
-    # Do not force NORMAL. The ratio method simply did not
-    # establish one of the IEC diagnostic patterns.
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
+    # Unclassified / inconclusive
+    # --------------------------------------------------------
 
     return "ABSTAIN"
 
 
+# ============================================================
+# DATAFRAME APPLICATION
+# ============================================================
+
 def apply_iec(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Apply IEC 60599 ratios and fault classification to a DataFrame.
+    Apply IEC 60599:2022 ratio diagnostics.
+
+    Output:
+
+        iec_r1_c2h2_c2h4
+        iec_r2_ch4_h2
+        iec_r3_c2h4_c2h6
+        iec_fault
     """
 
     df = df.copy()
 
     df["iec_r1_c2h2_c2h4"] = df.apply(
-        lambda r: _safe_ratio(
-            _gas(r, "c2h2"),
-            _gas(r, "c2h4"),
+        lambda row: _safe_ratio(
+            _gas(row, "c2h2"),
+            _gas(row, "c2h4"),
         ),
         axis=1,
     )
 
     df["iec_r2_ch4_h2"] = df.apply(
-        lambda r: _safe_ratio(
-            _gas(r, "ch4"),
-            _gas(r, "h2"),
+        lambda row: _safe_ratio(
+            _gas(row, "ch4"),
+            _gas(row, "h2"),
         ),
         axis=1,
     )
 
     df["iec_r3_c2h4_c2h6"] = df.apply(
-        lambda r: _safe_ratio(
-            _gas(r, "c2h4"),
-            _gas(r, "c2h6"),
+        lambda row: _safe_ratio(
+            _gas(row, "c2h4"),
+            _gas(row, "c2h6"),
         ),
         axis=1,
     )
@@ -285,9 +339,12 @@ def apply_iec(df: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
 
-    logger.debug("IEC 60599 fault applied.")
+    logger.debug(
+        "IEC 60599:2022 ratio diagnostic applied."
+    )
 
     if logger.isEnabledFor(logging.DEBUG):
+
         cols = [
             "h2",
             "ch4",
@@ -301,12 +358,16 @@ def apply_iec(df: pd.DataFrame) -> pd.DataFrame:
         ]
 
         available_cols = [
-            col for col in cols if col in df.columns
+            col
+            for col in cols
+            if col in df.columns
         ]
 
         logger.debug(
             "Sample IEC results:\n%s",
-            df[available_cols].head(5).to_string(),
+            df[available_cols]
+            .head(5)
+            .to_string(),
         )
 
     return df

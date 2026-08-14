@@ -1,20 +1,21 @@
 # dga/duval_triangle.py
-
 from __future__ import annotations
 
 import logging
 
 import numpy as np
 import pandas as pd
+from config import config as cfg
 from matplotlib.path import Path
 
 logger = logging.getLogger(__name__)
 
 SQRT3 = np.sqrt(3.0)
-H = SQRT3 / 2.0
+TRIANGLE_HEIGHT = SQRT3 / 2.0
+
 
 # ============================================================
-# 1. TERNARY COORDINATE CONVERSION
+# TERNARY -> CARTESIAN
 # ============================================================
 
 def ternary_to_xy(
@@ -23,14 +24,13 @@ def ternary_to_xy(
     c2h4: float,
 ) -> tuple[float, float] | None:
     """
-    Convert Duval Triangle gas percentages to Cartesian XY.
+    Convert Duval Triangle 1 percentages to Cartesian coordinates.
 
-    Input values may be raw concentrations or percentages.
-    The function normalizes them internally.
+    Vertex convention:
 
-    Returns:
-        (x, y) if valid
-        None if total <= 0 or any value is invalid
+        CH4  = top
+        C2H2 = bottom-left
+        C2H4 = bottom-right
     """
 
     values = np.asarray(
@@ -49,35 +49,67 @@ def ternary_to_xy(
     if total <= 0:
         return None
 
-    ch4_n, c2h2_n, c2h4_n = values / total
+    ch4_n = ch4 / total
+    c2h2_n = c2h2 / total
+    c2h4_n = c2h4 / total
 
-    # Standard ternary transformation:
-    #
-    # CH4  -> top vertex
-    # C2H4 -> bottom-right
-    # C2H2 -> bottom-left
-    #
-    # x = C2H4 + 0.5 * CH4
-    # y = sqrt(3)/2 * CH4
+    x = c2h4_n + 0.5 * ch4_n
+    y = TRIANGLE_HEIGHT * ch4_n
 
-    x = float(c2h4_n + 0.5 * ch4_n)
-    y = float(H * ch4_n)
+    return float(x), float(y)
 
-    return x, y
 
+def percentages(
+    ch4: float,
+    c2h4: float,
+    c2h2: float,
+) -> tuple[float, float, float] | None:
+    """
+    Return:
+
+        (%CH4, %C2H4, %C2H2)
+    """
+
+    values = np.asarray(
+        [ch4, c2h4, c2h2],
+        dtype=float,
+    )
+
+    if not np.all(np.isfinite(values)):
+        return None
+
+    if np.any(values < 0):
+        return None
+
+    total = float(values.sum())
+
+    if total <= 0:
+        return None
+
+    return (
+        float(100.0 * ch4 / total),
+        float(100.0 * c2h4 / total),
+        float(100.0 * c2h2 / total),
+    )
+
+
+# ============================================================
+# POLYGON HELPERS
+# ============================================================
 
 def build_polygon_from_verts(coords) -> Path:
-    """
-    Build a matplotlib Path from polygon coordinates.
-    """
-
     verts = np.asarray(coords, dtype=float)
 
     if len(verts) < 3:
-        raise ValueError("A polygon requires at least 3 vertices.")
+        raise ValueError(
+            "A polygon requires at least three vertices."
+        )
 
     if not np.allclose(verts[0], verts[-1]):
-        verts = np.vstack([verts, verts[0]])
+        verts = np.vstack([
+            verts,
+            verts[0],
+        ])
 
     codes = (
         [Path.MOVETO]
@@ -89,89 +121,92 @@ def build_polygon_from_verts(coords) -> Path:
 
 
 # ============================================================
-# 2. DUVAL TRIANGLE ZONES
+# IEEE C57.104-2019 DUVAL TRIANGLE 1
+#
+# Coordinates are given in:
+#
+#     %CH4
+#     %C2H2
+#     %C2H4
+#
+# They are converted to XY before constructing the polygons.
 # ============================================================
 
 REGION_COORDS = {
     "PD": {
-        "a": [98, 100, 98],
-        "b": [0, 0, 2],
-        "c": [2, 0, 0],
+        "ch4": [98, 100, 98],
+        "c2h2": [0, 0, 2],
+        "c2h4": [2, 0, 0],
     },
 
     "D1": {
-        "a": [0, 0, 64, 87],
-        "b": [100, 77, 13, 13],
-        "c": [0, 23, 23, 0],
+        "ch4": [0, 0, 64, 87],
+        "c2h2": [100, 77, 13, 13],
+        "c2h4": [0, 23, 23, 0],
     },
 
     "D2": {
-        "a": [0, 0, 31, 47, 64],
-        "b": [77, 29, 29, 13, 13],
-        "c": [23, 71, 40, 40, 23],
+        "ch4": [0, 0, 31, 47, 64],
+        "c2h2": [77, 29, 29, 13, 13],
+        "c2h4": [23, 71, 40, 40, 23],
     },
 
     "DT": {
-        "a": [0, 0, 35, 46, 96, 87, 47, 31],
-        "b": [29, 15, 15, 4, 4, 13, 13, 29],
-        "c": [71, 85, 50, 50, 0, 0, 40, 40],
+        "ch4": [0, 0, 35, 46, 96, 87, 47, 31],
+        "c2h2": [29, 15, 15, 4, 4, 13, 13, 29],
+        "c2h4": [71, 85, 50, 50, 0, 0, 40, 40],
     },
 
     "T1": {
-        "a": [76, 80, 98, 98, 96],
-        "b": [4, 0, 0, 2, 4],
-        "c": [20, 20, 2, 0, 0],
+        "ch4": [76, 80, 98, 98, 96],
+        "c2h2": [4, 0, 0, 2, 4],
+        "c2h4": [20, 20, 2, 0, 0],
     },
 
     "T2": {
-        "a": [46, 50, 80, 76],
-        "b": [4, 0, 0, 4],
-        "c": [50, 50, 20, 20],
+        "ch4": [46, 50, 80, 76],
+        "c2h2": [4, 0, 0, 4],
+        "c2h4": [50, 50, 20, 20],
     },
 
     "T3": {
-        "a": [0, 0, 50, 35],
-        "b": [15, 0, 0, 15],
-        "c": [85, 100, 50, 50],
+        "ch4": [0, 0, 50, 35],
+        "c2h2": [15, 0, 0, 15],
+        "c2h4": [85, 100, 50, 50],
     },
 }
 
 
-PATHS_T1: dict[str, Path] = {}
+def _build_triangle_paths() -> dict[str, Path]:
+    paths: dict[str, Path] = {}
 
-for zone, coords in REGION_COORDS.items():
+    for zone, coords in REGION_COORDS.items():
 
-    verts_xy = []
+        vertices = []
 
-    for ch4, c2h2, c2h4 in zip(
-        coords["a"],
-        coords["b"],
-        coords["c"],
-    ):
-        xy = ternary_to_xy(
-            ch4,
-            c2h2,
-            c2h4,
-        )
+        for ch4, c2h2, c2h4 in zip(
+            coords["ch4"],
+            coords["c2h2"],
+            coords["c2h4"],
+        ):
+            xy = ternary_to_xy(
+                ch4,
+                c2h2,
+                c2h4,
+            )
 
-        if xy is not None:
-            verts_xy.append(xy)
+            if xy is not None:
+                vertices.append(xy)
 
-    if len(verts_xy) >= 3:
-        PATHS_T1[zone] = build_polygon_from_verts(
-            verts_xy
-        )
+        if len(vertices) >= 3:
+            paths[zone] = build_polygon_from_verts(
+                vertices
+            )
+
+    return paths
 
 
-ZONE_COLORS = {
-    "PD": "#b3de69",
-    "T1": "#80b1d3",
-    "T2": "#fdb462",
-    "T3": "#8dd3c7",
-    "D1": "#ffffb3",
-    "D2": "#bebada",
-    "DT": "#fb8072",
-}
+PATHS_T1 = _build_triangle_paths()
 
 
 ZONE_SHORT_LABELS = {
@@ -186,17 +221,10 @@ ZONE_SHORT_LABELS = {
 
 
 # ============================================================
-# 3. SAFE GAS READING
+# SAFE GAS
 # ============================================================
 
 def _safe_gas(value) -> float:
-    """
-    Convert a gas value to a safe non-negative finite float.
-
-    Missing, non-numeric, NaN, inf and negative values are
-    treated as invalid and return NaN.
-    """
-
     try:
         value = float(value)
     except (TypeError, ValueError):
@@ -212,7 +240,7 @@ def _safe_gas(value) -> float:
 
 
 # ============================================================
-# 4. DUVAL TRIANGLE DIAGNOSIS
+# DUVAL TRIANGLE 1
 # ============================================================
 
 def duval_triangle_1(
@@ -221,9 +249,10 @@ def duval_triangle_1(
     c2h2: float,
 ) -> str:
     """
-    Duval Triangle 1 diagnostic classification.
+    IEEE C57.104-2019 Duval Triangle 1.
 
-    Returns one of:
+    Returns:
+
         PD
         D1
         D2
@@ -233,11 +262,11 @@ def duval_triangle_1(
         T3
         ABSTAIN
 
-    Important:
-        This method does NOT return NORMAL.
+    The method does not return NORMAL.
 
-    Duval Triangle is a fault classification method.
-    Insufficient or non-classifiable data results in ABSTAIN.
+    Very-low gas samples are rejected because IEEE explicitly
+    warns that Rogers and Duval Triangle methods should not be
+    applied to samples with very low gas levels.
     """
 
     ch4 = _safe_gas(ch4)
@@ -249,32 +278,16 @@ def duval_triangle_1(
         dtype=float,
     )
 
-    # --------------------------------------------------------
-    # Invalid / missing input
-    # --------------------------------------------------------
-
     if not np.all(np.isfinite(values)):
         return "ABSTAIN"
 
-    # --------------------------------------------------------
-    # Very low total concentration
-    #
-    # Do NOT return NORMAL.
-    # There is insufficient basis for the Triangle method
-    # to establish a fault or a healthy condition.
-    # --------------------------------------------------------
+    if np.any(values < 0):
+        return "ABSTAIN"
 
     total = float(values.sum())
 
-    if total < 0.1:
+    if total < cfg.DUVAL_MIN_TOTAL_GAS:
         return "ABSTAIN"
-
-    # --------------------------------------------------------
-    # Calculate ternary coordinate.
-    #
-    # Use raw concentrations directly.
-    # ternary_to_xy() performs normalization internally.
-    # --------------------------------------------------------
 
     xy = ternary_to_xy(
         ch4,
@@ -286,17 +299,31 @@ def duval_triangle_1(
         return "ABSTAIN"
 
     # --------------------------------------------------------
-    # Determine zone.
+    # Zone order is deterministic.
     #
-    # Do not force a result when the point lies outside the
-    # defined diagnostic regions.
+    # Boundary points are accepted with a very small radius
+    # to avoid floating-point rejection.
     # --------------------------------------------------------
 
-    for zone, path in PATHS_T1.items():
+    zone_order = [
+        "PD",
+        "T1",
+        "T2",
+        "T3",
+        "DT",
+        "D1",
+        "D2",
+    ]
+
+    for zone in zone_order:
+        path = PATHS_T1.get(zone)
+
+        if path is None:
+            continue
 
         if path.contains_point(
             xy,
-            radius=1e-9,
+            radius=1e-10,
         ):
             return zone
 
@@ -304,31 +331,22 @@ def duval_triangle_1(
 
 
 # ============================================================
-# 5. APPLY TO DATAFRAME
+# DATAFRAME APPLICATION
 # ============================================================
 
 def apply_duval_triangle(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Apply Duval Triangle 1 classification to a DataFrame.
-
-    Output columns:
-
-        t_x
-        t_y
-        duval_triangle_fault
-
-    The method never generates NORMAL.
-
-    Invalid / insufficient / out-of-zone samples are marked
-    as ABSTAIN.
-    """
 
     df = df.copy()
 
     xs: list[float] = []
     ys: list[float] = []
+
+    ch4_percent: list[float] = []
+    c2h4_percent: list[float] = []
+    c2h2_percent: list[float] = []
+
     faults: list[str] = []
 
     for _, row in df.iterrows():
@@ -350,38 +368,29 @@ def apply_duval_triangle(
             dtype=float,
         )
 
-        # ----------------------------------------------------
-        # Invalid sample
-        # ----------------------------------------------------
-
         if not np.all(np.isfinite(values)):
-
             xs.append(np.nan)
             ys.append(np.nan)
-            faults.append("ABSTAIN")
 
+            ch4_percent.append(np.nan)
+            c2h4_percent.append(np.nan)
+            c2h2_percent.append(np.nan)
+
+            faults.append("ABSTAIN")
             continue
 
         total = float(values.sum())
 
-        # ----------------------------------------------------
-        # Insufficient gas concentration
-        #
-        # IMPORTANT:
-        # Never convert this into NORMAL.
-        # ----------------------------------------------------
-
-        if total < 0.1:
-
+        if total < cfg.DUVAL_MIN_TOTAL_GAS:
             xs.append(np.nan)
             ys.append(np.nan)
+
+            ch4_percent.append(np.nan)
+            c2h4_percent.append(np.nan)
+            c2h2_percent.append(np.nan)
+
             faults.append("ABSTAIN")
-
             continue
-
-        # ----------------------------------------------------
-        # Calculate point
-        # ----------------------------------------------------
 
         xy = ternary_to_xy(
             ch4,
@@ -389,20 +398,29 @@ def apply_duval_triangle(
             c2h4,
         )
 
-        if xy is None:
+        pct = percentages(
+            ch4,
+            c2h4,
+            c2h2,
+        )
 
+        if xy is None or pct is None:
             xs.append(np.nan)
             ys.append(np.nan)
-            faults.append("ABSTAIN")
 
+            ch4_percent.append(np.nan)
+            c2h4_percent.append(np.nan)
+            c2h2_percent.append(np.nan)
+
+            faults.append("ABSTAIN")
             continue
 
         xs.append(xy[0])
         ys.append(xy[1])
 
-        # ----------------------------------------------------
-        # Classify
-        # ----------------------------------------------------
+        ch4_percent.append(pct[0])
+        c2h4_percent.append(pct[1])
+        c2h2_percent.append(pct[2])
 
         fault = duval_triangle_1(
             ch4,
@@ -412,40 +430,17 @@ def apply_duval_triangle(
 
         faults.append(fault)
 
-    # --------------------------------------------------------
-    # Output
-    # --------------------------------------------------------
-
     df["t_x"] = xs
     df["t_y"] = ys
+
+    df["duval_ch4_pct"] = ch4_percent
+    df["duval_c2h4_pct"] = c2h4_percent
+    df["duval_c2h2_pct"] = c2h2_percent
+
     df["duval_triangle_fault"] = faults
 
     logger.debug(
-        "Duval Triangle 1 fault classification applied."
+        "Duval Triangle 1 diagnostic applied."
     )
-
-    if logger.isEnabledFor(logging.DEBUG):
-
-        cols = [
-            "ch4",
-            "c2h4",
-            "c2h2",
-            "t_x",
-            "t_y",
-            "duval_triangle_fault",
-        ]
-
-        available_cols = [
-            col
-            for col in cols
-            if col in df.columns
-        ]
-
-        logger.debug(
-            "Sample Duval Triangle results:\n%s",
-            df[available_cols]
-            .head(5)
-            .to_string(),
-        )
 
     return df

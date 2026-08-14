@@ -4,9 +4,10 @@ import argparse
 
 # ── Danh sách mặc định các thư mục bị bỏ qua ──
 DEFAULT_IGNORE = {
-    ".git", "__pycache__", ".venv", "venv", "node_modules",
-    "data", "dataset", "models", "logs", ".mypy_cache",
-    "dist", "build", "egg-info", ".tox", "htmlcov"
+    ".git", "__pycache__", "node_modules",
+    ".mypy_cache", ".pytest_cache", ".idea", ".vscode",
+    ".ipynb_checkpoints", "dist", "build", "egg-info", ".tox",
+    "htmlcov", ".coverage"
 }
 
 def generate_tree(directory: pathlib.Path, prefix: str = "",
