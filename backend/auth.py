@@ -23,16 +23,13 @@ from flask import request, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 
 DB_PATH = DATABASE_DIR / "users.db"
-
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
 
 def _connect():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-
 
 def init_db():
     conn = _connect()
@@ -62,10 +59,8 @@ def init_db():
     finally:
         conn.close()
 
-
 def _user_public(row) -> dict:
     return {"id": row["id"], "email": row["email"], "name": row["name"]}
-
 
 def set_single_user(email: str, password: str, name: str) -> dict:
     """Replaces whichever account exists with exactly one (email, password,
@@ -94,14 +89,12 @@ def set_single_user(email: str, password: str, name: str) -> dict:
     finally:
         conn.close()
 
-
 def has_user() -> bool:
     conn = _connect()
     try:
         return conn.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
     finally:
         conn.close()
-
 
 def create_session(user_id: int) -> str:
     token = secrets.token_urlsafe(32)
@@ -116,7 +109,6 @@ def create_session(user_id: int) -> str:
         conn.close()
     return token
 
-
 def login(email: str, password: str) -> tuple[dict, str]:
     email = (email or "").strip().lower()
     conn = _connect()
@@ -128,7 +120,6 @@ def login(email: str, password: str) -> tuple[dict, str]:
         raise ValueError("Incorrect email or password.")
     token = create_session(row["id"])
     return _user_public(row), token
-
 
 def user_from_token(token: str) -> dict | None:
     if not token:
@@ -147,7 +138,6 @@ def user_from_token(token: str) -> dict | None:
         conn.close()
     return _user_public(row) if row else None
 
-
 def logout(token: str) -> None:
     conn = _connect()
     try:
@@ -156,13 +146,11 @@ def logout(token: str) -> None:
     finally:
         conn.close()
 
-
 def _extract_token() -> str | None:
     header = request.headers.get("Authorization", "")
     if header.startswith("Bearer "):
         return header[len("Bearer "):].strip()
     return None
-
 
 def require_auth(fn):
     """Route decorator: 401s unless a valid session token is present."""

@@ -140,9 +140,7 @@ def predict():
 @app.route('/dataset/reset', methods=['POST'])
 @auth.require_auth
 def dataset_reset():
-    from dataset_accumulator import reset_accumulated_dataset
     from data_store import reset_db
-    reset_accumulated_dataset()
     reset_db()
     return jsonify(ok=True)
 

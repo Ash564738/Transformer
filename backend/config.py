@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
 
-
 @dataclass
 class DiagnosticConfig:
     """
@@ -33,22 +32,49 @@ class DiagnosticConfig:
 
     FAULT_GROUPS: Dict[str, str] = field(default_factory=lambda: {
         "NORMAL": "NORMAL",
+
         "PD": "DISCHARGE",
-        "D1": "DISCHARGE",
+        "D1": "DISCHARGE", 
         "D2": "DISCHARGE",
-        "DT": "MIXED",
+
         "T1": "THERMAL",
         "T2": "THERMAL",
         "T3": "THERMAL",
         "T3_H": "THERMAL",
         "THERMAL_OIL": "THERMAL",
+        "O": "THERMAL",
+
         "THERMAL_CELLULOSE": "CELLULOSE",
         "C": "CELLULOSE",
-        "O": "THERMAL",
+
         "S": "STRAY_GASSING",
+
+        "DT": "MIXED",
         "MIXED": "MIXED",
         "ABSTAIN": "ABSTAIN",
     })
+
+    FAULT_SEVERITY_RANK = {
+        "NORMAL": 0,
+
+        "S": 1,
+        "O": 1,
+        "T1": 1,
+        "PD": 1,
+
+        "T2": 2,
+        "T3_H": 2,
+
+        "T3": 3,
+        "D1": 3,
+        "C": 3,
+
+        "D2": 4,
+
+        "DT": None,
+        "MIXED": None,
+        "ABSTAIN": None,
+    }
 
     # --------------------------------------------------------
     # Consensus
