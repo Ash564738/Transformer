@@ -1,4 +1,4 @@
-// ratio3d-config.ts
+// src/components/charts/ratio3d-config.ts
 export interface Ratio3DZone {
   name: string;
   desc: string;       // mô tả lỗi

@@ -1,14 +1,16 @@
+// src/components/detail/detail-header.tsx
 import Link from "next/link";
 import { ArrowLeft, MapPin, CalendarClock } from "lucide-react";
 import type { TransformerSummary } from "@/types/dga";
 import { StatusBadge } from "@/components/ui/badge";
-import { scoreToStatus } from "@/lib/severity";
+import { statusFromSummary } from "@/lib/severity";
 import { stationOf } from "@/lib/transformer-helpers";
 import { formatDate } from "@/lib/utils";
 import { ExportButton } from "@/components/detail/export-button";
 
 export function DetailHeader({ summary }: { summary: TransformerSummary }) {
-  const status = scoreToStatus(summary.latest_score);
+  const status = statusFromSummary(summary);
+
   return (
     <div className="rounded-2xl bg-gradient-to-b from-teal-900 to-teal-800 px-5 py-5 text-white sm:px-7 sm:py-6 print:bg-white print:text-teal-950">
       <Link

@@ -1,4 +1,4 @@
-// iec3d-config.ts
+// src/components/charts/iec3d-config.ts
 export interface Iec3DZone {
   name: string;
   desc: string;

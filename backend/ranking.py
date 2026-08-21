@@ -1,128 +1,238 @@
 # ranking.py
 from __future__ import annotations
-import logging
-import numpy as np
-import pandas as pd
-
+import ast, logging
+import numpy as np, pandas as pd
+from config import config as cfg
+from consensus import normalize_fault, unify_fault
 logger = logging.getLogger(__name__)
 
+def _to_float(value):
+    try: x = float(value)
+    except (TypeError, ValueError): return np.nan
+    return x if np.isfinite(x) else np.nan
 
-def compute_trend_slope(series: pd.Series, window: int = 5) -> pd.Series:
-    def slope_func(arr):
-        arr = np.asarray(arr, dtype=float)
-        finite = np.isfinite(arr)
-        arr = arr[finite]
-        if len(arr) < 2:
-            return 0.0
-        x = np.arange(len(arr), dtype=float)
-        slope = np.polyfit(x, arr, 1)[0]
-        if not np.isfinite(slope):
-            return 0.0
-        return float(slope)
+def _status_ordinal(value):
+    if isinstance(value, str): return int(cfg.SEVERITY_ORDER.get(value.strip().upper(), 0))
+    x = _to_float(value)
+    return int(np.clip(round(x), 0, 3)) if np.isfinite(x) else 0
 
-    return series.rolling(window=window, min_periods=2).apply(slope_func, raw=True)
+def _parse_list(value):
+    if isinstance(value, (list, tuple, set)): return list(value)
+    if value is None: return []
+    if isinstance(value, float) and np.isnan(value): return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text: return []
+        try:
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, (list, tuple, set)): return list(parsed)
+        except Exception: pass
+        return [p.strip() for p in text.split(",") if p.strip()]
+    return []
 
+def classify_fault_criticality(label):
+    fault = normalize_fault(label)
+    return cfg.FAULT_CRITICALITY_CONTEXT.get(fault, "UNKNOWN")
 
-def build_transformer_ranking(df: pd.DataFrame) -> pd.DataFrame:
-    logger.info("Building transformer priority ranking...")
-    if "transformer_id" not in df.columns:
-        raise ValueError("Missing transformer_id.")
-    if "sample_day" not in df.columns:
-        raise ValueError("Missing sample_day.")
+def fault_criticality_source(): return cfg.FAULT_CRITICALITY_SOURCE
 
-    df = df.copy()
-    df["sample_day"] = pd.to_datetime(df["sample_day"], errors="coerce")
-    df = df.dropna(subset=["transformer_id", "sample_day"])
-    df = df.sort_values(["transformer_id", "sample_day"])
+def _fault_sequence(group):
+    if "final_fault" in group.columns: source = group["final_fault"]
+    elif "weak_fine_fault" in group.columns: source = group["weak_fine_fault"]
+    elif "consensus_fault" in group.columns: source = group["consensus_fault"]
+    else: return []
+    out = []
+    for value in source:
+        fault = normalize_fault(value)
+        if fault not in {"ABSTAIN", "NORMAL"}: out.append(fault)
+    return out
 
-    if "severity_score" in df.columns:
-        df["fleet_severity_trend_slope"] = (
-            df.groupby("transformer_id")["severity_score"]
-            .transform(lambda s: compute_trend_slope(s, window=5))
-        )
-    else:
-        df["fleet_severity_trend_slope"] = 0.0
+def _coarse_fault_sequence(group):
+    return [coarse for coarse in (unify_fault(x) for x in _fault_sequence(group)) if coarse not in {"ABSTAIN", "NORMAL"}]
 
-    latest_idx = df.groupby("transformer_id")["sample_day"].idxmax()
-    latest_df = df.loc[latest_idx].copy()
-    logger.info("Transformers in ranking: %d", len(latest_df))
+def _dominant_value(values):
+    if not values: return "ABSTAIN"
+    counts = pd.Series(values).value_counts()
+    top = counts[counts == counts.max()].index.tolist()
+    return "MIXED" if len(top) > 1 else str(top[0])
 
-    if "severity_score" in latest_df.columns:
-        severity_score = pd.to_numeric(latest_df["severity_score"], errors="coerce").fillna(0.0)
-        severity_score = severity_score.clip(0.0, 100.0) / 100.0
-    else:
-        severity_score = pd.Series(0.0, index=latest_df.index)
+def _entropy(values):
+    if not values: return np.nan
+    p = pd.Series(values).value_counts().to_numpy(dtype=float)
+    p /= p.sum()
+    return float(-np.sum(p * np.log(np.clip(p, 1e-12, None))))
 
-    if "anomaly_percentile" in latest_df.columns:
-        anomaly_score = pd.to_numeric(latest_df["anomaly_percentile"], errors="coerce").fillna(0.0)
-        anomaly_score = anomaly_score.clip(0.0, 1.0)
-    else:
-        anomaly_score = pd.Series(0.0, index=latest_df.index)
+def _run_length(values):
+    if not values: return 0
+    current = values[-1]; length = 0
+    for value in reversed(values):
+        if value != current: break
+        length += 1
+    return length
 
-    trend = pd.to_numeric(latest_df["fleet_severity_trend_slope"], errors="coerce")
-    positive_trend = trend.clip(lower=0.0)
-    if positive_trend.notna().any():
-        trend_rank = positive_trend.rank(pct=True, method="average").fillna(0.0)
-    else:
-        trend_rank = pd.Series(0.0, index=latest_df.index)
+def _transition_stats(statuses):
+    if len(statuses) < 2: return {"worsening_count": 0, "improving_count": 0, "stable_count": 0, "observed_transition_count": 0, "worsening_ratio": np.nan, "improving_ratio": np.nan}
+    worsening = improving = stable = 0
+    for previous, current in zip(statuses[:-1], statuses[1:]):
+        if previous == 0 or current == 0: continue
+        if current > previous: worsening += 1
+        elif current < previous: improving += 1
+        else: stable += 1
+    total = worsening + improving + stable
+    return {"worsening_count": worsening, "improving_count": improving, "stable_count": stable, "observed_transition_count": total, "worsening_ratio": worsening / total if total else np.nan, "improving_ratio": improving / total if total else np.nan}
 
-    if "ieee_dga_status" in latest_df.columns:
-        dga_status = pd.to_numeric(latest_df["ieee_dga_status"], errors="coerce").fillna(1.0)
-    else:
-        dga_status = pd.Series(1.0, index=latest_df.index)
+def _history_fault_stats(group):
+    fine = _fault_sequence(group); coarse = _coarse_fault_sequence(group)
+    counts = pd.Series(coarse).value_counts() if coarse else pd.Series(dtype=int)
+    dominant = int(counts.max()) if len(counts) else 0
+    dominant_fraction = dominant / len(coarse) if coarse else np.nan
+    latest_fault = normalize_fault(group.iloc[-1].get("final_fault", group.iloc[-1].get("weak_fine_fault", "ABSTAIN")))
+    latest_group = unify_fault(latest_fault)
+    current_occurrences = sum(x == latest_group for x in coarse) if latest_group not in {"ABSTAIN", "NORMAL"} else 0
+    return {"history_fault_occurrence_count": len(coarse), "history_dominant_fault": _dominant_value(coarse), "history_fault_entropy": _entropy(coarse), "history_dominant_fault_count": dominant, "history_recurrent_fault_fraction": dominant_fraction, "history_current_fault_recurrence_fraction": current_occurrences / len(coarse) if len(coarse) >= 1 else np.nan, "history_fault_persistence": _run_length(fine), "current_fault": latest_fault, "current_fault_group": latest_group, "fault_criticality_class": classify_fault_criticality(latest_fault), "fault_criticality_source": fault_criticality_source()}
 
-    status_score = ((dga_status - 1.0) / 2.0).clip(0.0, 1.0)
+def _latest_evidence_vector(row):
+    return np.array([_status_ordinal(row.get("ieee_dga_status", 0)), np.nan_to_num(_to_float(row.get("ieee_max_status3_standardized_exceedance", 1.0)), nan=1.0), float(len(_parse_list(row.get("ieee_table3_exceeding_gases", [])))), np.nan_to_num(_to_float(row.get("ieee_standard_trigger_count", 0)), nan=0.0), float(len(_parse_list(row.get("ieee_table2_exceeding_gases", [])))), float(len(_parse_list(row.get("ieee_table4_exceeding_gases", []))))], dtype=float)
 
-    latest_df["fleet_priority_score"] = (
-        0.50 * severity_score + 0.30 * anomaly_score + 0.20 * trend_rank
-    )
-    latest_df["fleet_priority_score"] = np.maximum(
-        latest_df["fleet_priority_score"].to_numpy(), 0.50 * status_score.to_numpy()
-    )
-    latest_df["fleet_priority_score"] = latest_df["fleet_priority_score"].clip(0.0, 1.0)
-    latest_df["fleet_priority_percent"] = (latest_df["fleet_priority_score"] * 100.0).round(1)
+def _pareto_front_flags(latest_rows):
+    ids = list(latest_rows); flags = {i: False for i in ids}
+    status3 = [i for i in ids if _status_ordinal(latest_rows[i].get("ieee_dga_status", 0)) == 3]
+    if not status3: return flags
+    matrix = np.vstack([_latest_evidence_vector(latest_rows[i]) for i in status3])
+    for i, transformer_id in enumerate(status3):
+        if len(status3) == 1: flags[transformer_id] = True; continue
+        others = np.arange(len(status3)) != i
+        ge_all = np.all(matrix[others] >= matrix[i], axis=1)
+        gt_any = np.any(matrix[others] > matrix[i], axis=1)
+        flags[transformer_id] = not bool(np.any(ge_all & gt_any))
+    return flags
 
-    latest_df = latest_df.sort_values(
-        ["fleet_priority_score", "sample_day"], ascending=[False, False]
-    ).reset_index(drop=True)
-    latest_df["rank"] = np.arange(len(latest_df)) + 1
+def _priority(status, critical):
+    if status == 3 and critical: return 4
+    if status == 3: return 3
+    if status == 2: return 2
+    if status == 1: return 1
+    return 0
 
-    def recommend_action(row):
-        status = int(row.get("ieee_dga_status", 1))
-        fault = str(row.get("consensus_fault", "ABSTAIN")).upper()
-        confirmation = bool(row.get("ieee_confirmation_required", False))
-        extreme = bool(row.get("ieee_extreme_dga", False))
-        if extreme:
-            return "Immediate engineering review"
-        if status >= 3:
-            return "Increase surveillance and investigate"
-        if confirmation:
-            return "Obtain confirmation DGA"
-        if fault in {"D2", "T3", "T3_H", "MIXED"} and status >= 2:
-            return "Increase monitoring and fault investigation"
-        if status == 2:
-            return "Increase monitoring frequency"
-        return "Routine monitoring"
+def _priority_label(priority): return cfg.MAINTENANCE_PRIORITY_LABELS.get(int(priority), "DATA_REVIEW")
 
-    latest_df["recommended_action"] = latest_df.apply(recommend_action, axis=1)
+def _priority_reason(status, critical):
+    if status == 3 and critical: return "CRITICAL operational extension: Status 3 lies on the current-evidence Pareto frontier; not an IEEE Status 4."
+    if status == 3: return "IEEE Status 3 based on standard-derived current DGA evidence; outside the operational Pareto frontier."
+    if status == 2: return "IEEE Status 2 based on standard-derived current DGA evidence; follow-up surveillance is indicated."
+    if status == 1: return "IEEE Status 1 based on standard-derived current DGA evidence."
+    return "Required IEEE screening evidence is insufficient."
 
-    out_cols = [
-        "transformer_id", "loc", "name", "sample_day", "ieee_dga_status",
-        "ieee_dga_status_label", "ieee_dga_status_reason", "severity_score",
-        "severity_label_text", "consensus_fault", "diagnostic_confidence",
-        "anomaly_percentile", "fleet_severity_trend_slope", "fleet_priority_percent",
-        "fleet_priority_score", "rank", "recommended_action",
-    ]
-    available_cols = [col for col in out_cols if col in latest_df.columns]
-    ranking = latest_df[available_cols].copy()
-    ranking["final_score"] = (
-        ranking["fleet_priority_percent"] if "fleet_priority_percent" in ranking.columns else np.nan
-    )
+def _build_transformer_summary(transformer_id, group):
+    group = group.copy(); group["sample_day"] = pd.to_datetime(group["sample_day"], errors="coerce"); group = group.dropna(subset=["sample_day"]).sort_values("sample_day")
+    if group.empty: return None
+    latest = group.iloc[-1]
+    statuses = [_status_ordinal(x) for x in group["ieee_dga_status"].tolist()]; current_status = statuses[-1]; previous = statuses[:-1]
+    transition = _transition_stats(statuses)
+    span_days = (group["sample_day"].max() - group["sample_day"].min()).total_seconds() / 86400.0
+    record_count = len(group)
+    prior_exceedance = pd.to_numeric(group.iloc[:-1]["ieee_max_standardized_exceedance"], errors="coerce") if len(group) > 1 and "ieee_max_standardized_exceedance" in group else pd.Series(dtype=float)
+    history_max_exceedance = max([float(x) for x in prior_exceedance if np.isfinite(x)], default=1.0)
+    current_exceedance = _to_float(latest.get("ieee_max_standardized_exceedance", 1.0)); current_exceedance = current_exceedance if np.isfinite(current_exceedance) else 1.0
+    current_s3_exceedance = _to_float(latest.get("ieee_max_status3_standardized_exceedance", 1.0)); current_s3_exceedance = current_s3_exceedance if np.isfinite(current_s3_exceedance) else 1.0
+    t2 = _parse_list(latest.get("ieee_table2_exceeding_gases", [])); t4 = _parse_list(latest.get("ieee_table4_exceeding_gases", [])); t3 = _parse_list(latest.get("ieee_table3_exceeding_gases", []))
+    table2_ratio = _to_float(latest.get("ieee_table2_max_exceedance_ratio", np.nan)); table4_ratio = _to_float(latest.get("ieee_table4_max_exceedance_ratio", np.nan))
+    evidence_candidates = []
+    for gas in t2: evidence_candidates.append((table2_ratio if np.isfinite(table2_ratio) else current_s3_exceedance, "TABLE_2_95TH_CONCENTRATION", str(gas)))
+    for gas in t4: evidence_candidates.append((table4_ratio if np.isfinite(table4_ratio) else current_s3_exceedance, "TABLE_4_95TH_RATE", str(gas)))
+    if evidence_candidates: evidence_ratio, evidence_table, evidence_gas = max(evidence_candidates, key=lambda x: x[0])
+    else: evidence_ratio, evidence_table, evidence_gas = current_s3_exceedance, "CURRENT_STATUS3_EVIDENCE" if current_status == 3 else None, None
+    fault_stats = _history_fault_stats(group)
+    abnormal_count = int(sum(s >= 2 for s in statuses)); critical_count = int(sum(s >= 3 for s in statuses))
+    return {"transformer_id": transformer_id, "loc": latest.get("loc"), "name": latest.get("name"), "ser": latest.get("ser"), "codetx": latest.get("codetx"), "sample_day": latest["sample_day"], "transformer_overall_severity_level": current_status, "transformer_overall_severity_label": cfg.ORDINAL_TO_SEVERITY.get(current_status, "INSUFFICIENT_DATA"), "overall_score_type": "LATEST_IEEE_STATUS__HISTORY_AS_EVIDENCE", "overall_score_is_weighted": False, "overall_score_is_failure_probability": False, "maintenance_priority_ordinal": _priority(current_status, False), "maintenance_priority": _priority_label(_priority(current_status, False)), "maintenance_priority_reason": _priority_reason(current_status, False), "maintenance_priority_is_weighted": False, "critical_front_flag": False, "critical_rule": cfg.CRITICAL_RULE, "critical_reference": cfg.CRITICAL_REFERENCE, "critical_evidence_table": evidence_table, "critical_evidence_gas": evidence_gas, "critical_evidence_ratio": float(evidence_ratio), "current_fault": fault_stats["current_fault"], "current_fault_group": fault_stats["current_fault_group"], "fault_criticality_class": fault_stats["fault_criticality_class"], "fault_criticality_source": fault_stats["fault_criticality_source"], "current_fault_posterior_max": _to_float(latest.get("weak_fine_posterior_max", latest.get("weak_coarse_posterior_max", np.nan))), "current_fault_entropy": _to_float(latest.get("weak_fine_entropy", latest.get("weak_coarse_entropy", np.nan))), "diagnostic_agreement_ratio": _to_float(latest.get("diagnostic_agreement_ratio", np.nan)), "history_record_count": record_count, "history_span_days": span_days, "history_max_status_before_current": max(previous, default=0), "history_abnormal_record_count": abnormal_count, "history_critical_record_count": critical_count, "history_abnormal_record_ratio": abnormal_count / record_count, "history_critical_record_ratio": critical_count / record_count, **fault_stats, "history_worsening_transition_count": transition["worsening_count"], "history_improving_transition_count": transition["improving_count"], "history_stable_transition_count": transition["stable_count"], "history_observed_transition_count": transition["observed_transition_count"], "history_worsening_transition_ratio": transition["worsening_ratio"], "history_improving_transition_ratio": transition["improving_ratio"], "history_has_observed_trend": record_count >= cfg.MIN_RECORDS_FOR_OBSERVED_TREND, "single_record_transformer": record_count == 1, "history_data_sufficiency_level": 0 if record_count == 1 else 1 if record_count == 2 else 2, "current_standardized_exceedance": current_exceedance, "current_status3_standardized_exceedance": current_s3_exceedance, "current_delta_exceedance": int(bool(t3)), "current_standard_trigger_count": int(_to_float(latest.get("ieee_standard_trigger_count", 0)) or 0), "historical_max_standardized_exceedance": history_max_exceedance, "table1_exceed_count": len(_parse_list(latest.get("ieee_table1_exceeding_gases", []))), "table2_exceed_count": len(t2), "table3_exceed_count": len(t3), "table4_exceed_count": len(t4), "ieee_table1_exceeding_gases": _parse_list(latest.get("ieee_table1_exceeding_gases", [])), "ieee_table2_exceeding_gases": t2, "ieee_table3_exceeding_gases": t3, "ieee_table4_exceeding_gases": t4, "ieee_confirmation_required": bool(latest.get("ieee_confirmation_required", False)), "ieee_delta_available": bool(latest.get("ieee_delta_available", False)), "ieee_rate_available": bool(latest.get("ieee_rate_available", False)), "ieee_rate_span_months": _to_float(latest.get("ieee_rate_span_months", np.nan))}
 
-    log_cols = [col for col in ["rank", "transformer_id", "fleet_priority_percent",
-                                "ieee_dga_status_label", "consensus_fault"] if col in ranking.columns]
-    if log_cols:
-        logger.info("Top 5 transformer priority ranking:\n%s", ranking.head(5)[log_cols].to_string(index=False))
+def _ranking_key(row):
+    return (int(_to_float(row.get("maintenance_priority_ordinal", 0)) or 0), _status_ordinal(row.get("transformer_overall_severity_level", 0)), float(_to_float(row.get("current_status3_standardized_exceedance", 1.0)) if np.isfinite(_to_float(row.get("current_status3_standardized_exceedance", 1.0))) else 1.0), int(_to_float(row.get("current_delta_exceedance", 0)) or 0), int(_to_float(row.get("current_standard_trigger_count", 0)) or 0), int(_to_float(row.get("history_max_status_before_current", 0)) or 0), float(_to_float(row.get("historical_max_standardized_exceedance", 1.0)) if np.isfinite(_to_float(row.get("historical_max_standardized_exceedance", 1.0))) else 1.0), float(_to_float(row.get("history_current_fault_recurrence_fraction", 0.0)) if np.isfinite(_to_float(row.get("history_current_fault_recurrence_fraction", 0.0))) else 0.0), float(_to_float(row.get("history_worsening_transition_ratio", 0.0)) if np.isfinite(_to_float(row.get("history_worsening_transition_ratio", 0.0))) else 0.0))
 
-    logger.info("Ranking generation complete.")
+def _recommended_action(status, priority):
+    if int(priority) >= 4: return "PRIORITY_1_IMMEDIATE_INVESTIGATION_AND_MAINTENANCE_REVIEW"
+    if int(status) == 3: return "PRIORITY_2_INVESTIGATE_AND_INCREASE_SURVEILLANCE"
+    if int(status) == 2: return "PRIORITY_3_CONFIRM_DGA_AND_INCREASE_SURVEILLANCE"
+    if int(status) == 1: return "PRIORITY_4_ROUTINE_DGA_SURVEILLANCE"
+    return "PRIORITY_5_REVIEW_DATA_BEFORE_CONDITION_ASSESSMENT"
+
+def _vector_to_text(row): return "|".join(str(v) for v in _ranking_key(row))
+
+def _pareto_metrics(ranking):
+    cols = ["maintenance_priority_ordinal", "transformer_overall_severity_level", "current_status3_standardized_exceedance", "current_delta_exceedance", "current_standard_trigger_count", "history_max_status_before_current", "historical_max_standardized_exceedance", "history_current_fault_recurrence_fraction", "history_worsening_transition_ratio"]
+    matrix = np.column_stack([pd.to_numeric(ranking[c], errors="coerce").fillna(0).to_numpy(float) for c in cols])
+    n = len(ranking); dom = np.zeros(n, dtype=int)
+    for i in range(n):
+        if n <= 1: continue
+        others = np.arange(n) != i
+        ge = np.all(matrix[others] >= matrix[i], axis=1)
+        gt = np.any(matrix[others] > matrix[i], axis=1)
+        dom[i] = int(np.sum(ge & gt))
+    return dom
+
+def build_transformer_ranking(df):
+    required = {"transformer_id", "sample_day", "ieee_dga_status"}
+    missing = sorted(required - set(df.columns))
+    if missing: raise ValueError(f"Missing columns for transformer ranking: {missing}")
+    work = df.copy(); work["sample_day"] = pd.to_datetime(work["sample_day"], errors="coerce"); work = work.dropna(subset=["transformer_id", "sample_day"])
+    summaries = []
+    for transformer_id, group in work.sort_values(["transformer_id", "sample_day"], kind="mergesort").groupby("transformer_id", sort=False):
+        item = _build_transformer_summary(transformer_id, group)
+        if item is not None: summaries.append(item)
+    ranking = pd.DataFrame(summaries)
+    if ranking.empty: return ranking
+    latest_rows = {str(tid): grp.sort_values("sample_day").iloc[-1] for tid, grp in work.groupby("transformer_id", sort=False)}
+    critical_flags = _pareto_front_flags(latest_rows)
+    ranking["critical_front_flag"] = ranking["transformer_id"].astype(str).map(critical_flags).fillna(False).astype(bool)
+    ranking["maintenance_priority_ordinal"] = [_priority(int(s), bool(c)) for s, c in zip(ranking["transformer_overall_severity_level"], ranking["critical_front_flag"])]
+    ranking["maintenance_priority"] = ranking["maintenance_priority_ordinal"].map(_priority_label)
+    ranking["maintenance_priority_reason"] = [_priority_reason(int(s), bool(c)) for s, c in zip(ranking["transformer_overall_severity_level"], ranking["critical_front_flag"])]
+    ranking["critical_evidence_ratio"] = pd.to_numeric(ranking["critical_evidence_ratio"], errors="coerce")
+    ranking["_ranking_key"] = ranking.apply(_ranking_key, axis=1)
+    ranking = ranking.sort_values("_ranking_key", ascending=False, kind="mergesort").reset_index(drop=True)
+    ranks = []; previous = None; current = 0
+    for pos, (_, row) in enumerate(ranking.iterrows(), start=1):
+        key = _ranking_key(row)
+        if previous is None or key != previous: current = pos
+        ranks.append(current); previous = key
+    ranking["rank"] = ranks
+    ranking["rank_tie"] = ranking["rank"].duplicated(keep=False)
+    ranking["rank_group_size"] = ranking.groupby("rank")["rank"].transform("size")
+    n = len(ranking)
+    ranking["rank_percentile"] = (100.0 * (n - ranking["rank"]) / max(n - 1, 1)).round(1)
+    ranking["maintenance_priority_rank"] = ranking["rank"]
+    ranking["maintenance_priority_rank_percentile"] = ranking["rank_percentile"]
+    ranking["priority_score"] = ranking["rank_percentile"]
+    ranking["priority_score_type"] = "RELATIVE_FLEET_PRIORITY_PERCENTILE_NOT_HEALTH_SCORE"
+    ranking["severity_priority_percentile"] = ranking["rank_percentile"]
+    ranking["pareto_dominance_count"] = _pareto_metrics(ranking)
+    ranking["pareto_front"] = ranking["pareto_dominance_count"] == 0
+    ranking["pareto_interpretation"] = "Audit-only Pareto dominance count over explicit evidence; primary ordering remains lexicographic."
+    ranking["severity_evidence_vector"] = ranking.apply(_vector_to_text, axis=1)
+    ranking["ranking_policy"] = "; ".join(cfg.RANKING_POLICY)
+    ranking["ranking_is_weighted"] = False
+    ranking["ranking_is_health_score"] = False
+    ranking["ranking_uses_record_count_as_severity"] = False
+    ranking["ranking_uses_fault_criticality_as_severity"] = False
+    ranking["severity_priority_score_type"] = "RELATIVE_RANK_PERCENTILE_NOT_HEALTH_SCORE"
+    ranking["maintenance_priority_score_type"] = "LEXICOGRAPHIC_STANDARD_EVIDENCE_NOT_WEIGHTED"
+    ranking["recommended_action"] = [_recommended_action(s, p) for s, p in zip(ranking["transformer_overall_severity_level"], ranking["maintenance_priority_ordinal"])]
+    ranking = ranking.drop(columns=["_ranking_key"])
     return ranking
+
+def log_ranking_diagnostics(ranking: pd.DataFrame, top_n: int = 20):
+    if ranking is None or ranking.empty: logger.warning("MAINTENANCE QUEUE | no transformer ranking rows"); return
+    logger.info("=" * 120)
+    logger.info("DGA MAINTENANCE PRIORITY DIAGNOSTICS")
+    logger.info("CRITICAL = Status-3 current-evidence Pareto frontier; no numeric weights.")
+    logger.info("Fault criticality is qualitative context only and does not affect ranking.")
+    logger.info("TRANSFORMER STATUS COUNTS | %s", ranking["transformer_overall_severity_level"].value_counts().sort_index().to_dict())
+    logger.info("MAINTENANCE PRIORITY COUNTS | %s", ranking["maintenance_priority"].value_counts().to_dict())
+    logger.info("PARETO FRONT COUNT | %d", int(ranking["pareto_front"].sum()))
+    display = ranking.head(max(int(top_n), 1))
+    logger.info("TOP %d MAINTENANCE PRIORITY", len(display))
+    for _, r in display.iterrows():
+        logger.info("%03d | %-20s | %-10s | S%d | %.2fx | T2=%d | T4=%d | %-10s | %s", int(r["rank"]), str(r["transformer_id"])[:20], r["maintenance_priority"], int(r["transformer_overall_severity_level"]), float(r.get("critical_evidence_ratio", 1.0)), int(r.get("table2_exceed_count", 0)), int(r.get("table4_exceed_count", 0)), r.get("current_fault", "ABSTAIN"), str(r.get("recommended_action", ""))[:70])
+    logger.info("=" * 120)
+
+__all__ = ["build_transformer_ranking", "log_ranking_diagnostics", "classify_fault_criticality", "fault_criticality_source"]

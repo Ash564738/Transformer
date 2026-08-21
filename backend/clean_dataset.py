@@ -14,52 +14,14 @@ OUTPUT_DIR = DATASET_DIR / "processed"
 KEEP_NB = True
 
 COLUMN_ALIASES = {
-    "sampling date": "sample_day",
-    "sample date": "sample_day",
-    "sampling day": "sample_day",
-    "sample day": "sample_day",
-    "sample_day": "sample_day",
-    "test date": "tested_day",
-    "tested date": "tested_day",
-    "tested day": "tested_day",
-    "tested_day": "tested_day",
-    "year energized": "year_energized",
-    "year_energized": "year_energized",
-    "loc": "loc",
-    "name": "name",
-    "substation": "loc",
-    "bay": "name",
-    "ser": "ser",
-    "codetx": "codetx",
-    "mfg": "mfg",
-    "kv": "kv",
-    "rated voltage(kv)": "kv",
-    "rated voltage": "kv",
-    "mva": "mva",
-    "temp": "temp",
-    "oil temperature at tested": "temp",
-    "oil temperature": "temp",
-    "water": "water",
-    "wat": "water",
-    "h2o": "water",
-    "h2": "h2",
-    "ch4": "ch4",
-    "c2h6": "c2h6",
-    "c2h4": "c2h4",
-    "c2h2": "c2h2",
-    "co": "co",
-    "co2": "co2",
-    "o2": "o2",
-    "n2": "n2",
-    "c3h6": "c3h6",
-    "c3h8": "c3h8",
-    "tdcg": "tdcg_raw",
-    "tdcg raw": "tdcg_raw",
-    "tcg": "tdcg_raw",
-    "summary and comment": "nb",
-    "summary": "nb",
-    "comment": "nb",
-    "nb": "nb",
+    "sampling date": "sample_day", "sample date": "sample_day", "sampling day": "sample_day", "sample day": "sample_day", "sample_day": "sample_day",
+    "test date": "tested_day", "tested date": "tested_day", "tested day": "tested_day", "tested_day": "tested_day",
+    "year energized": "year_energized", "year_energized": "year_energized", "loc": "loc", "name": "name", "substation": "loc", "bay": "name",
+    "ser": "ser", "codetx": "codetx", "mfg": "mfg", "kv": "kv", "rated voltage(kv)": "kv", "rated voltage": "kv", "mva": "mva",
+    "temp": "temp", "oil temperature at tested": "temp", "oil temperature": "temp", "water": "water", "wat": "water", "h2o": "water",
+    "h2": "h2", "ch4": "ch4", "c2h6": "c2h6", "c2h4": "c2h4", "c2h2": "c2h2", "co": "co", "co2": "co2", "o2": "o2", "n2": "n2",
+    "c3h6": "c3h6", "c3h8": "c3h8", "tdcg": "tdcg_raw", "tdcg raw": "tdcg_raw", "tcg": "tdcg_raw",
+    "summary and comment": "nb", "summary": "nb", "comment": "nb", "nb": "nb",
 }
 
 CORE_GASES = ["h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2"]
@@ -75,10 +37,8 @@ def normalize_col_name(col: Any) -> str:
     return s
 
 def canonicalize_col(col: str) -> str:
-    s = normalize_col_name(col).lower()
-    s = s.replace("_", " ")
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    s = normalize_col_name(col).lower().replace("_", " ")
+    return re.sub(r"\s+", " ", s).strip()
 
 def is_unnamed_or_empty_column(col: Any) -> bool:
     s = normalize_col_name(col)
@@ -95,8 +55,7 @@ def clean_text_basic(x: Any) -> Optional[str]:
 def clean_text_field(x: Any) -> Optional[str]:
     s = clean_text_basic(x)
     if s is None: return None
-    s = re.sub(r"\s+", " ", s).strip()
-    return s or None
+    return re.sub(r"\s+", " ", s).strip() or None
 
 def clean_ser(x: Any) -> Optional[str]:
     s = clean_text_field(x)
@@ -111,8 +70,7 @@ def parse_numeric_loose(x: Any, allow_negative: bool = True) -> float:
         if not allow_negative and value < 0: return np.nan
         return value
     s = str(x).strip()
-    if s == "": return np.nan
-    if s.lower() in {"nan", "none", "null", "n/a", "na", "-", "--", "#value!", "inf", "-inf"}: return np.nan
+    if s == "" or s.lower() in {"nan", "none", "null", "n/a", "na", "-", "--", "#value!", "inf", "-inf"}: return np.nan
     if "/" in s: return np.nan
     s = s.replace(",", "")
     match = re.search(r"-?\d+(?:\.\d+)?", s)
@@ -172,8 +130,7 @@ def fill_missing_ser(df: pd.DataFrame) -> pd.DataFrame:
     existing_ser = set(str(value) for value in df["ser"].dropna().unique() if str(value).strip())
     for (codetx, mfg), indices in df.groupby(["codetx", "mfg"], dropna=False).groups.items():
         valid = df.loc[indices, "ser"].dropna()
-        if not valid.empty:
-            df.loc[indices, "ser"] = df.loc[indices, "ser"].fillna(valid.iloc[0])
+        if not valid.empty: df.loc[indices, "ser"] = df.loc[indices, "ser"].fillna(valid.iloc[0])
     counter = 1
     for (codetx, mfg), indices in df.groupby(["codetx", "mfg"], dropna=False).groups.items():
         if df.loc[indices, "ser"].isna().all():
@@ -223,8 +180,7 @@ def _find_header_row(raw: pd.DataFrame) -> int:
     return best_idx
 
 def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    if not input_file.exists():
-        raise FileNotFoundError(f"Input file not found: {input_file}")
+    if not input_file.exists(): raise FileNotFoundError(f"Input file not found: {input_file}")
     output_dir.mkdir(parents=True, exist_ok=True)
     xl = pd.ExcelFile(input_file)
     sheet_name = xl.sheet_names[0]
@@ -246,10 +202,8 @@ def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR) 
     df.columns = [str(col).lower() for col in df.columns]
     if "sample_day" not in df.columns: raise ValueError("Missing sample_day.")
     df["sample_day"] = parse_date_series(df["sample_day"])
-    if "tested_day" in df.columns:
-        df["tested_day"] = parse_date_series(df["tested_day"])
-    else:
-        df["tested_day"] = pd.NaT
+    if "tested_day" in df.columns: df["tested_day"] = parse_date_series(df["tested_day"])
+    else: df["tested_day"] = pd.NaT
     swap_mask = df["tested_day"].notna() & df["sample_day"].notna() & (df["tested_day"] < df["sample_day"])
     n_swapped = int(swap_mask.sum())
     if n_swapped:
@@ -266,37 +220,23 @@ def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR) 
         df["loc"] = df["loc"].fillna(inferred_loc)
     df = fill_missing_ser(df)
     df["transformer_id"] = build_transformer_id(df)
-    if "year_energized" in df.columns:
-        df["year_energized"] = df["year_energized"].apply(clean_year_energized)
-    else:
-        df["year_energized"] = np.nan
-    if "temp" in df.columns:
-        df["temp"] = df["temp"].apply(clean_temp)
-    else:
-        df["temp"] = np.nan
-    if "water" in df.columns:
-        df["water"] = df["water"].apply(clean_water)
-    else:
-        df["water"] = np.nan
+    if "year_energized" in df.columns: df["year_energized"] = df["year_energized"].apply(clean_year_energized)
+    else: df["year_energized"] = np.nan
+    if "temp" in df.columns: df["temp"] = df["temp"].apply(clean_temp)
+    else: df["temp"] = np.nan
+    if "water" in df.columns: df["water"] = df["water"].apply(clean_water)
+    else: df["water"] = np.nan
     for gas in CORE_GASES + OPTIONAL_GASES:
-        if gas in df.columns:
-            df[gas] = df[gas].apply(clean_gas_value)
-        else:
-            df[gas] = np.nan
-    if "tdcg_raw" in df.columns:
-        df["tdcg_raw"] = df["tdcg_raw"].apply(clean_gas_value)
-    else:
-        df["tdcg_raw"] = np.nan
+        if gas in df.columns: df[gas] = df[gas].apply(clean_gas_value)
+        else: df[gas] = np.nan
+    if "tdcg_raw" in df.columns: df["tdcg_raw"] = df["tdcg_raw"].apply(clean_gas_value)
+    else: df["tdcg_raw"] = np.nan
     for col in ["mva", "kv"]:
-        if col in df.columns:
-            df[col] = df[col].apply(normalize_rating_text)
-        else:
-            df[col] = None
+        if col in df.columns: df[col] = df[col].apply(normalize_rating_text)
+        else: df[col] = None
     if KEEP_NB:
-        if "nb" in df.columns:
-            df["nb"] = df["nb"].apply(clean_text_field)
-        else:
-            df["nb"] = None
+        if "nb" in df.columns: df["nb"] = df["nb"].apply(clean_text_field)
+        else: df["nb"] = None
     df = df.sort_values(["transformer_id", "sample_day"]).reset_index(drop=True)
     before = len(df)
     df = df.drop_duplicates(keep="last").reset_index(drop=True)
@@ -304,14 +244,15 @@ def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR) 
     df["tdcg_recalc"] = df[["h2", "ch4", "c2h6", "c2h4", "c2h2", "co"]].sum(axis=1, min_count=1)
     measured_count = df[["h2", "ch4", "c2h6", "c2h4", "c2h2", "co"]].notna().sum(axis=1)
     df["tdcg_complete"] = (measured_count == 6).astype("int8")
-    df["tdcg"] = df["tdcg_recalc"]
+    df["tdcg"] = df["tdcg_raw"].where(df["tdcg_raw"].notna(), df["tdcg_recalc"])
     df["tdcg_source"] = np.where(df["tdcg_raw"].notna(), "raw_available", "recalculated")
+    df["tdcg_difference_raw_recalc"] = df["tdcg_raw"] - df["tdcg_recalc"]
     df["tcg"] = df["tdcg"]
     preferred_order = [
         "transformer_id", "loc", "name", "ser", "ser_is_synthetic", "codetx", "mfg",
         "sample_day", "tested_day", "year_energized", "mva", "kv", "temp", "water",
         "h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2", "o2", "n2", "c3h6", "c3h8",
-        "tdcg_raw", "tdcg_recalc", "tdcg", "tcg", "tdcg_complete", "tdcg_source", "nb"
+        "tdcg_raw", "tdcg_recalc", "tdcg", "tcg", "tdcg_complete", "tdcg_source", "tdcg_difference_raw_recalc", "nb"
     ]
     preferred_order = list(dict.fromkeys(preferred_order))
     existing = [col for col in preferred_order if col in df.columns]
@@ -319,14 +260,10 @@ def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR) 
     df = df[existing + extras].copy()
     missing_summary = report_missing(df)
     summary = {
-        "input_file": str(input_file),
-        "sheet_name": sheet_name,
-        "original_shape": list(original_shape),
-        "clean_shape": list(df.shape),
-        "original_columns": original_columns,
-        "dropped_noise_columns": unnamed + all_nan,
-        "clean_columns": df.columns.tolist(),
-        "duplicate_rows_removed": int(duplicate_rows_removed),
+        "input_file": str(input_file), "sheet_name": sheet_name,
+        "original_shape": list(original_shape), "clean_shape": list(df.shape),
+        "original_columns": original_columns, "dropped_noise_columns": unnamed + all_nan,
+        "clean_columns": df.columns.tolist(), "duplicate_rows_removed": int(duplicate_rows_removed),
         "n_unique_transformers": int(df["transformer_id"].nunique(dropna=True)),
         "date_min": None if df["sample_day"].dropna().empty else str(df["sample_day"].min()),
         "date_max": None if df["sample_day"].dropna().empty else str(df["sample_day"].max()),
@@ -339,19 +276,15 @@ def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR) 
         "synthetic_ser_count": int(df["ser_is_synthetic"].sum()),
         "core_gases": CORE_GASES,
         "notes": {
-            "water_negative_values_rejected": True,
-            "temp_water_not_imputed": True,
-            "year_energized_not_globally_imputed": True,
-            "tdcg_recalculated_from_six_combustible_gases": True,
-            "raw_tdcg_preserved": True,
-            "synthetic_ser_not_used_as_transformer_id": True,
-            "deduplicate_exact_rows_only": True,
-            "auto_header_detection": True,
+            "water_negative_values_rejected": True, "temp_water_not_imputed": True,
+            "year_energized_not_globally_imputed": True, "tdcg_recalculated_from_six_combustible_gases": True,
+            "raw_tdcg_preserved": True, "synthetic_ser_not_used_as_transformer_id": True,
+            "deduplicate_exact_rows_only": True, "auto_header_detection": True,
         },
     }
     output_dir.mkdir(parents=True, exist_ok=True)
-    clean_parquet = output_dir / "dga_clean.parquet"
-    clean_csv = output_dir / "dga_clean.csv"
+    clean_parquet = output_dir / "dga_unlabeled.parquet"
+    clean_csv = output_dir / "dga_unlabeled.csv"
     missing_csv = output_dir / "missing_summary.csv"
     summary_json = output_dir / "clean_summary.json"
     df.to_parquet(clean_parquet, index=False)
@@ -359,8 +292,7 @@ def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR) 
     missing_summary.to_csv(missing_csv, index=False, encoding="utf-8-sig")
     with open(summary_json, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
-    logger.info("Cleaning complete: %d rows, %d columns, %d transformers.",
-                len(df), len(df.columns), df["transformer_id"].nunique())
+    logger.info("Cleaning complete: %d rows, %d columns, %d transformers.", len(df), len(df.columns), df["transformer_id"].nunique())
     return df, summary
 
 if __name__ == "__main__":

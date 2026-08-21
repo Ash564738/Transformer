@@ -1,3 +1,4 @@
+// src/store/use-dashboard-store.ts
 import { create } from "zustand";
 import type { DgaPayload, ChatMessage } from "@/types/dga";
 import { runPredictionFromFile, runPredictionFromJson, askChatBackend, resetDataset, type ChatHistoryTurn } from "@/lib/api";

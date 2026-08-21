@@ -1,89 +1,58 @@
-import type { NativeSeverityLabel, RiskStatus, TransformerSummary } from "@/types/dga";
+// src/lib/severity.ts
+import type {
+  MaintenancePriority,
+  NativeSeverityLabel,
+  RiskStatus,
+  TransformerSummary,
+} from "@/types/dga";
 
-/**
- * Mirrors config.py `SEVERITY_CLASS_BOUNDARIES = [4, 8, 13]` used by
- * severity.severity_class_from_score() on the backend. The backend collapses
- * these 4 native buckets down to 3 UI strings (Severe/Moderate/Low) for the
- * legacy Streamlit view; this dashboard instead reproduces the full 4-tier
- * Normal/Watch/High/Critical status from UI-SPEC-DGA-DASHBOARD-01 directly
- * from the same raw `severity_score`, so no backend change is required.
- */
-const SEVERITY_BOUNDARIES = [30, 60, 90] as const;
+export type StatusStyle = {
+  text: string;
+  bg: string;
+  border: string;
+  bar: string;
+  dot: string;
+  topBorder: string;
+  leftBorder: string;
+};
 
-export function classifyScore(score: number): NativeSeverityLabel {
-  if (score < SEVERITY_BOUNDARIES[0]) return "NORMAL";
-  if (score < SEVERITY_BOUNDARIES[1]) return "WATCHLIST";
-  if (score < SEVERITY_BOUNDARIES[2]) return "WARNING";
-  return "CRITICAL";
-}
+export type MaintenancePriorityStyle = {
+  text: string;
+  bg: string;
+  border: string;
+};
 
-export function nativeToStatus(label: NativeSeverityLabel): RiskStatus {
-  switch (label) {
-    case "NORMAL":
-      return "Normal";
-    case "WATCHLIST":
-      return "Watch";
-    case "WARNING":
-      return "High";
-    case "CRITICAL":
-      return "Critical";
-  }
-}
+export const STATUS_ORDER: RiskStatus[] = [
+  "Normal",
+  "Watch",
+  "High",
+  "Insufficient data",
+];
 
-export function scoreToStatus(score: number): RiskStatus {
-  return nativeToStatus(classifyScore(score));
-}
+export const MAINTENANCE_PRIORITY_ORDER: MaintenancePriority[] = [
+  "CRITICAL",
+  "HIGH_RISK",
+  "WATCH",
+  "NORMAL",
+  "DATA_REVIEW",
+];
 
-/**
- * Normalizes the raw severity_score onto the 0-100 risk scale used in
- * UI-SPEC-DGA-DASHBOARD-01 (0-30 Normal, 31-60 Watch, 61-89 High, 90-100
- * Critical), anchoring on the same boundaries the backend classifies with
- * so a transformer's risk-bar percentage always agrees with its status pill.
- */
-export function scoreToRisk(score: number): number {
-  const anchors: [number, number][] = [
-    [0, 0],
-    [30, 30],
-    [60, 60],
-    [90, 90],
-    [100, 100],
-  ];
-  const clamped = Math.max(0, Math.min(100, score));
-  for (let i = 1; i < anchors.length; i++) {
-    const [x0, y0] = anchors[i - 1];
-    const [x1, y1] = anchors[i];
-    if (clamped <= x1) {
-      const t = x1 === x0 ? 1 : (clamped - x0) / (x1 - x0);
-      return Math.round(y0 + t * (y1 - y0));
-    }
-  }
-  return 100;
-}
-
-export const STATUS_ORDER: RiskStatus[] = ["Normal", "Watch", "High", "Critical"];
-
-// Raw hex twins of the --color-status-* CSS variables (globals.css) — SVG
-// chart libraries (recharts) need real color values for fill/stroke, not
-// Tailwind class names, so this can't just reuse STATUS_STYLES below.
 export const STATUS_HEX: Record<RiskStatus, string> = {
   Normal: "#1f7a4d",
   Watch: "#a16a07",
   High: "#9a4a1f",
-  Critical: "#c62828",
+  "Insufficient data": "#718096",
 };
 
-export const STATUS_STYLES: Record<
-  RiskStatus,
-  {
-    text: string;
-    bg: string;
-    border: string;
-    bar: string;
-    dot: string;
-    topBorder: string;
-    leftBorder: string;
-  }
-> = {
+export const MAINTENANCE_PRIORITY_HEX: Record<MaintenancePriority, string> = {
+  CRITICAL: "#b42318",
+  HIGH_RISK: "#9a4a1f",
+  WATCH: "#a16a07",
+  NORMAL: "#1f7a4d",
+  DATA_REVIEW: "#718096",
+};
+
+export const STATUS_STYLES: Record<RiskStatus, StatusStyle> = {
   Normal: {
     text: "text-status-normal",
     bg: "bg-status-normal-soft",
@@ -111,14 +80,45 @@ export const STATUS_STYLES: Record<
     topBorder: "border-t-status-high",
     leftBorder: "border-l-status-high",
   },
-  Critical: {
-    text: "text-status-critical",
-    bg: "bg-status-critical-soft",
-    border: "border-status-critical-border",
-    bar: "bg-status-critical",
-    dot: "bg-status-critical",
-    topBorder: "border-t-status-critical",
-    leftBorder: "border-l-status-critical",
+  "Insufficient data": {
+    text: "text-slate-500",
+    bg: "bg-slate-50",
+    border: "border-slate-300",
+    bar: "bg-slate-400",
+    dot: "bg-slate-400",
+    topBorder: "border-t-slate-400",
+    leftBorder: "border-l-slate-400",
+  },
+};
+
+export const MAINTENANCE_PRIORITY_STYLES: Record<
+  MaintenancePriority,
+  MaintenancePriorityStyle
+> = {
+  CRITICAL: {
+    text: "text-red-800",
+    bg: "bg-red-50",
+    border: "border-red-300",
+  },
+  HIGH_RISK: {
+    text: "text-orange-800",
+    bg: "bg-orange-50",
+    border: "border-orange-300",
+  },
+  WATCH: {
+    text: "text-amber-800",
+    bg: "bg-amber-50",
+    border: "border-amber-300",
+  },
+  NORMAL: {
+    text: "text-emerald-800",
+    bg: "bg-emerald-50",
+    border: "border-emerald-300",
+  },
+  DATA_REVIEW: {
+    text: "text-slate-600",
+    bg: "bg-slate-50",
+    border: "border-slate-300",
   },
 };
 
@@ -126,14 +126,127 @@ export const STATUS_ICON_LABEL: Record<RiskStatus, string> = {
   Normal: "✓",
   Watch: "◉",
   High: "▲",
-  Critical: "⊘",
+  "Insufficient data": "—",
 };
 
-export function statusFromSummary(summary: TransformerSummary): RiskStatus {
-  return scoreToStatus(summary.latest_score);
+export function ieeeStatusToRiskStatus(
+  ieeeStatus: number | null | undefined
+): RiskStatus {
+  if (ieeeStatus == null || !Number.isFinite(Number(ieeeStatus))) {
+    return "Insufficient data";
+  }
+
+  switch (Number(ieeeStatus)) {
+    case 1:
+      return "Normal";
+    case 2:
+      return "Watch";
+    case 3:
+      return "High";
+    default:
+      return "Insufficient data";
+  }
 }
 
-export function formatTrend(trend: string): { label: string; icon: string } {
+export function nativeToStatus(label: NativeSeverityLabel): RiskStatus {
+  switch (label) {
+    case "STATUS_1":
+      return "Normal";
+    case "STATUS_2":
+      return "Watch";
+    case "STATUS_3":
+      return "High";
+    default:
+      return "Insufficient data";
+  }
+}
+
+/** Backend has two independent axes. Status always comes from IEEE status. */
+export function statusFromSummary(summary: TransformerSummary): RiskStatus {
+  return ieeeStatusToRiskStatus(summary.ieee_status);
+}
+
+/**
+ * Backwards-compatible fallback for legacy UI code. Do not use this for
+ * severity distribution: maintenance priority and IEEE status are separate.
+ */
+export function maintenancePriorityToRiskStatus(
+  priority: MaintenancePriority | string | null | undefined,
+  ieeeStatus?: number | null
+): RiskStatus {
+  switch (String(priority ?? "").toUpperCase()) {
+    case "CRITICAL":
+    case "HIGH_RISK":
+      return "High";
+    case "WATCH":
+      return "Watch";
+    case "NORMAL":
+      return "Normal";
+    case "DATA_REVIEW":
+      return "Insufficient data";
+    default:
+      return ieeeStatusToRiskStatus(ieeeStatus);
+  }
+}
+
+export function statusFromValues(
+  ieeeStatus?: number | null,
+  label?: NativeSeverityLabel | string
+): RiskStatus {
+  if (ieeeStatus != null) return ieeeStatusToRiskStatus(ieeeStatus);
+  if (label === "STATUS_1" || label === "STATUS_2" || label === "STATUS_3") {
+    return nativeToStatus(label);
+  }
+  return "Insufficient data";
+}
+
+export function normalizeMaintenancePriority(
+  priority: MaintenancePriority | string | null | undefined
+): MaintenancePriority {
+  switch (String(priority ?? "").toUpperCase()) {
+    case "CRITICAL":
+      return "CRITICAL";
+    case "HIGH_RISK":
+      return "HIGH_RISK";
+    case "WATCH":
+      return "WATCH";
+    case "NORMAL":
+      return "NORMAL";
+    default:
+      return "DATA_REVIEW";
+  }
+}
+
+export function maintenancePriorityFromSummary(
+  summary: TransformerSummary
+): MaintenancePriority {
+  return normalizeMaintenancePriority(summary.maintenance_priority);
+}
+
+export function isCriticalSummary(summary: TransformerSummary): boolean {
+  return maintenancePriorityFromSummary(summary) === "CRITICAL" || summary.critical_front === true;
+}
+
+export function maintenancePriorityLabel(
+  priority: MaintenancePriority | string | null | undefined
+): string {
+  switch (normalizeMaintenancePriority(priority)) {
+    case "CRITICAL":
+      return "Critical";
+    case "HIGH_RISK":
+      return "High Risk";
+    case "WATCH":
+      return "Watch";
+    case "NORMAL":
+      return "Normal";
+    default:
+      return "Data Review";
+  }
+}
+
+export function formatTrend(
+  trend?: string
+): { label: string; icon: string } {
   switch (trend) {
     case "worsening":
       return { label: "Worsening", icon: "↑" };

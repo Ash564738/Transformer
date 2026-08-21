@@ -1,4 +1,4 @@
-// build-zone-traces.ts
+// src/components/charts/build-zone-traces.ts
 import { Ratio3DZone } from "./ratio3d-config";
 
 // react-plotly.js ships no first-party type defs; trace objects are plain

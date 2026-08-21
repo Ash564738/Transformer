@@ -1,3 +1,4 @@
+// src/components/detail/confirm-inspection-dialog.tsx
 "use client";
 
 import { useState } from "react";

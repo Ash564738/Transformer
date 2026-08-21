@@ -1,308 +1,823 @@
+// src/app/experiments/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
-import { AuthGuard } from "@/components/auth/auth-guard";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { getAuthToken } from "@/lib/api";
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  PieChart, Pie, Cell, AreaChart, Area
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from "recharts";
 
-// ─── Types ────────────────────────────────────────────────
-interface AnomalyResult {
-  "Precision@K": number;
-  "Recall@K": number;
-  Lift: number;
-  GIC: number;
-  Stability: number;
-  Spearman: number;
-  TC: number;
-  Precision_CI_low: number;
-  Precision_CI_high: number;
-  Posthoc: Record<string, Record<string, number>>;
+const BACKEND_PREFIX =
+  process.env.NEXT_PUBLIC_BACKEND_URL ??
+  "http://127.0.0.1:5000";
+
+interface ExperimentsReport {
+  metadata?: Record<string, unknown>;
+  executive_summary?: Array<Record<string, unknown>>;
+  traditional_methods?: Array<Record<string, unknown>>;
+  traditional_per_class?: Array<Record<string, unknown>>;
+  traditional_combinations?: Array<Record<string, unknown>>;
+  method_coverage?: Array<Record<string, unknown>>;
+  method_gas_range?: Array<Record<string, unknown>>;
+  supervised_ml?: Array<Record<string, unknown>>;
+  weak_label_model?: Array<Record<string, unknown>>;
+  weak_ml_transfer?: Array<Record<string, unknown>>;
+  severity_records?: Array<Record<string, unknown>>;
+  transformer_ranking?: Array<Record<string, unknown>>;
+  ranking_stability?: Array<Record<string, unknown>>;
 }
 
-interface SupervisedMethodResult {
-  [model: string]: { accuracy: number; f1_macro: number };
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="card-surface mb-6 overflow-hidden">
+      <div className="border-b border-cream-300 px-5 py-3">
+        <h2 className="text-lg font-bold text-teal-900">
+          {title}
+        </h2>
+      </div>
+
+      <div className="p-4">
+        {children}
+      </div>
+    </div>
+  );
 }
 
-interface GasDistData {
-  bin_centers: number[];
-  counts: number[];
-}
+function DataTable({
+  rows,
+  columns,
+  maxRows = 50,
+}: {
+  rows: Array<Record<string, unknown>>;
+  columns?: string[];
+  maxRows?: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
 
-interface Section31 {
-  gas_distributions: Record<string, GasDistData>;
-  correlation_matrix: { columns: string[]; values: number[][] };
-  missing_summary: { columns: string[]; missing_ratio: number[] };
-}
+  if (!rows || rows.length === 0) {
+    return (
+      <p className="py-4 text-center text-sm text-teal-400">
+        No data available.
+      </p>
+    );
+  }
 
-interface Section32 {
-  [method: string]: Record<string, number>;
-}
+  const keys =
+    columns && columns.length > 0
+      ? columns
+      : Array.from(
+          rows.reduce<Set<string>>(
+            (acc, row) => {
+              Object.keys(row).forEach((key) =>
+                acc.add(key)
+              );
+              return acc;
+            },
+            new Set<string>()
+          )
+        );
 
-interface Section34 {
-  severity_histogram: GasDistData;
-  severity_label_counts: Record<string, number>;
-  top5_transformers: { transformer_id: string; severity_score: number }[];
-}
+  const shownRows = expanded
+    ? rows
+    : rows.slice(0, maxRows);
 
-// ─── Constants ────────────────────────────────────────────
-const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042", "#8884d8", "#82ca9d"];
-const METHOD_DISPLAY_ORDER = ["tdcg", "iforest", "lof", "ocsvm", "autoencoder", "ensemble"];
-const SUPERVISED_MODEL_ORDER = ["RF", "RF+SMOTE", "XGBoost", "XGBoost+SMOTE", "CatBoost", "CatBoost+SMOTE"];
-
-export default function ExperimentReportPage() {
-  const [token, setToken] = useState<string | null>(null);
-  const [data, setData] = useState<any>({});
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const storedToken = localStorage.getItem("dga-auth-token");
-    setToken(storedToken);
-  }, []);
-
-  useEffect(() => {
-    if (!token) { setLoading(false); return; }
-    const apiUrl = `${process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:5000"}/report/experiments`;
-    fetch(apiUrl, { headers: { Authorization: `Bearer ${token}` } })
-      .then(res => res.ok ? res.json() : Promise.reject(res.statusText))
-      .then(json => setData(json))
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [token]);
-
-  if (loading) return <div className="p-8">Loading report data...</div>;
-  if (error) return <div className="p-8 text-red-500">Error: {error}</div>;
-
-  const anomaly: Record<string, AnomalyResult> = data.anomaly || {};
-  const supervised: Record<string, SupervisedMethodResult> = data.supervised || {};
-  const section31: Section31 | null = data.exploratory || null;
-  const section32: Section32 | null = data.label_distribution || null;
-  const section34: Section34 | null = data.risk_analysis || null;
-
-  const gasDistToChart = (dist: GasDistData) =>
-    dist.bin_centers.map((c, i) => ({ bin: c.toFixed(2), count: dist.counts[i] }));
+  const hasMore = rows.length > maxRows;
 
   return (
-    <AuthGuard>
-      <div className="p-6 space-y-10 max-w-7xl mx-auto">
-        <h1 className="text-2xl font-bold text-teal-900">Experiment Data Overview</h1>
+    <div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[900px] text-left text-sm">
+          <thead>
+            <tr className="border-b border-cream-300 bg-cream-50 text-xs font-semibold uppercase tracking-wide text-teal-400">
+              {keys.map((key) => (
+                <th
+                  key={key}
+                  className="px-3 py-2"
+                >
+                  {key}
+                </th>
+              ))}
+            </tr>
+          </thead>
 
-        {/* ─── 3.1 Exploratory Analysis ─── */}
-        <section>
-          <h2 className="text-lg font-semibold">Gas Distributions & Correlations</h2>
-          {section31 && (
-            <>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-                {Object.entries(section31.gas_distributions).map(([gas, dist]) => (
-                  <div key={gas} className="border rounded p-2">
-                    <p className="text-sm font-medium">{gas.toUpperCase()}</p>
-                    <ResponsiveContainer width="100%" height={200}>
-                      <AreaChart data={gasDistToChart(dist)}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="bin" tick={false} />
-                        <YAxis />
-                        <Tooltip />
-                        <Area type="monotone" dataKey="count" stroke="#0d9488" fill="#99f6e4" />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                ))}
-              </div>
+          <tbody>
+            {shownRows.map((row, idx) => (
+              <tr
+                key={idx}
+                className="border-b border-cream-200 hover:bg-cream-50"
+              >
+                {keys.map((key) => {
+                  const value = row[key];
 
-              <h3 className="mt-6 font-medium">Correlation Matrix</h3>
-              <div className="overflow-x-auto mt-2">
-                <table className="min-w-full text-sm border">
-                  <thead className="bg-teal-50">
-                    <tr>
-                      <th></th>
-                      {section31.correlation_matrix.columns.map(c => <th key={c} className="px-2">{c}</th>)}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {section31.correlation_matrix.values.map((row, i) => (
-                      <tr key={i}>
-                        <td className="font-medium">{section31.correlation_matrix.columns[i]}</td>
-                        {row.map((val, j) => (
-                          <td key={j} className="text-center" style={{ backgroundColor: val > 0.7 ? '#fee2e2' : val < -0.7 ? '#e0f2fe' : 'transparent' }}>
-                            {val.toFixed(2)}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                  let display: string;
 
-              <h3 className="mt-6 font-medium">Missing Data Summary</h3>
-              <ResponsiveContainer width="100%" height={300} className="mt-2">
-                <BarChart data={section31.missing_summary.columns.map((c, i) => ({ column: c, ratio: section31.missing_summary.missing_ratio[i] }))}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="column" />
-                  <YAxis unit="%" />
-                  <Tooltip formatter={(value) => `${value}%`} />
-                  <Bar dataKey="ratio" fill="#f97316" />
-                </BarChart>
-              </ResponsiveContainer>
-            </>
-          )}
-        </section>
+                  if (
+                    value === null ||
+                    value === undefined
+                  ) {
+                    display = "N/A";
+                  } else if (
+                    typeof value === "number"
+                  ) {
+                    display =
+                      Number.isFinite(value)
+                        ? String(
+                            Math.round(
+                              value * 1000
+                            ) / 1000
+                          )
+                        : "N/A";
+                  } else if (
+                    typeof value === "boolean"
+                  ) {
+                    display = value
+                      ? "true"
+                      : "false";
+                  } else if (
+                    typeof value === "object"
+                  ) {
+                    display = JSON.stringify(
+                      value
+                    );
+                  } else {
+                    display = String(value);
+                  }
 
-        {/* ─── 3.2 Label Distribution ─── */}
-        <section>
-          <h2 className="text-lg font-semibold">Fault Label Distribution by Method</h2>
-          {section32 && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
-              {Object.entries(section32).map(([method, counts]) => {
-                const chartData = Object.entries(counts).map(([label, count]) => ({ label, count }));
-                return (
-                  <div key={method} className="border rounded p-2">
-                    <p className="text-sm font-medium">{method}</p>
-                    <ResponsiveContainer width="100%" height={250}>
-                      <BarChart data={chartData}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="label" />
-                        <YAxis />
-                        <Tooltip />
-                        <Bar dataKey="count" fill="#0ea5e9" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        {/* ─── 3.3 Supervised Model Performance ─── */}
-        <section>
-          <h2 className="text-lg font-semibold">Supervised Model Performance</h2>
-          <div className="overflow-x-auto rounded-lg border border-teal-200 mt-4 mb-6">
-            <table className="min-w-full text-sm">
-              <thead className="bg-teal-50 text-teal-700">
-                <tr>
-                  <th className="px-4 py-2.5 text-left font-semibold">Labeling Method</th>
-                  {SUPERVISED_MODEL_ORDER.map(model => <th key={model} className="px-4 py-2.5">{model}</th>)}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-teal-100">
-                {Object.entries(supervised).map(([method, models]) => (
-                  <tr key={method}>
-                    <td className="px-4 py-2.5 font-medium">{method}</td>
-                    {SUPERVISED_MODEL_ORDER.map(model => {
-                      const perf = models[model];
-                      if (!perf) return <td key={model} className="px-4 py-2.5 text-center text-gray-400">–</td>;
-                      return (
-                        <td key={model} className="px-4 py-2.5 text-center">
-                          <span className="font-medium">{(perf.accuracy * 100).toFixed(1)}%</span>
-                          <span className="text-teal-500"> / </span>
-                          <span>{(perf.f1_macro * 100).toFixed(1)}%</span>
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {Object.keys(supervised).length > 0 && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <h3 className="font-medium mb-2">Accuracy</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={Object.entries(supervised).flatMap(([method, models]) =>
-                    Object.entries(models).map(([model, metrics]) => ({
-                      method,
-                      model,
-                      value: metrics.accuracy * 100
-                    }))
-                  )}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="model" />
-                    <YAxis unit="%" />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="value" fill="#10b981" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <div>
-                <h3 className="font-medium mb-2">Macro F1</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={Object.entries(supervised).flatMap(([method, models]) =>
-                    Object.entries(models).map(([model, metrics]) => ({
-                      method,
-                      model,
-                      value: metrics.f1_macro * 100
-                    }))
-                  )}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="model" />
-                    <YAxis unit="%" />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="value" fill="#f59e0b" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          )}
-        </section>
-
-        {/* ─── 3.4 Risk Score & Severity Analysis ─── */}
-        <section>
-          <h2 className="text-lg font-semibold">Risk Score & Severity Analysis</h2>
-          {section34 && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
-              <div>
-                <h3 className="font-medium mb-2">Severity Score Distribution</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <AreaChart data={gasDistToChart(section34.severity_histogram)}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="bin" tick={false} />
-                    <YAxis />
-                    <Tooltip />
-                    <Area type="monotone" dataKey="count" stroke="#1e3a8a" fill="#bfdbfe" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-              <div>
-                <h3 className="font-medium mb-2">Severity Label Distribution</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <PieChart>
-                    <Pie
-                      data={Object.entries(section34.severity_label_counts).map(([name, value]) => ({ name, value }))}
-                      cx="50%"
-                      cy="50%"
-                      outerRadius={80}
-                      label
+                  return (
+                    <td
+                      key={key}
+                      className="px-3 py-2 text-teal-700"
                     >
-                      {Object.keys(section34.severity_label_counts).map((_, index) => (
-                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
+                      {display}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {hasMore && (
+        <div className="mt-2 text-center">
+          <button
+            onClick={() =>
+              setExpanded(!expanded)
+            }
+            className="rounded-lg border border-teal-200 px-3 py-1 text-xs font-semibold text-teal-600 hover:bg-cream-50"
+          >
+            {expanded
+              ? "Show less"
+              : `Show ${
+                  rows.length - maxRows
+                } more rows`}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetadataCard({
+  metadata,
+}: {
+  metadata: Record<string, unknown>;
+}) {
+  if (
+    !metadata ||
+    Object.keys(metadata).length === 0
+  ) {
+    return null;
+  }
+
+  return (
+    <Section title="Experiment Metadata">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {Object.entries(metadata).map(
+          ([key, value]) => (
+            <div
+              key={key}
+              className="rounded-lg bg-cream-50 p-3"
+            >
+              <div className="text-xs font-semibold uppercase text-teal-400">
+                {key}
               </div>
-              <div className="md:col-span-2">
-                <h3 className="font-medium mb-2">Top 5 Highest‑Risk Transformers</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={section34.top5_transformers}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="transformer_id" />
-                    <YAxis />
-                    <Tooltip />
-                    <Bar dataKey="severity_score" fill="#dc2626" />
-                  </BarChart>
-                </ResponsiveContainer>
+
+              <div className="mt-1 break-words text-sm text-teal-900">
+                {typeof value ===
+                "object"
+                  ? JSON.stringify(value)
+                  : String(value)}
               </div>
             </div>
-          )}
-        </section>
+          )
+        )}
       </div>
-    </AuthGuard>
+    </Section>
+  );
+}
+
+function MetricChart({
+  rows,
+  xKey,
+  yKey,
+  title,
+  kind = "bar",
+  height = 300,
+}: {
+  rows: Array<Record<string, unknown>>;
+  xKey: string;
+  yKey: string;
+  title: string;
+  kind?: "bar" | "line";
+  height?: number;
+}) {
+  if (!rows || rows.length === 0) {
+    return null;
+  }
+
+  const data = rows
+    .filter(
+      (row) =>
+        row[xKey] !== null &&
+        row[xKey] !== undefined &&
+        row[yKey] !== null &&
+        row[yKey] !== undefined
+    )
+    .map((row) => ({
+      [xKey]: String(row[xKey]),
+      [yKey]: Number(row[yKey]),
+    }));
+
+  if (data.length === 0) {
+    return null;
+  }
+
+  return (
+    <div>
+      <h3 className="mb-3 text-sm font-semibold text-teal-900">
+        {title}
+      </h3>
+
+      <ResponsiveContainer
+        width="100%"
+        height={height}
+      >
+        {kind === "bar" ? (
+          <BarChart data={data}>
+            <CartesianGrid
+              strokeDasharray="3 3"
+              stroke="#e8e5d9"
+              vertical={false}
+            />
+            <XAxis
+              dataKey={xKey}
+              tick={{
+                fontSize: 11,
+                fill: "#4f8f83",
+              }}
+              interval={0}
+              angle={-30}
+              textAnchor="end"
+              height={80}
+            />
+            <YAxis
+              tick={{
+                fontSize: 11,
+                fill: "#4f8f83",
+              }}
+            />
+            <Tooltip />
+            <Bar
+              dataKey={yKey}
+              fill="#184843"
+            />
+          </BarChart>
+        ) : (
+          <LineChart data={data}>
+            <CartesianGrid
+              strokeDasharray="3 3"
+              stroke="#e8e5d9"
+              vertical={false}
+            />
+            <XAxis
+              dataKey={xKey}
+              tick={{
+                fontSize: 11,
+                fill: "#4f8f83",
+              }}
+            />
+            <YAxis
+              tick={{
+                fontSize: 11,
+                fill: "#4f8f83",
+              }}
+            />
+            <Tooltip />
+            <Line
+              type="monotone"
+              dataKey={yKey}
+              stroke="#c96f28"
+              strokeWidth={2}
+              dot={{ r: 3 }}
+            />
+          </LineChart>
+        )}
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+export default function ExperimentsPage() {
+  const [report, setReport] =
+    useState<ExperimentsReport | null>(
+      null
+    );
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [error, setError] =
+    useState<string | null>(null);
+
+  const [activeTab, setActiveTab] =
+    useState("summary");
+
+  const fetchReport =
+    useCallback(async () => {
+      setLoading(true);
+      setError(null);
+
+      const token = getAuthToken();
+
+      const headers: Record<
+        string,
+        string
+      > = {
+        "Content-Type":
+          "application/json",
+      };
+
+      if (token) {
+        headers.Authorization =
+          `Bearer ${token}`;
+      }
+
+      try {
+        const res = await fetch(
+          `${BACKEND_PREFIX}/report/experiments`,
+          {
+            headers,
+            cache: "no-store",
+          }
+        );
+
+        if (!res.ok) {
+          const body =
+            await res
+              .json()
+              .catch(() => ({
+                error:
+                  res.statusText,
+              }));
+
+          throw new Error(
+            body.error ??
+              "Failed to load experiments report."
+          );
+        }
+
+        const data =
+          await res.json();
+
+        setReport(data);
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Unknown error"
+        );
+      } finally {
+        setLoading(false);
+      }
+    }, []);
+
+  useEffect(() => {
+    fetchReport();
+
+    const handler = () => {
+      fetchReport();
+    };
+
+    window.addEventListener(
+      "experiments-refresh",
+      handler
+    );
+
+    return () => {
+      window.removeEventListener(
+        "experiments-refresh",
+        handler
+      );
+    };
+  }, [fetchReport]);
+
+  const tabs = useMemo(
+    () => [
+      {
+        id: "summary",
+        label: "Executive Summary",
+      },
+      {
+        id: "traditional",
+        label: "Traditional Methods",
+      },
+      {
+        id: "combinations",
+        label: "Combinations",
+      },
+      {
+        id: "coverage",
+        label: "Coverage / Range",
+      },
+      {
+        id: "ml",
+        label: "Supervised ML",
+      },
+      {
+        id: "weak",
+        label: "Weak Supervision",
+      },
+      {
+        id: "severity",
+        label: "Severity Records",
+      },
+      {
+        id: "ranking",
+        label: "Transformer Ranking",
+      },
+      {
+        id: "stability",
+        label: "History / Stability Evidence",
+      },
+    ],
+    []
+  );
+
+  if (loading) {
+    return (
+      <div className="p-8 text-center text-teal-500">
+        Loading experiments report…
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-8 text-center">
+        <p className="text-status-critical">
+          {error}
+        </p>
+
+        <button
+          onClick={fetchReport}
+          className="mt-4 rounded-lg border border-teal-200 px-4 py-2 text-sm font-semibold text-teal-700 hover:bg-cream-50"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (!report) {
+    return (
+      <div className="p-8 text-center text-teal-400">
+        No report data available.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <MetadataCard
+        metadata={
+          report.metadata ?? {}
+        }
+      />
+
+      <div className="flex flex-wrap gap-2">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() =>
+              setActiveTab(tab.id)
+            }
+            className={`rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
+              activeTab === tab.id
+                ? "bg-teal-900 text-white"
+                : "bg-cream-50 text-teal-700 hover:bg-cream-100"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "summary" && (
+        <>
+          <Section title="Executive Summary">
+            <DataTable
+              rows={
+                report.executive_summary ??
+                []
+              }
+            />
+          </Section>
+
+          <Section title="Traditional Diagnostic Benchmark">
+            <MetricChart
+              rows={
+                report.traditional_methods ??
+                []
+              }
+              xKey="method"
+              yKey="macro_f1"
+              title="Traditional methods — Macro F1"
+            />
+          </Section>
+
+          <Section title="ML Comparison">
+            <MetricChart
+              rows={
+                (
+                  report.supervised_ml ??
+                  []
+                ).filter(
+                  (x) =>
+                    x.split ===
+                    "locked_test"
+                )
+              }
+              xKey="model"
+              yKey="macro_f1"
+              title="Supervised ML — Locked Test Macro F1"
+            />
+          </Section>
+        </>
+      )}
+
+      {activeTab === "traditional" && (
+        <>
+          <Section title="Traditional Methods">
+            <DataTable
+              rows={
+                report.traditional_methods ??
+                []
+              }
+            />
+          </Section>
+
+          <Section title="Per-Class Performance">
+            <DataTable
+              rows={
+                report.traditional_per_class ??
+                []
+              }
+            />
+          </Section>
+        </>
+      )}
+
+      {activeTab === "combinations" && (
+        <>
+          <Section title="Traditional Combinations">
+            <DataTable
+              rows={
+                report.traditional_combinations ??
+                []
+              }
+              maxRows={100}
+            />
+          </Section>
+
+          <Section title="Best Locked-Test Combinations">
+            <MetricChart
+              rows={(
+                report.traditional_combinations ??
+                []
+              )
+                .filter(
+                  (r) =>
+                    r.split ===
+                      "locked_test" &&
+                    r.granularity ===
+                      "fine"
+                )
+                .sort(
+                  (a, b) =>
+                    Number(
+                      b.macro_f1 ?? 0
+                    ) -
+                    Number(
+                      a.macro_f1 ?? 0
+                    )
+                )
+                .slice(0, 15)}
+              xKey="methods"
+              yKey="macro_f1"
+              title="Top traditional combinations"
+            />
+          </Section>
+        </>
+      )}
+
+      {activeTab === "coverage" && (
+        <>
+          <Section title="Method Coverage">
+            <DataTable
+              rows={
+                report.method_coverage ??
+                []
+              }
+            />
+          </Section>
+
+          <Section title="Gas Range by Method">
+            <DataTable
+              rows={
+                report.method_gas_range ??
+                []
+              }
+            />
+          </Section>
+        </>
+      )}
+
+      {activeTab === "ml" && (
+        <>
+          <Section title="Supervised ML Benchmark">
+            <DataTable
+              rows={
+                report.supervised_ml ??
+                []
+              }
+              maxRows={100}
+            />
+          </Section>
+
+          <Section title="Locked-Test Comparison">
+            <MetricChart
+              rows={(
+                report.supervised_ml ??
+                []
+              ).filter(
+                (r) =>
+                  r.split ===
+                  "locked_test"
+              )}
+              xKey="model"
+              yKey="macro_f1"
+              title="Supervised models — locked test"
+            />
+          </Section>
+        </>
+      )}
+
+      {activeTab === "weak" && (
+        <>
+          <Section title="Weak Label Model">
+            <DataTable
+              rows={
+                report.weak_label_model ??
+                []
+              }
+            />
+          </Section>
+
+          <Section title="Weak ML Transfer">
+            <DataTable
+              rows={
+                report.weak_ml_transfer ??
+                []
+              }
+              maxRows={100}
+            />
+          </Section>
+
+          <Section title="Weak ML Locked-Test Comparison">
+            <MetricChart
+              rows={(
+                report.weak_ml_transfer ??
+                []
+              )
+                .filter(
+                  (r) =>
+                    r.split ===
+                      "locked_test" &&
+                    r.granularity ===
+                      "fine"
+                )
+                .sort(
+                  (a, b) =>
+                    Number(
+                      b.macro_f1 ?? 0
+                    ) -
+                    Number(
+                      a.macro_f1 ?? 0
+                    )
+                )
+                .slice(0, 20)}
+              xKey="model"
+              yKey="macro_f1"
+              title="Weak-supervision transfer — locked test"
+            />
+          </Section>
+        </>
+      )}
+
+      {activeTab === "severity" && (
+        <Section title="Severity Records">
+          <DataTable
+            rows={
+              report.severity_records ??
+              []
+            }
+            maxRows={100}
+          />
+        </Section>
+      )}
+
+      {activeTab === "ranking" && (
+        <>
+          <Section title="Transformer Ranking">
+            <DataTable
+              rows={
+                report.transformer_ranking ??
+                []
+              }
+              maxRows={100}
+            />
+          </Section>
+
+          <Section title="Top Transformer Severity">
+            <MetricChart
+              rows={(
+                report.transformer_ranking ??
+                []
+              )
+                .slice(0, 20)
+                .map((r) => ({
+                  transformer_id:
+                    r.transformer_id,
+                  severity:
+                    Number(
+                      r.transformer_overall_severity_level ??
+                        0
+                    ),
+                }))}
+              xKey="transformer_id"
+              yKey="severity"
+              title="Top 20 transformers — current IEEE status"
+            />
+          </Section>
+        </>
+      )}
+
+      {activeTab === "stability" && (
+        <Section title="History / Stability Evidence">
+          <p className="mb-4 text-sm text-teal-600">
+            This table reports available historical
+            evidence such as number of records,
+            history span, worsening transitions,
+            recurrence and history sufficiency. It
+            is not presented as a fabricated statistical
+            ranking-stability score.
+          </p>
+
+          <DataTable
+            rows={
+              report.ranking_stability ??
+              []
+            }
+            maxRows={100}
+          />
+        </Section>
+      )}
+    </div>
   );
 }

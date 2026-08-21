@@ -1,3 +1,4 @@
+// src/lib/logger.ts
 export function ts() {
   return new Date().toISOString()
 }

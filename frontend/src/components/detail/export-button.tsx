@@ -1,3 +1,4 @@
+// src/components/detail/export-button.tsx
 "use client";
 
 import { Download } from "lucide-react";

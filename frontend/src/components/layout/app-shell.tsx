@@ -1,3 +1,4 @@
+// src/components/layout/app-shell.tsx
 "use client";
 
 import { usePathname } from "next/navigation";

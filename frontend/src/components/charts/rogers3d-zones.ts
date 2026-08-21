@@ -1,4 +1,4 @@
-// rogers3d-zones.ts
+// src/components/charts/rogers3d-zones.ts
 import { Ratio3DZone } from "./ratio3d-config";
 
 export const ROGERS_3D_ZONES: Ratio3DZone[] = [

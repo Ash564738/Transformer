@@ -1,3 +1,4 @@
+// src/components/layout/data-panel.tsx
 "use client";
 
 import { useEffect, useRef, useState } from "react";

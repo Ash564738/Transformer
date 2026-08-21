@@ -1,3 +1,4 @@
+// src/components/layout/empty-state.tsx
 "use client";
 
 import { UploadCloud } from "lucide-react";

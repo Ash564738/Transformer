@@ -1,3 +1,4 @@
+// src/app/fleet/page.tsx
 "use client";
 
 import { useMemo, useState } from "react";
@@ -5,25 +6,39 @@ import { Search } from "lucide-react";
 import { useDashboardStore } from "@/store/use-dashboard-store";
 import { EmptyState } from "@/components/layout/empty-state";
 import { TransformerCard } from "@/components/fleet/transformer-card";
-import { STATUS_ORDER, scoreToStatus } from "@/lib/severity";
+import {
+  STATUS_ORDER,
+  statusFromSummary,
+} from "@/lib/severity";
 import { getStations, stationOf } from "@/lib/transformer-helpers";
 import { cn } from "@/lib/utils";
 import type { RiskStatus } from "@/types/dga";
 
+const STATUS_RANK: Record<RiskStatus, number> = {
+  "Insufficient data": 0,
+  Normal: 1,
+  Watch: 2,
+  High: 3,
+};
+
 export default function FleetPage() {
   const payload = useDashboardStore((s) => s.payload);
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<RiskStatus | "All">("All");
+  const [statusFilter, setStatusFilter] =
+    useState<RiskStatus | "All">("All");
   const [faultFilter, setFaultFilter] = useState("All");
 
-  const stations = useMemo(() => (payload ? getStations(payload) : []), [payload]);
+  const stations = useMemo(
+    () => (payload ? getStations(payload) : []),
+    [payload]
+  );
 
   // Lấy danh sách fault type duy nhất (loại bỏ null/undefined)
   const faultTypes = useMemo(() => {
     if (!payload) return ["All"];
     const types = new Set<string>();
     payload.transformer_summary.forEach((s) => {
-      const ft = s.fault_type || "";   // chuẩn hóa
+      const ft = s.fault_type || "";
       if (ft) types.add(ft);
     });
     return ["All", ...Array.from(types).sort()];
@@ -31,31 +46,56 @@ export default function FleetPage() {
 
   const grouped = useMemo(() => {
     if (!payload) return [];
+
     let list = [...payload.transformer_summary];
 
     if (query.trim()) {
       const q = query.trim().toLowerCase();
-      list = list.filter((s) => s.transformer_id.toLowerCase().includes(q));
+      list = list.filter((s) =>
+        s.transformer_id.toLowerCase().includes(q)
+      );
     }
+
     if (statusFilter !== "All") {
-      list = list.filter((s) => scoreToStatus(s.latest_score) === statusFilter);
+      list = list.filter(
+        (s) =>
+          statusFromSummary(s) === statusFilter
+      );
     }
+
     if (faultFilter !== "All") {
-      list = list.filter((s) => (s.fault_type || "") === faultFilter);
+      list = list.filter(
+        (s) => (s.fault_type || "") === faultFilter
+      );
     }
 
     const map = new Map<string, typeof list>();
+
     for (const s of list) {
       const sta = stationOf(s) || "Unknown";
       if (!map.has(sta)) map.set(sta, []);
       map.get(sta)!.push(s);
     }
 
+    // Sắp xếp theo trạng thái (High > Watch > Normal > Insufficient data),
+    // sau đó theo transformer_id để ổn định.
+    const sortFn = (a: (typeof list)[number], b: (typeof list)[number]) => {
+      const rankDiff =
+        STATUS_RANK[statusFromSummary(b)] -
+        STATUS_RANK[statusFromSummary(a)];
+
+      if (rankDiff !== 0) return rankDiff;
+
+      return a.transformer_id.localeCompare(
+        b.transformer_id
+      );
+    };
+
     const ordered = stations
       .filter((st) => map.has(st))
       .map((st) => ({
         station: st,
-        items: map.get(st)!.sort((a, b) => b.latest_score - a.latest_score),
+        items: map.get(st)!.sort(sortFn),
       }));
 
     // Thêm các station không nằm trong danh sách gốc (nếu có)
@@ -63,7 +103,7 @@ export default function FleetPage() {
       if (!stations.includes(sta)) {
         ordered.push({
           station: sta,
-          items: items.sort((a, b) => b.latest_score - a.latest_score),
+          items: items.sort(sortFn),
         });
       }
     }
@@ -83,10 +123,13 @@ export default function FleetPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-extrabold tracking-tight text-teal-900">Fleet Directory</h1>
+        <h1 className="text-2xl font-extrabold tracking-tight text-teal-900">
+          Fleet Directory
+        </h1>
         <p className="mt-1 text-sm text-teal-500">
           {payload.dataset_summary.total_transformers} transformers across{" "}
-          {stations.length} station{stations.length === 1 ? "" : "s"}.
+          {stations.length} station
+          {stations.length === 1 ? "" : "s"}.
         </p>
       </div>
 
@@ -120,12 +163,17 @@ export default function FleetPage() {
               onClick={() => setStatusFilter("All")}
               label="All"
             />
+
             {STATUS_ORDER.map((status) => (
               <FilterChip
                 key={status}
                 active={statusFilter === status}
                 onClick={() => setStatusFilter(status)}
-                label={status === "High" ? "High Risk" : status}
+                label={
+                  status === "High"
+                    ? "High Risk"
+                    : status
+                }
               />
             ))}
           </div>
@@ -142,14 +190,20 @@ export default function FleetPage() {
         {grouped.map(({ station, items }) => (
           <section key={station}>
             <div className="mb-3 flex items-baseline gap-2">
-              <h2 className="text-sm font-bold uppercase tracking-wide text-teal-600">{station}</h2>
+              <h2 className="text-sm font-bold uppercase tracking-wide text-teal-600">
+                {station}
+              </h2>
               <span className="text-xs text-teal-400">
                 {items.length} unit{items.length === 1 ? "" : "s"}
               </span>
             </div>
+
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {items.map((s) => (
-                <TransformerCard key={s.transformer_id} summary={s} />
+                <TransformerCard
+                  key={s.transformer_id}
+                  summary={s}
+                />
               ))}
             </div>
           </section>
@@ -159,7 +213,15 @@ export default function FleetPage() {
   );
 }
 
-function FilterChip({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
+function FilterChip({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
   return (
     <button
       onClick={onClick}

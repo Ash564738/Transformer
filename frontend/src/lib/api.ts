@@ -1,3 +1,4 @@
+// src/lib/api.ts
 import type { DgaPayload, DgaRow } from "@/types/dga";
 
 // Called directly from the browser (not through Next.js's rewrite proxy):
@@ -105,33 +106,6 @@ async function handlePredictResponse(res: Response): Promise<DgaPayload> {
     throw new ApiError(body.error ?? "Prediction request failed.");
   }
   return res.json();
-}
-
-// These build URLs for the backend's matplotlib-rendered chart images
-// (backend/app.py `/chart/*` routes, which call backend/dga/duval_triangle.py
-// and backend/dga/duval_pentagon.py directly) — the frontend never redraws
-// the diagram itself, only embeds the image the backend already produced.
-export function duvalTriangleImageUrl(row: DgaRow): string {
-  const params = new URLSearchParams({
-    ch4: String(row.ch4 ?? 0),
-    c2h4: String(row.c2h4 ?? 0),
-    c2h2: String(row.c2h2 ?? 0),
-    fault: String(row.duval_triangle_fault ?? ""),
-  });
-  return `${BACKEND_PREFIX}/chart/duval-triangle?${params.toString()}`;
-}
-
-export function duvalPentagonImageUrl(row: DgaRow): string {
-  const params = new URLSearchParams({
-    h2: String(row.h2 ?? 0),
-    ch4: String(row.ch4 ?? 0),
-    c2h6: String(row.c2h6 ?? 0),
-    c2h4: String(row.c2h4 ?? 0),
-    c2h2: String(row.c2h2 ?? 0),
-    fault_p1: String(row.fault_p1 ?? ""),
-    fault_p2: String(row.duval_pentagon_fault ?? ""),
-  });
-  return `${BACKEND_PREFIX}/chart/duval-pentagon?${params.toString()}`;
 }
 
 export interface ChatHistoryTurn {

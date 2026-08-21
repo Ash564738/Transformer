@@ -1,519 +1,393 @@
 # train_unsupervised_models.py
 from __future__ import annotations
-import argparse, copy, logging, random
+import argparse, json, logging, random, warnings
+from itertools import combinations
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-import joblib, lightgbm as lgb, numpy as np, pandas as pd, torch, torch.nn as nn, xgboost as xgb
-from sklearn.model_selection import GroupShuffleSplit
+from typing import Iterable, Sequence, Tuple
+import joblib, numpy as np, pandas as pd
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.ensemble import AdaBoostClassifier, BaggingClassifier, ExtraTreesClassifier, GradientBoostingClassifier, HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import DataLoader, Dataset
-
+from sklearn.svm import SVC
+from sklearn.tree import DecisionTreeClassifier
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    TORCH_AVAILABLE = True
+except Exception: TORCH_AVAILABLE = False
+try: import xgboost as xgb
+except Exception: xgb = None
+try: import lightgbm as lgb
+except Exception: lgb = None
+try: from catboost import CatBoostClassifier
+except Exception: CatBoostClassifier = None
+from config import DATASET_DIR, MODEL_DIR, REPORT_DIR, config as cfg
+from consensus import ABSTAIN, apply_consensus, apply_consensus_from_existing_diagnostics, diagnostic_method_summary, evaluate_method_labels, normalize_fault, pairwise_label_agreement, unify_fault
+from feature_engineering import build_training_features_from_clean
 from logging_config import init_logging
+from ranking import build_transformer_ranking, log_ranking_diagnostics
+from weak_supervision import DEFAULT_WEAK_METHODS, create_student_training_targets, save_weak_supervision_artifacts, weak_supervision_pipeline
 init_logging()
 logger = logging.getLogger(__name__)
+LABELED_CSV_PATH1 = DATASET_DIR / "IEC_TC10_121.csv"
+LABELED_CSV_PATH2 = DATASET_DIR / "DGA dataset.csv"
+UNLABELED_PATH = DATASET_DIR / "processed" / "dga_unlabeled.parquet"
+FAULT_MODEL_COARSE_PATH = MODEL_DIR / "fault_classifiers_coarse.joblib"
+FAULT_MODEL_FINE_PATH = MODEL_DIR / "fault_classifiers_fine.joblib"
+TRAINING_METADATA_PATH = MODEL_DIR / "training_metadata.json"
+BENCHMARK_DIR = REPORT_DIR / "benchmark"
+MODEL_FEATURES = list(cfg.COMMON_BENCHMARK_GASES)
 
-from config import FAULT_LABELS, DATASET_DIR, MODEL_DIR, REPORT_DIR
-from weak_supervision import WEAK_GROUPS, weak_supervision_pipeline, create_student_training_targets
-from consensus import apply_consensus
-from severity import apply_severity
-from feature_engineering import build_training_features_from_clean, get_model_feature_columns
+def set_global_seed(seed: int):
+    random.seed(seed); np.random.seed(seed)
+    if TORCH_AVAILABLE:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
 
-LABELED_PATH = Path(DATASET_DIR) / "processed" / "dga_labeled.parquet"
-UNLABELED_PATH = Path(DATASET_DIR) / "processed" / "dga_unlabeled.parquet"
-WEAK_LABEL_PATH = Path(DATASET_DIR) / "processed" / "dga_weak_labels.parquet"
+def _decode_class_predictions(prediction, labels, default=ABSTAIN):
+    arr = np.asarray(prediction)
+    if arr.ndim == 0: arr = arr.reshape(1)
+    elif arr.ndim > 1:
+        if arr.size == arr.shape[0]: arr = arr.reshape(-1)
+        else: arr = arr.reshape(arr.shape[0], -1)[:, 0]
+    decoded = []
+    for value in arr:
+        try:
+            scalar = np.asarray(value).reshape(-1)[0]; index = int(scalar); decoded.append(labels[index] if 0 <= index < len(labels) else default)
+        except Exception: decoded.append(default)
+    return decoded
 
-RANDOM_STATE = 42
-TEST_SIZE = 0.20
-SEQ_LEN = 5
-AE_EPOCHS = 30
-AE_LATENT_DIM = 32
-TEMPORAL_EPOCHS = 35
-WEAK_CONFIDENCE_THRESHOLD = 0.70
-BATCH_SIZE = 64
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def _predict_model(model, feature_frame: pd.DataFrame): return model.predict(feature_frame)
+def _predict_proba(model, feature_frame: pd.DataFrame): return model.predict_proba(feature_frame)
 
-CORE_GASES = ["h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2"]
-OPTIONAL_NUMERIC = ["o2", "n2", "water", "temp"]
+def _safe_balanced_accuracy(y_true, y_pred, labels=None):
+    y_true = np.asarray(y_true); y_pred = np.asarray(y_pred)
+    if y_true.size == 0: return 0.0
+    if labels is None: labels = np.unique(y_true)
+    labels = list(labels)
+    if not labels: return 0.0
+    cm = confusion_matrix(y_true, y_pred, labels=labels); support = cm.sum(axis=1); present = support > 0
+    if not np.any(present): return 0.0
+    recalls = np.divide(np.diag(cm), support, out=np.zeros_like(support, dtype=float), where=support > 0)
+    return float(np.mean(recalls[present]))
 
-NON_FEATURE_COLS = {
-    "transformer_id", "sample_day", "loc", "name", "ser", "codetx", "mfg", "record_idx", "tested_day", "tdcg_source",
-    "fault_type_label", "fault_rule", "target_fault_type", "target_severity", "target_severity_score",
-    "fault_ieee_key_gas", "fault_iec_ratio", "fault_duval_triangle_1", "fault_duval_pentagon", "fault_rogers_ratio", "fault_detail_json",
-    "keygas_fault", "iec_fault", "rogers_fault", "doernenburg_fault", "duval_triangle_fault", "duval_pentagon_fault",
-    "duval_pentagon_p1_fault", "duval_pentagon_p2_fault", "fault_p1", "fault_p2",
-    "consensus_fault", "mixed_components", "diagnostic_votes", "diagnostic_confidence",
-    "diagnostic_active_methods", "diagnostic_method_count", "diagnostic_coverage",
-    "weak_fault_group", "weak_fault_confidence", "weak_fault_is_ABSTAIN",
-    "severity_label", "severity_label_text", "severity_score", "severity_gas_score", "severity_trend_score", "severity_anomaly_score",
-    "severity_gas_rank", "severity_trend_rank",
-    "ieee_dga_status", "ieee_dga_status_label", "ieee_dga_status_reason",
-    "ieee_table1_exceeding_gases", "ieee_table2_exceeding_gases", "ieee_table3_exceeding_gases", "ieee_table4_exceeding_gases",
-    "ieee_confirmation_required", "ieee_extreme_dga",
-    "fleet_priority_rank", "fleet_priority_score", "fleet_priority_percent", "recommended_action", "final_score",
-}
-NON_FEATURE_PREFIXES = ("target_", "weak_prob_", "fault_", "severity_", "ieee_", "fleet_")
+def _evaluate_method_labels_safely(y_true, y_pred, allowed_labels):
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="y_pred contains classes not in y_true", category=UserWarning)
+        return evaluate_method_labels(y_true, y_pred, allowed_labels)
 
-def set_global_seed(seed: int = RANDOM_STATE) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+def _can_stratify(y):
+    counts = pd.Series(y).value_counts(); return len(counts) >= 2 and counts.min() >= 2
 
-set_global_seed()
+if TORCH_AVAILABLE:
+    class SimpleMLP(nn.Module):
+        def __init__(self, input_dim, hidden_dims=(64, 32), output_dim=2, dropout=0.15):
+            super().__init__(); layers = []; previous = input_dim
+            for hidden in hidden_dims: layers.extend([nn.Linear(previous, hidden), nn.ReLU(), nn.Dropout(dropout)]); previous = hidden
+            layers.append(nn.Linear(previous, output_dim)); self.net = nn.Sequential(*layers)
+        def forward(self, x): return self.net(x)
 
-REQUIRED_WEAK_VOTE_COLS = [
-    "keygas_fault", "iec_fault", "rogers_fault", "doernenburg_fault", "duval_triangle_fault", "duval_pentagon_p2_fault"
-]
+    class TorchMLPClassifier(BaseEstimator, ClassifierMixin):
+        def __init__(self, hidden_dims=(64, 32), epochs=120, batch_size=32, lr=1e-3, weight_decay=1e-4, random_state=42):
+            self.hidden_dims = hidden_dims; self.epochs = epochs; self.batch_size = batch_size; self.lr = lr; self.weight_decay = weight_decay; self.random_state = random_state
+        def fit(self, X, y):
+            torch.manual_seed(self.random_state); X_np = np.asarray(X); y_np = np.asarray(y); X_tensor = torch.as_tensor(X_np, dtype=torch.float32); y_tensor = torch.as_tensor(y_np, dtype=torch.long); self.classes_ = np.unique(y_np); self.model_ = SimpleMLP(X_tensor.shape[1], self.hidden_dims, len(self.classes_)); optimizer = optim.Adam(self.model_.parameters(), lr=self.lr, weight_decay=self.weight_decay); criterion = nn.CrossEntropyLoss(); dataset = torch.utils.data.TensorDataset(X_tensor, y_tensor); loader = torch.utils.data.DataLoader(dataset, batch_size=self.batch_size, shuffle=True); self.model_.train()
+            for _ in range(self.epochs):
+                for xb, yb in loader: optimizer.zero_grad(); loss = criterion(self.model_(xb), yb); loss.backward(); optimizer.step()
+            return self
+        def predict_proba(self, X):
+            X_tensor = torch.as_tensor(np.asarray(X), dtype=torch.float32); self.model_.eval()
+            with torch.no_grad(): probabilities = torch.softmax(self.model_(X_tensor), dim=1).cpu().numpy()
+            return probabilities
+        def predict(self, X): return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
+else: TorchMLPClassifier = None
 
-def ensure_consensus_inputs(df: pd.DataFrame) -> pd.DataFrame:
-    if all(col in df.columns for col in REQUIRED_WEAK_VOTE_COLS):
-        return df
-    logger.info("Diagnostic votes missing; running DGA consensus pipeline.")
-    return apply_consensus(build_training_features_from_clean(df))
-
-def load_data(conf_threshold: float = 70.0) -> pd.DataFrame:
-    if LABELED_PATH.exists():
-        logger.info("Loading labeled dataset: %s", LABELED_PATH)
-        df = pd.read_parquet(LABELED_PATH)
-    elif WEAK_LABEL_PATH.exists():
-        logger.info("Loading weak-labeled dataset: %s", WEAK_LABEL_PATH)
-        df = pd.read_parquet(WEAK_LABEL_PATH)
-    else:
-        raise FileNotFoundError(f"Dataset not found:\n  {LABELED_PATH}\n  {WEAK_LABEL_PATH}")
-    if "sample_day" not in df.columns:
-        raise ValueError("Dataset is missing sample_day.")
-    df["sample_day"] = pd.to_datetime(df["sample_day"], errors="coerce")
-    df = df.dropna(subset=["transformer_id", "sample_day"])
-    if "diagnostic_confidence" in df.columns:
-        before = len(df)
-        confidence = pd.to_numeric(df["diagnostic_confidence"], errors="coerce")
-        df = df[confidence >= conf_threshold].copy()
-        logger.info("Consensus-confidence filter: %d -> %d rows", before, len(df))
-    return df.reset_index(drop=True)
-
-def load_unlabeled_data() -> pd.DataFrame:
-    if not UNLABELED_PATH.exists():
-        raise FileNotFoundError(f"Unlabeled dataset not found: {UNLABELED_PATH}")
-    df = pd.read_parquet(UNLABELED_PATH)
-    df["sample_day"] = pd.to_datetime(df["sample_day"], errors="coerce")
-    df = df.dropna(subset=["transformer_id", "sample_day"]).reset_index(drop=True)
-    logger.info("Loaded unlabeled data: %d rows", len(df))
+def _read_labeled(path: Path, label_col: str, source_name: str) -> pd.DataFrame:
+    if not path.exists(): raise FileNotFoundError(path)
+    df = pd.read_csv(path, encoding="utf-8-sig"); df.columns = [str(c).strip().lower().replace("\ufeff", "") for c in df.columns]
+    if label_col not in df.columns: raise ValueError(f"{path.name}: missing label column {label_col!r}")
+    for gas in cfg.FULL_EXTERNAL_GASES: df[gas] = pd.to_numeric(df[gas], errors="coerce") if gas in df.columns else np.nan
+    df["fault_type_label"] = df[label_col].map(normalize_fault); df["source_dataset"] = source_name; df["source_row"] = np.arange(1, len(df) + 1); df["coarse_truth"] = df["fault_type_label"].map(unify_fault)
     return df
 
-def select_feature_columns(df: pd.DataFrame) -> List[str]:
-    feature_cols = []
-    for col in df.columns:
-        if col in NON_FEATURE_COLS:
-            continue
-        if any(col.startswith(prefix) for prefix in NON_FEATURE_PREFIXES):
-            continue
-        if col in {"sample_year", "sample_month", "sample_quarter", "sample_dayofyear", "sample_weekday"}:
-            pass
-        if not pd.api.types.is_numeric_dtype(df[col]):
-            continue
-        feature_cols.append(col)
-    if not feature_cols:
-        raise ValueError("No usable numeric features remain after leakage filtering.")
-    return feature_cols
+def _external_gas_key(df: pd.DataFrame) -> pd.Series:
+    gas = list(cfg.COMMON_BENCHMARK_GASES); x = df[gas].round(8).fillna(-999999.0); return x.astype(str).agg("|".join, axis=1)
 
-def dataframe_to_matrix(df: pd.DataFrame, feature_cols: List[str]) -> pd.DataFrame:
-    X = (df[feature_cols].apply(pd.to_numeric, errors="coerce")
-         .replace([np.inf, -np.inf], np.nan).fillna(0.0))
-    return X.astype(np.float32)
+def load_labeled_csv_data() -> pd.DataFrame:
+    a = _read_labeled(LABELED_CSV_PATH1, "label", "iec_tc10_121"); b = _read_labeled(LABELED_CSV_PATH2, "type", "dga_dataset"); combined = pd.concat([a, b], ignore_index=True); combined["_gas_key"] = _external_gas_key(combined)
+    combined["fine_label_conflict"] = combined.groupby("_gas_key")["fault_type_label"].transform("nunique").gt(1); combined["coarse_label_conflict"] = combined.groupby("_gas_key")["coarse_truth"].transform("nunique").gt(1)
+    conflict_df = combined[combined["fine_label_conflict"]].copy(); BENCHMARK_DIR.mkdir(parents=True, exist_ok=True)
+    if not conflict_df.empty: conflict_df.to_csv(BENCHMARK_DIR / "external_benchmark_label_conflicts.csv", index=False, encoding="utf-8-sig")
+    combined["duplicate_group_size"] = combined.groupby("_gas_key")["_gas_key"].transform("size"); combined["evaluation_group"] = combined["_gas_key"]
+    return combined.drop(columns=["_gas_key"]).reset_index(drop=True)
 
-def prepare_fault_target(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[List[str]]]:
-    if "fault_type_label" in df.columns:
-        y = pd.to_numeric(df["fault_type_label"], errors="coerce")
-        valid = y.notna()
-        if not valid.all():
-            logger.warning("Dropping %d rows with invalid fault targets.", (~valid).sum())
-            df.drop(index=df.index[~valid], inplace=True)
-        y = y.loc[df.index].astype(int).to_numpy()
-        return y, list(FAULT_LABELS)
-    return None, None
+def load_unlabeled(path: Path = UNLABELED_PATH) -> pd.DataFrame:
+    if not path.exists(): raise FileNotFoundError(path)
+    df = pd.read_parquet(path); required = {"transformer_id", "sample_day"}; missing = required - set(df.columns)
+    if missing: raise ValueError(f"{path.name} requires {sorted(missing)}")
+    df["sample_day"] = pd.to_datetime(df["sample_day"], errors="coerce"); return df.dropna(subset=["transformer_id", "sample_day"]).reset_index(drop=True)
 
-def prepare_severity_target(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-    if "ieee_dga_status" not in df.columns:
-        raise ValueError("IEEE severity must be computed before training.")
-    status = pd.to_numeric(df["ieee_dga_status"], errors="coerce").fillna(1)
-    status = status.clip(1, 3).astype(int)
-    y_cls = (status - 1).to_numpy(dtype=np.int64)
-    score = pd.to_numeric(df["severity_score"], errors="coerce").fillna(20.0).to_numpy(dtype=np.float32)
-    return y_cls, score
+def prepare_unlabeled(df: pd.DataFrame) -> pd.DataFrame:
+    out = build_training_features_from_clean(df.copy()); out["sample_day"] = pd.to_datetime(out["sample_day"], errors="coerce"); out = out.sort_values(["transformer_id", "sample_day"], kind="mergesort").reset_index(drop=True); return apply_consensus(out)
 
-def build_sequences(df: pd.DataFrame, feature_cols: List[str], seq_len: int = SEQ_LEN) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    seqs = []
-    groups = []
-    indices = []
-    for transformer_id, group in df.groupby("transformer_id", sort=False):
-        group = group.sort_values("sample_day")
-        values = dataframe_to_matrix(group, feature_cols).to_numpy(dtype=np.float32)
-        for i in range(len(group)):
-            start = max(0, i - seq_len + 1)
-            window = values[start:i + 1]
-            padded = np.zeros((seq_len, values.shape[1]), dtype=np.float32)
-            padded[-len(window):] = window
-            seqs.append(padded)
-            groups.append(transformer_id)
-            indices.append(group.index[i])
-    if not seqs:
-        raise ValueError("No temporal sequences could be built.")
-    X_seq = np.stack(seqs)
-    groups = np.asarray(groups)
-    indices = np.asarray(indices)
-    return X_seq, groups, indices, None
+def dataframe_to_gas_matrix(df: pd.DataFrame, features: Sequence[str]) -> np.ndarray:
+    x = df.reindex(columns=list(features)).apply(pd.to_numeric, errors="coerce"); return x.replace([np.inf, -np.inf], np.nan).to_numpy(dtype=np.float32)
 
-class SeqDataset(Dataset):
-    def __init__(self, X, y=None):
-        self.X = torch.as_tensor(X, dtype=torch.float32)
-        self.y = None if y is None else torch.as_tensor(y, dtype=torch.float32)
-    def __len__(self):
-        return len(self.X)
-    def __getitem__(self, idx):
-        if self.y is None:
-            return self.X[idx]
-        return self.X[idx], self.y[idx]
+def _traditional_feature_matrix(df: pd.DataFrame, granularity: str = "fine") -> pd.DataFrame:
+    out = pd.DataFrame(index=df.index); vocab = (list(cfg.BENCHMARK_FINE_CLASSES) if granularity == "fine" else list(cfg.WEAK_COARSE_GROUPS)) + [ABSTAIN]
+    for method, column in cfg.DIAGNOSTIC_METHOD_TO_COLUMN.items():
+        vals = df.get(column, pd.Series(ABSTAIN, index=df.index)).map(normalize_fault)
+        if granularity == "coarse": vals = vals.map(unify_fault)
+        for label in vocab:
+            safe = str(label).lower().replace("/", "_").replace(" ", "_"); out[f"{method}__{safe}"] = (vals == label).astype(np.float32)
+    return out
 
-class TemporalModel(nn.Module):
-    def __init__(self, input_size: int, hidden: int = 64, layers: int = 2, dropout: float = 0.2):
-        super().__init__()
-        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden, num_layers=layers, batch_first=True, dropout=dropout if layers > 1 else 0.0)
-        self.attn = nn.Linear(hidden, 1)
-        self.fc = nn.Sequential(nn.Linear(hidden, hidden // 2), nn.ReLU(), nn.Linear(hidden // 2, 1))
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        weights = torch.softmax(self.attn(out).squeeze(-1), dim=1).unsqueeze(-1)
-        context = (out * weights).sum(dim=1)
-        return self.fc(context).squeeze(-1)
+def build_feature_frame(df: pd.DataFrame, feature_mode: str, granularity: str = "fine") -> pd.DataFrame:
+    gas = df.reindex(columns=MODEL_FEATURES).apply(pd.to_numeric, errors="coerce").astype(float)
+    if feature_mode == "gas_only": return gas
+    if feature_mode == "gas_plus_traditional": trad = _traditional_feature_matrix(df, granularity); return pd.concat([gas, trad], axis=1)
+    raise ValueError(f"Unknown feature_mode: {feature_mode}")
 
-class TemporalAutoencoder(nn.Module):
-    def __init__(self, input_size: int, hidden: int = 64, layers: int = 2, dropout: float = 0.2, latent_dim: int = 32):
-        super().__init__()
-        self.input_size = input_size
-        self.hidden = hidden
-        self.layers = layers
-        self.latent_dim = latent_dim
-        self.encoder = nn.LSTM(input_size=input_size, hidden_size=hidden, num_layers=layers, batch_first=True, dropout=dropout if layers > 1 else 0.0)
-        self.to_latent = nn.Linear(hidden, latent_dim)
-        self.from_latent = nn.Linear(latent_dim, hidden)
-        self.decoder = nn.LSTM(input_size=hidden, hidden_size=hidden, num_layers=layers, batch_first=True, dropout=dropout if layers > 1 else 0.0)
-        self.output_projection = nn.Linear(hidden, input_size)
-    def encode(self, x):
-        _, (hidden_state, _) = self.encoder(x)
-        latent = self.to_latent(hidden_state[-1])
-        return latent
-    def forward(self, x):
-        latent = self.encode(x)
-        decoder_state = self.from_latent(latent)
-        h0 = decoder_state.unsqueeze(0).repeat(self.layers, 1, 1)
-        c0 = torch.zeros_like(h0)
-        decoder_input = torch.zeros((x.size(0), x.size(1), self.hidden), device=x.device)
-        decoded, _ = self.decoder(decoder_input, (h0, c0))
-        reconstructed = self.output_projection(decoded)
-        return reconstructed, latent
+def _encode_fine_truth(series):
+    mapping = {label: idx for idx, label in enumerate(cfg.BENCHMARK_FINE_CLASSES)}; normalized = series.map(normalize_fault).astype(object); encoded = normalized.map(mapping); valid_mask = encoded.notna()
+    if not valid_mask.all(): logger.warning("Dropped %d benchmark rows with unsupported fine labels.", int((~valid_mask).sum()))
+    return encoded.loc[valid_mask].astype(int).to_numpy(), valid_mask
 
-def train_autoencoder(X_seq: np.ndarray, train_idx: np.ndarray, feature_dim: int, epochs: int = AE_EPOCHS, latent_dim: int = AE_LATENT_DIM):
-    logger.info("Training temporal autoencoder on %d training sequences.", len(train_idx))
-    scaler = StandardScaler()
-    X_train = X_seq[train_idx]
-    scaler.fit(X_train.reshape(-1, feature_dim))
-    X_train_scaled = scaler.transform(X_train.reshape(-1, feature_dim)).reshape(X_train.shape)
-    dataset = SeqDataset(X_train_scaled)
-    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-    model = TemporalAutoencoder(input_size=feature_dim, latent_dim=latent_dim).to(DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
-    criterion = nn.MSELoss()
-    best_loss = float("inf")
-    best_state = None
-    for epoch in range(epochs):
-        model.train()
-        running_loss = 0.0
-        for batch in loader:
-            batch = batch.to(DEVICE)
-            optimizer.zero_grad()
-            reconstructed, _ = model(batch)
-            loss = criterion(reconstructed, batch)
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item() * batch.size(0)
-        average_loss = running_loss / len(dataset)
-        if average_loss < best_loss:
-            best_loss = average_loss
-            best_state = copy.deepcopy(model.state_dict())
-        if (epoch + 1) % 10 == 0:
-            logger.info("AE epoch %d/%d loss=%.6f", epoch + 1, epochs, average_loss)
-    if best_state is None:
-        raise RuntimeError("Autoencoder failed to produce a best state.")
-    model.load_state_dict(best_state)
-    logger.info("Temporal autoencoder complete. Best loss=%.6f", best_loss)
-    return model, scaler
+def train_dev_test_split(df: pd.DataFrame, y: Sequence, random_state: int):
+    y = np.asarray(y); groups = np.asarray(df["evaluation_group"].astype(str))
+    if len(np.unique(groups)) < 3: raise ValueError("Need at least three unique groups for grouped train/dev/test split")
+    if not _can_stratify(y): raise ValueError(f"Cannot stratify classes: {pd.Series(y).value_counts().to_dict()}")
+    sgkf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=random_state); folds = list(sgkf.split(df, y, groups)); train_dev_idx, test_idx = folds[0]
+    remain = df.iloc[train_dev_idx].copy(); y_remain = y[train_dev_idx]; remain_groups = remain["evaluation_group"].astype(str).to_numpy()
+    sgkf2 = StratifiedGroupKFold(n_splits=4, shuffle=True, random_state=random_state + 1); inner = list(sgkf2.split(remain, y_remain, remain_groups)); tr_rel, dev_rel = inner[0]
+    return train_dev_idx[tr_rel], train_dev_idx[dev_rel], test_idx
 
-def extract_embeddings(model: TemporalAutoencoder, scaler: StandardScaler, X_seq: np.ndarray, feature_dim: int) -> np.ndarray:
-    X_scaled = scaler.transform(X_seq.reshape(-1, feature_dim)).reshape(X_seq.shape)
-    model.eval()
-    batches = []
-    with torch.no_grad():
-        for start in range(0, len(X_scaled), BATCH_SIZE):
-            batch = torch.as_tensor(X_scaled[start:start + BATCH_SIZE], dtype=torch.float32, device=DEVICE)
-            latent = model.encode(batch)
-            batches.append(latent.cpu().numpy())
-    return np.vstack(batches)
+def _build_pipeline(estimator, scaled=False):
+    steps = [("imputer", SimpleImputer(strategy="median", add_indicator=True))]
+    if scaled: steps.append(("scaler", StandardScaler()))
+    steps.append(("classifier", estimator)); return Pipeline(steps)
 
-def train_fault_cls(X_train, y_train, X_val, y_val):
-    num_classes = len(FAULT_LABELS)
-    dtrain = lgb.Dataset(X_train, label=y_train)
-    dval = lgb.Dataset(X_val, label=y_val, reference=dtrain)
-    params = {"objective": "multiclass", "num_class": num_classes, "metric": "multi_logloss", "learning_rate": 0.03,
-              "num_leaves": 63, "min_data_in_leaf": 20, "feature_fraction": 0.85, "bagging_fraction": 0.85,
-              "bagging_freq": 5, "verbosity": -1, "seed": RANDOM_STATE}
-    return lgb.train(params, dtrain, num_boost_round=600, valid_sets=[dval], valid_names=["val"],
-                     callbacks=[lgb.early_stopping(40, first_metric_only=True, verbose=False), lgb.log_evaluation(False)])
+def build_models(seed: int):
+    models = {
+        "logistic_regression": _build_pipeline(LogisticRegression(max_iter=3000, class_weight="balanced", random_state=seed), True),
+        "random_forest": _build_pipeline(RandomForestClassifier(n_estimators=500, class_weight="balanced", random_state=seed, n_jobs=-1)),
+        "extra_trees": _build_pipeline(ExtraTreesClassifier(n_estimators=500, class_weight="balanced", random_state=seed, n_jobs=-1)),
+        "svm_rbf": _build_pipeline(SVC(C=1.0, kernel="rbf", class_weight="balanced", probability=True, random_state=seed), True),
+        "sklearn_mlp": _build_pipeline(MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=800, early_stopping=True, random_state=seed), True),
+        "knn": _build_pipeline(KNeighborsClassifier(n_neighbors=5, weights="distance"), True),
+        "gaussian_nb": _build_pipeline(GaussianNB(), True),
+        "decision_tree": _build_pipeline(DecisionTreeClassifier(class_weight="balanced", random_state=seed)),
+        "gradient_boosting": _build_pipeline(GradientBoostingClassifier(n_estimators=200, learning_rate=0.05, max_depth=3, random_state=seed)),
+        "hist_gradient_boosting": _build_pipeline(HistGradientBoostingClassifier(max_iter=150, learning_rate=0.05, max_depth=3, min_samples_leaf=10, random_state=seed)),
+        "adaboost": _build_pipeline(AdaBoostClassifier(n_estimators=200, learning_rate=0.3, random_state=seed)),
+        "bagging": _build_pipeline(BaggingClassifier(n_estimators=100, random_state=seed, n_jobs=-1)),
+        "lda": _build_pipeline(LinearDiscriminantAnalysis(), True),
+    }
+    if lgb is not None: models["lightgbm"] = _build_pipeline(lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=31, random_state=seed, verbosity=-1))
+    if xgb is not None: models["xgboost"] = _build_pipeline(xgb.XGBClassifier(n_estimators=300, learning_rate=0.03, max_depth=5, subsample=0.85, colsample_bytree=0.85, objective="multi:softprob", eval_metric="mlogloss", tree_method="hist", random_state=seed))
+    if CatBoostClassifier is not None: models["catboost"] = _build_pipeline(CatBoostClassifier(iterations=300, learning_rate=0.05, depth=6, verbose=0, random_seed=seed, auto_class_weights="Balanced"))
+    if TorchMLPClassifier is not None: models["torch_mlp"] = _build_pipeline(TorchMLPClassifier(random_state=seed), True)
+    return models
 
-def train_severity_cls(X_train, y_train, X_val, y_val):
-    dtrain = lgb.Dataset(X_train, label=y_train)
-    dval = lgb.Dataset(X_val, label=y_val, reference=dtrain)
-    params = {"objective": "multiclass", "num_class": 3, "metric": "multi_logloss", "learning_rate": 0.03,
-              "num_leaves": 31, "min_data_in_leaf": 20, "feature_fraction": 0.85, "bagging_fraction": 0.85,
-              "bagging_freq": 5, "verbosity": -1, "seed": RANDOM_STATE}
-    return lgb.train(params, dtrain, num_boost_round=500, valid_sets=[dval], valid_names=["val"],
-                     callbacks=[lgb.early_stopping(40, first_metric_only=True, verbose=False), lgb.log_evaluation(False)])
+def evaluate_numeric(y_true, y_pred, labels):
+    y_true = np.asarray(y_true, dtype=int); y_pred = np.asarray(y_pred, dtype=int); ids = list(range(len(labels)))
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "balanced_accuracy": _safe_balanced_accuracy(y_true, y_pred, ids),
+        "macro_precision": float(precision_score(y_true, y_pred, labels=ids, average="macro", zero_division=0)),
+        "macro_recall": float(recall_score(y_true, y_pred, labels=ids, average="macro", zero_division=0)),
+        "macro_f1": float(f1_score(y_true, y_pred, labels=ids, average="macro", zero_division=0)),
+        "weighted_f1": float(f1_score(y_true, y_pred, labels=ids, average="weighted", zero_division=0)),
+        "coverage": 1.0,
+        "selective_accuracy": float(accuracy_score(y_true, y_pred)),
+        "overall_accuracy_with_abstain_error": float(accuracy_score(y_true, y_pred)),
+    }
 
-def train_severity_reg(X_train, y_train, X_val, y_val):
-    dtrain = xgb.DMatrix(X_train, label=y_train)
-    dval = xgb.DMatrix(X_val, label=y_val)
-    params = {"objective": "reg:squarederror", "eval_metric": "rmse", "eta": 0.05, "max_depth": 6,
-              "subsample": 0.8, "colsample_bytree": 0.8, "seed": RANDOM_STATE}
-    callbacks = [xgb.callback.EarlyStopping(rounds=40, save_best=True, maximize=False)]
-    return xgb.train(params, dtrain, num_boost_round=500, evals=[(dval, "validation")], callbacks=callbacks, verbose_eval=False)
+def iter_nonempty_method_combinations(methods: Sequence[str]) -> Iterable[Tuple[str, Tuple[str, ...]]]:
+    names = {1: "INDIVIDUAL", 2: "PAIR", 3: "TRIPLE", 4: "QUADRUPLE", 5: "QUINTUPLE", 6: "SEXTUPLE", 7: "SEPTUPLE"}
+    for n in range(1, len(methods) + 1):
+        for combo in combinations(tuple(methods), n): yield names[n], combo
 
-def train_temporal(X_seq: np.ndarray, y_seq: np.ndarray, train_idx: np.ndarray, val_idx: np.ndarray, feature_dim: int):
-    scaler = StandardScaler()
-    X_train = X_seq[train_idx]
-    X_val = X_seq[val_idx]
-    scaler.fit(X_train.reshape(-1, feature_dim))
-    X_train_scaled = scaler.transform(X_train.reshape(-1, feature_dim)).reshape(X_train.shape)
-    X_val_scaled = scaler.transform(X_val.reshape(-1, feature_dim)).reshape(X_val.shape)
-    train_ds = SeqDataset(X_train_scaled, y_seq[train_idx])
-    val_ds = SeqDataset(X_val_scaled, y_seq[val_idx])
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE)
-    model = TemporalModel(feature_dim).to(DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
-    criterion = nn.MSELoss()
-    best_loss = float("inf")
-    best_state = None
-    for epoch in range(TEMPORAL_EPOCHS):
-        model.train()
-        for xb, yb in train_loader:
-            xb = xb.to(DEVICE)
-            yb = yb.to(DEVICE)
-            optimizer.zero_grad()
-            prediction = model(xb)
-            loss = criterion(prediction, yb)
-            loss.backward()
-            optimizer.step()
-        model.eval()
-        validation_total = 0.0
-        with torch.no_grad():
-            for xb, yb in val_loader:
-                xb = xb.to(DEVICE)
-                yb = yb.to(DEVICE)
-                prediction = model(xb)
-                loss = criterion(prediction, yb)
-                validation_total += loss.item() * xb.size(0)
-        val_loss = validation_total / len(val_ds)
-        if val_loss < best_loss:
-            best_loss = val_loss
-            best_state = copy.deepcopy(model.state_dict())
-    if best_state is None:
-        raise RuntimeError("Temporal model failed to produce a best state.")
-    model.load_state_dict(best_state)
-    return model, scaler
+def _prepare_truth(labeled_df):
+    fine = labeled_df["fault_type_label"].map(normalize_fault); fine = fine.where(fine.isin(cfg.BENCHMARK_FINE_CLASSES), ABSTAIN)
+    if "fine_label_conflict" in labeled_df.columns: fine = fine.where(~labeled_df["fine_label_conflict"].astype(bool), ABSTAIN)
+    coarse = labeled_df["fault_type_label"].map(unify_fault); coarse = coarse.where(coarse.isin(cfg.COARSE_FAULT_GROUPS), ABSTAIN)
+    return fine, coarse
 
-def generate_weak_labels(df: pd.DataFrame, use_snorkel: bool = True) -> pd.DataFrame:
-    df = ensure_consensus_inputs(df)
-    df, label_model, groups = weak_supervision_pipeline(df, use_snorkel=use_snorkel, confidence_threshold=WEAK_CONFIDENCE_THRESHOLD)
-    return df
+def benchmark_traditional_individual(labeled_df):
+    fine_truth, coarse_truth = _prepare_truth(labeled_df); rows = []
+    for method, column in cfg.DIAGNOSTIC_METHOD_TO_COLUMN.items():
+        pred_fine = labeled_df.get(column, pd.Series(ABSTAIN, index=labeled_df.index)).map(normalize_fault); pred_coarse = pred_fine.map(unify_fault)
+        rows.append({"method": method, "granularity": "fine", **_evaluate_method_labels_safely(fine_truth, pred_fine, cfg.BENCHMARK_FINE_CLASSES)})
+        rows.append({"method": method, "granularity": "coarse", **_evaluate_method_labels_safely(coarse_truth, pred_coarse, cfg.COARSE_FAULT_GROUPS)})
+    result = pd.DataFrame(rows); result.to_csv(BENCHMARK_DIR / "traditional_individual_benchmark.csv", index=False, encoding="utf-8-sig"); return result
 
-def prepare_weak_labeled_data(df: pd.DataFrame):
-    if "weak_fault_group" not in df.columns:
-        raise ValueError("Missing weak_fault_group.")
-    confidence = pd.to_numeric(df.get("weak_fault_confidence", 0.0), errors="coerce").fillna(0.0)
-    df = df[(df["weak_fault_group"] != "ABSTAIN") & (confidence >= WEAK_CONFIDENCE_THRESHOLD)].copy()
-    if df.empty:
-        raise ValueError("No weak-labeled samples meet the confidence threshold.")
-    y, sample_weights = create_student_training_targets(df)
-    feature_cols = select_feature_columns(df)
-    X = dataframe_to_matrix(df, feature_cols)
-    return X, y, sample_weights, feature_cols, df
+def benchmark_traditional_combinations(labeled_df, split=None):
+    eval_df = labeled_df.copy().reset_index(drop=True)
+    if "fine_label_conflict" in eval_df.columns: eval_df = eval_df[~eval_df["fine_label_conflict"].astype(bool)].reset_index(drop=True)
+    fine_truth, coarse_truth = _prepare_truth(eval_df); _, valid_encoding = _encode_fine_truth(fine_truth); valid_mask = (fine_truth != ABSTAIN) & valid_encoding
+    split_frame = eval_df.loc[valid_mask].reset_index(drop=True); split_truth = fine_truth.loc[valid_mask].reset_index(drop=True)
+    if split_frame.empty: raise ValueError("No valid benchmark rows remain after fine-label filtering.")
+    split_frame = split_frame.assign(evaluation_group=split_frame["evaluation_group"].astype(str)); mapping = {c: i for i, c in enumerate(cfg.BENCHMARK_FINE_CLASSES)}; split_y = split_truth.map(mapping).astype(int).to_numpy(); _, dev, test = train_dev_test_split(split_frame, split_y, cfg.RANDOM_STATE)
+    rows = []
+    for level, combo in iter_nonempty_method_combinations(cfg.DIAGNOSTIC_METHODS):
+        pred = apply_consensus_from_existing_diagnostics(eval_df, combo); pred_valid = pred.loc[valid_mask].reset_index(drop=True); coarse_valid = coarse_truth.loc[valid_mask].reset_index(drop=True)
+        for split_name, idx in (("development", dev), ("locked_test", test)):
+            fine = _evaluate_method_labels_safely(split_truth.iloc[idx], pred_valid["consensus_fault"].iloc[idx], cfg.BENCHMARK_FINE_CLASSES); coarse = _evaluate_method_labels_safely(coarse_valid.iloc[idx], pred_valid["consensus_fault_group"].iloc[idx], cfg.COARSE_FAULT_GROUPS)
+            rows.extend([
+                {"combination_level": level, "methods": "+".join(combo), "method_count": len(combo), "split": split_name, "granularity": "fine", **fine},
+                {"combination_level": level, "methods": "+".join(combo), "method_count": len(combo), "split": split_name, "granularity": "coarse", **coarse},
+            ])
+    result = pd.DataFrame(rows); result.to_csv(BENCHMARK_DIR / "traditional_combinations_benchmark.csv", index=False, encoding="utf-8-sig"); logger.info("Traditional combination benchmark complete | rows=%d", len(result)); return result
 
-def train_student_fault_classifier(X, y, weights, X_val, y_val, w_val, labels):
-    dtrain = lgb.Dataset(X, label=y, weight=weights)
-    dval = lgb.Dataset(X_val, label=y_val, weight=w_val, reference=dtrain)
-    params = {"objective": "multiclass", "num_class": len(labels), "metric": "multi_logloss", "learning_rate": 0.03,
-              "num_leaves": 63, "min_data_in_leaf": 20, "feature_fraction": 0.85, "bagging_fraction": 0.85,
-              "bagging_freq": 5, "verbosity": -1, "seed": RANDOM_STATE}
-    return lgb.train(params, dtrain, num_boost_round=600, valid_sets=[dval], valid_names=["validation"],
-                     callbacks=[lgb.early_stopping(40, first_metric_only=True, verbose=False), lgb.log_evaluation(False)])
+def benchmark_traditional_ppm_coverage(labeled_df):
+    rows = []
+    for method, column in cfg.DIAGNOSTIC_METHOD_TO_COLUMN.items():
+        active = labeled_df.get(column, pd.Series(ABSTAIN, index=labeled_df.index)).map(normalize_fault) != ABSTAIN
+        for gas in cfg.COMMON_BENCHMARK_GASES:
+            x = pd.to_numeric(labeled_df[gas], errors="coerce"); valid = active & x.notna(); values = x[valid].to_numpy(float)
+            rows.append({"method": method, "gas": gas, "active_count": int(len(values)), "coverage": float(len(values) / max(len(labeled_df), 1)), "min_ppm": float(np.min(values)) if len(values) else np.nan, "p05_ppm": float(np.quantile(values, 0.05)) if len(values) else np.nan, "median_ppm": float(np.median(values)) if len(values) else np.nan, "p95_ppm": float(np.quantile(values, 0.95)) if len(values) else np.nan, "max_ppm": float(np.max(values)) if len(values) else np.nan})
+    result = pd.DataFrame(rows); result.to_csv(BENCHMARK_DIR / "traditional_ppm_coverage.csv", index=False, encoding="utf-8-sig"); return result
 
-def group_split(X, groups, test_size=TEST_SIZE):
-    splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=RANDOM_STATE)
-    train_idx, val_idx = next(splitter.split(X, groups=groups))
-    return train_idx, val_idx
+def _benchmark_supervised_feature_mode(labeled_df, seed, feature_mode, models=None):
+    labels, _ = _prepare_truth(labeled_df); mask = labels != ABSTAIN; data = labeled_df.loc[mask].reset_index(drop=True); y_names = labels.loc[mask].reset_index(drop=True)
+    if "fine_label_conflict" in data.columns:
+        keep = ~data["fine_label_conflict"].astype(bool); data = data.loc[keep].reset_index(drop=True); y_names = y_names.loc[keep].reset_index(drop=True)
+    mapping = {c: i for i, c in enumerate(cfg.BENCHMARK_FINE_CLASSES)}; encoded_y = y_names.map(mapping); valid = encoded_y.notna()
+    data = data.loc[valid].reset_index(drop=True); y_names = y_names.loc[valid].reset_index(drop=True); encoded_y = encoded_y.loc[valid]
+    if data.empty: raise ValueError("No valid labeled benchmark rows remain for supervised training.")
+    y = encoded_y.astype(int).to_numpy(); data = data.assign(evaluation_group=data["evaluation_group"].astype(str)); tr, dev, test = train_dev_test_split(data, y, seed)
+    Xdf = build_feature_frame(data, feature_mode, "fine"); model_map = models or build_models(seed); dev_rows = []
+    for name, model in model_map.items():
+        try:
+            model.fit(Xdf.iloc[tr], y[tr]); pred = _predict_model(model, Xdf.iloc[dev]); pred = np.asarray(pred).reshape(-1); dev_rows.append({"model": name, "feature_mode": feature_mode, "dataset": "external_labeled", "split": "development", "granularity": "fine", **evaluate_numeric(y[dev], pred, cfg.BENCHMARK_FINE_CLASSES)})
+        except Exception as exc: logger.warning("Supervised dev failed: %s: %s", name, exc)
+    dev_df = pd.DataFrame(dev_rows)
+    if dev_df.empty: return pd.DataFrame()
+    best = dev_df.sort_values(["macro_f1", "balanced_accuracy", "accuracy"], ascending=False).iloc[0]["model"]
+    train_dev = np.concatenate([tr, dev]); test_rows = []
+    for name in model_map:
+        try:
+            model = build_models(seed)[name]; model.fit(Xdf.iloc[train_dev], y[train_dev]); pred = _predict_model(model, Xdf.iloc[test]); pred = np.asarray(pred).reshape(-1); test_rows.append({"model": name, "feature_mode": feature_mode, "dataset": "external_labeled", "split": "locked_test", "granularity": "fine", "selected_on_dev": name == best, **evaluate_numeric(y[test], pred, cfg.BENCHMARK_FINE_CLASSES)})
+        except Exception as exc: logger.warning("Supervised test failed: %s: %s", name, exc)
+    return pd.concat([dev_df, pd.DataFrame(test_rows)], ignore_index=True)
+
+def benchmark_supervised_models(labeled_df, seed):
+    parts = []
+    for mode in ("gas_only", "gas_plus_traditional"):
+        part = _benchmark_supervised_feature_mode(labeled_df, seed, mode)
+        if not part.empty: parts.append(part)
+    result = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(); result.to_csv(BENCHMARK_DIR / "supervised_fault_benchmark.csv", index=False, encoding="utf-8-sig"); return result
+
+def _train_weak_students(df, granularity, seed):
+    target = f"weak_{granularity}_fault_group" if granularity == "coarse" else f"weak_{granularity}_fault"; abstain = f"weak_{granularity}_is_ABSTAIN"; groups = list(cfg.WEAK_COARSE_GROUPS if granularity == "coarse" else cfg.BENCHMARK_FINE_CLASSES)
+    clean, y, present = create_student_training_targets(df, target, abstain, groups)
+    artifacts = {}
+    for feature_mode in ("gas_only", "gas_plus_traditional"):
+        Xdf = build_feature_frame(clean, feature_mode, granularity); models = build_models(seed)
+        for name, model in models.items():
+            try:
+                model.fit(Xdf, y); artifacts[f"{feature_mode}__{name}"] = {"model": model, "feature_mode": feature_mode, "granularity": granularity, "features": list(Xdf.columns), "labels": list(present), "n_training_rows": int(len(clean)), "class_counts": {str(k): int(v) for k, v in pd.Series(y).value_counts().items()}}
+            except Exception as exc: logger.warning("Weak student failed: %s/%s: %s", feature_mode, name, exc)
+    if not artifacts: raise RuntimeError(f"No weak students trained for {granularity}")
+    return artifacts
+
+def _align_feature_frame(df, feature_names, granularity):
+    feature_names = list(feature_names); mode = "gas_plus_traditional" if any("__" in c for c in feature_names) else "gas_only"; frame = build_feature_frame(df, mode, granularity); return frame.reindex(columns=feature_names, fill_value=0.0)
+
+def benchmark_weak_transfer(labeled_df, weak_students, seed):
+    fine_truth, coarse_truth = _prepare_truth(labeled_df); conflict = labeled_df.get("fine_label_conflict", pd.Series(False, index=labeled_df.index)).astype(bool); valid = (fine_truth != ABSTAIN) & ~conflict
+    data = labeled_df.loc[valid].reset_index(drop=True); fine_truth = fine_truth.loc[valid].reset_index(drop=True); coarse_truth = coarse_truth.loc[valid].reset_index(drop=True)
+    mapping = {c: i for i, c in enumerate(cfg.BENCHMARK_FINE_CLASSES)}; encoded = fine_truth.map(mapping); valid_encoded = encoded.notna()
+    keep = valid_encoded.to_numpy(dtype=bool); data = data.loc[keep].reset_index(drop=True); fine_truth = fine_truth.loc[keep].reset_index(drop=True); coarse_truth = coarse_truth.loc[keep].reset_index(drop=True); y_split = encoded.loc[keep].astype(int).to_numpy()
+    if data.empty: raise ValueError("No valid rows remain for weak-transfer benchmark.")
+    data = data.assign(evaluation_group=data["evaluation_group"].astype(str)); _, dev, test = train_dev_test_split(data, y_split, seed)
+    rows = []
+    for granularity in ("coarse", "fine"):
+        for key, artifact in weak_students.get(granularity, {}).items():
+            feature_names = artifact["features"]; Xdf = _align_feature_frame(data, feature_names, granularity); model = artifact["model"]; labels = list(artifact["labels"])
+            pred_dev = _decode_class_predictions(_predict_model(model, Xdf.iloc[dev]), labels); pred_test = _decode_class_predictions(_predict_model(model, Xdf.iloc[test]), labels)
+            pred_dev_labels = pd.Series(pred_dev, index=dev); pred_test_labels = pd.Series(pred_test, index=test)
+            if granularity == "fine": td = fine_truth.iloc[dev]; tt = fine_truth.iloc[test]; allowed = cfg.BENCHMARK_FINE_CLASSES
+            else: td = coarse_truth.iloc[dev]; tt = coarse_truth.iloc[test]; allowed = cfg.COARSE_FAULT_GROUPS
+            dev_metric = _evaluate_method_labels_safely(td.reset_index(drop=True), pred_dev_labels.to_numpy(), allowed); test_metric = _evaluate_method_labels_safely(tt.reset_index(drop=True), pred_test_labels.to_numpy(), allowed)
+            base = {"granularity": granularity, "model": key.split("__", 1)[1], "feature_mode": artifact["feature_mode"], "training_dataset": "unlabeled_operational_weak", "evaluation_dataset": "external_labeled", "selected_on_dev": False}
+            rows.append({**base, "split": "development", **dev_metric}); rows.append({**base, "split": "locked_test", **test_metric})
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        for granularity in result["granularity"].unique():
+            sub = result[(result["granularity"] == granularity) & (result["split"] == "development")]
+            if not sub.empty:
+                best_idx = sub.sort_values(["macro_f1", "balanced_accuracy", "accuracy"], ascending=False).index[0]; best_model = result.loc[best_idx, "model"]; best_mode = result.loc[best_idx, "feature_mode"]; mask = (result["granularity"] == granularity) & (result["model"] == best_model) & (result["feature_mode"] == best_mode); result.loc[mask, "selected_on_dev"] = True
+    result.to_csv(BENCHMARK_DIR / "weak_transfer_fault_benchmark.csv", index=False, encoding="utf-8-sig"); return result
+
+def benchmark_direct_supervised_transfer(unlabeled_df, labeled_df, seed):
+    result = benchmark_supervised_models(labeled_df, seed); best = result[result["split"] == "locked_test"].sort_values(["macro_f1", "balanced_accuracy", "accuracy"], ascending=False).head(1); best.to_csv(BENCHMARK_DIR / "direct_supervised_reference_best.csv", index=False, encoding="utf-8-sig"); return best
+
+def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
+    raw = load_unlabeled(); logger.info("UNLABELED START | rows=%d | transformers=%d", len(raw), raw["transformer_id"].nunique()); df = prepare_unlabeled(raw)
+    outputs = {}; weak_students = {"coarse": {}, "fine": {}}
+    for granularity, groups in (("coarse", cfg.COARSE_FAULT_GROUPS), ("fine", cfg.BENCHMARK_FINE_CLASSES)):
+        out, model, out_groups, meta, L, probabilities, pairwise = weak_supervision_pipeline(df, DEFAULT_WEAK_METHODS, groups, use_snorkel=use_snorkel, random_state=seed, granularity=granularity)
+        outputs[granularity] = out; pairwise.to_csv(BENCHMARK_DIR / f"weak_lf_pairwise_agreement_{granularity}.csv", index=False, encoding="utf-8-sig"); save_weak_supervision_artifacts(out, model, out_groups, meta, granularity=granularity); weak_students[granularity] = _train_weak_students(out, granularity, seed); del L, probabilities
+    merge_keys = ["transformer_id", "sample_day"]; df = outputs["coarse"].copy(); fine_cols = [c for c in outputs["fine"].columns if c.startswith("weak_fine_")]; df = df.merge(outputs["fine"][merge_keys + fine_cols], on=merge_keys, how="left", suffixes=("", "_fine"))
+    for granularity, artifacts in weak_students.items():
+        for key, artifact in artifacts.items():
+            Xdf = _align_feature_frame(df, artifact["features"], granularity); pred = _decode_class_predictions(_predict_model(artifact["model"], Xdf), list(artifact["labels"])); df[f"weak_student_{granularity}_{key}"] = pred
+            if hasattr(artifact["model"], "predict_proba"):
+                try:
+                    proba = np.asarray(_predict_proba(artifact["model"], Xdf), dtype=float)
+                    if proba.ndim == 2: confidence = np.max(proba, axis=1)
+                    elif proba.ndim == 1: confidence = np.abs(proba)
+                    else: confidence = np.full(len(df), np.nan, dtype=float)
+                    df[f"weak_student_{granularity}_{key}_confidence"] = confidence
+                except Exception: logger.warning("Weak student confidence failed | %s | %s", granularity, key, exc_info=True)
+    from severity import apply_severity
+    df = apply_severity(df, nei_reference=None); ranking = build_transformer_ranking(df); log_ranking_diagnostics(ranking, 20)
+    processed = DATASET_DIR / "processed"; processed.mkdir(parents=True, exist_ok=True); df.to_parquet(processed / "dga_unlabeled_processed.parquet", index=False); ranking.to_parquet(processed / "transformer_ranking.parquet", index=False); ranking.to_csv(REPORT_DIR / "transformer_ranking.csv", index=False, encoding="utf-8-sig")
+    if save_model:
+        MODEL_DIR.mkdir(parents=True, exist_ok=True); joblib.dump({"models": weak_students["coarse"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_COARSE_PATH); joblib.dump({"models": weak_students["fine"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_FINE_PATH); metadata = {"seed": seed, "unlabeled_dataset": str(UNLABELED_PATH), "weak_supervision": "Snorkel LabelModel or EM fallback", "student_feature_modes": ["gas_only", "gas_plus_traditional"], "student_model_count_coarse": len(weak_students["coarse"]), "student_model_count_fine": len(weak_students["fine"]), "severity_source": cfg.STANDARD, "severity_is_weighted": False, "severity_is_failure_probability": False, "ranking_policy": list(cfg.RANKING_POLICY), "ranking_is_weighted": False, "ranking_is_health_score": False, "benchmark_policy": "Operational unlabeled data are used for weak labels and student training only; labeled benchmark is reserved for external evaluation and locked test reporting."}; TRAINING_METADATA_PATH.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    return df, ranking, weak_students
+
+def run_labeled_benchmark(seed):
+    labeled = apply_consensus(load_labeled_csv_data()); individual = benchmark_traditional_individual(labeled); combinations_result = benchmark_traditional_combinations(labeled, None); ppm = benchmark_traditional_ppm_coverage(labeled); pairwise = pairwise_label_agreement(labeled); pairwise.to_csv(BENCHMARK_DIR / "traditional_pairwise_agreement.csv", index=False, encoding="utf-8-sig"); method_summary = diagnostic_method_summary(labeled); method_summary.to_csv(BENCHMARK_DIR / "traditional_method_summary.csv", index=False, encoding="utf-8-sig"); supervised = benchmark_supervised_models(labeled, seed)
+    benchmark = {"individual": individual, "combinations": combinations_result, "ppm_coverage": ppm, "pairwise": pairwise, "method_summary": method_summary, "supervised": supervised}; benchmark["split_manifest"] = _write_split_manifest(labeled, seed); return benchmark
+
+def _write_split_manifest(labeled, seed):
+    labels, _ = _prepare_truth(labeled); conflict = labeled.get("fine_label_conflict", pd.Series(False, index=labeled.index)).astype(bool); valid = (labels != ABSTAIN) & ~conflict; data = labeled.loc[valid].reset_index(drop=True); y = labels.loc[valid].map({c: i for i, c in enumerate(cfg.BENCHMARK_FINE_CLASSES)}).to_numpy(int); data = data.assign(evaluation_group=data["evaluation_group"].astype(str)); _, dev, test = train_dev_test_split(data, y, seed)
+    manifest = data[["source_dataset", "source_row", "fault_type_label", "evaluation_group"]].copy(); split = np.full(len(data), "train", dtype=object); split[dev] = "development"; split[test] = "locked_test"; manifest["split"] = split; manifest.to_csv(BENCHMARK_DIR / "benchmark_split_manifest.csv", index=False, encoding="utf-8-sig"); return manifest
+
+def write_confusion_matrices(weak_transfer, supervised, labeled, seed):
+    labels = _prepare_truth(labeled)[0]; conflict = labeled.get("fine_label_conflict", pd.Series(False, index=labeled.index)).astype(bool); valid = (labels != ABSTAIN) & ~conflict; data = labeled.loc[valid].reset_index(drop=True); y_names = labels.loc[valid].reset_index(drop=True); y = y_names.map({c: i for i, c in enumerate(cfg.BENCHMARK_FINE_CLASSES)}).to_numpy(int); _, _, test = train_dev_test_split(data.assign(evaluation_group=data["evaluation_group"].astype(str)), y, seed)
+    for mode in supervised["feature_mode"].unique():
+        sub = supervised[(supervised["feature_mode"] == mode) & (supervised["split"] == "locked_test")]
+        if sub.empty: continue
+        best = sub.sort_values(["macro_f1", "balanced_accuracy", "accuracy"], ascending=False).iloc[0]; model = build_models(seed)[best["model"]]; Xdf = build_feature_frame(data, mode, "fine"); train_mask = np.ones(len(data), dtype=bool); train_mask[test] = False; model.fit(Xdf.iloc[train_mask], y[train_mask]); pred = np.asarray(model.predict(Xdf.iloc[test])).reshape(-1); cm = confusion_matrix(y[test], pred, labels=list(range(len(cfg.BENCHMARK_FINE_CLASSES)))); out = pd.DataFrame(cm, index=cfg.BENCHMARK_FINE_CLASSES, columns=cfg.BENCHMARK_FINE_CLASSES); out.to_csv(BENCHMARK_DIR / f"confusion_supervised_{mode}.csv", encoding="utf-8-sig")
 
 def main(args=None):
-    parser = argparse.ArgumentParser(description="Train DGA diagnostic ML models with IEEE C57.104-2019 severity handling.")
-    parser.add_argument("--weak-supervision", action="store_true", help="Generate weak labels and train the student fault classifier.")
-    parser.add_argument("--use-snorkel", action="store_true", help="Use Snorkel LabelModel if available.")
-    parser.add_argument("--weak-only", action="store_true", help="Generate and save weak labels only.")
-    parser.add_argument("--confidence-threshold", type=float, default=70.0, help="Minimum consensus confidence for labeled data.")
-    parser.add_argument("--seed", type=int, default=RANDOM_STATE)
-    parsed = parser.parse_args(args=args)
-    set_global_seed(parsed.seed)
-
-    generated_weak_df = None
-    weak_training = None
-
-    if parsed.weak_supervision:
-        logger.info("Weak supervision enabled.")
-        unlabeled = load_unlabeled_data()
-        generated_weak_df = generate_weak_labels(unlabeled, use_snorkel=parsed.use_snorkel)
-        WEAK_LABEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-        generated_weak_df.to_parquet(WEAK_LABEL_PATH, index=False)
-        logger.info("Weak labels saved to %s", WEAK_LABEL_PATH)
-        if parsed.weak_only:
-            logger.info("weak-only requested; stopping after weak-label generation.")
-            return
-        X_weak, y_weak, w_weak, weak_feature_cols, weak_training_df = prepare_weak_labeled_data(generated_weak_df)
-        weak_training = (X_weak, y_weak, w_weak, weak_feature_cols, weak_training_df)
-
-    if generated_weak_df is not None:
-        df = generated_weak_df.copy()
-    else:
-        df = load_data(conf_threshold=parsed.confidence_threshold)
-
-    df = build_training_features_from_clean(df)
-    df = df.sort_values(["transformer_id", "sample_day"]).reset_index(drop=True)
-
-    if weak_training is None:
-        if "fault_type_label" not in df.columns:
-            logger.warning("fault_type_label missing; standard fault classifier will not be trained.")
-            y_fault = None
-            fault_labels = None
-        else:
-            y_fault, fault_labels = prepare_fault_target(df)
-    else:
-        y_fault = None
-        fault_labels = None
-
-    df = apply_severity(df)
-    y_severity_cls, y_severity_score = prepare_severity_target(df)
-    groups = df["transformer_id"].to_numpy()
-    feature_cols = select_feature_columns(df)
-    X = dataframe_to_matrix(df, feature_cols)
-    logger.info("Static feature matrix: %d samples x %d features", X.shape[0], X.shape[1])
-
-    train_idx, val_idx = group_split(X, groups)
-
-    X_seq, groups_seq, seq_indices, _ = build_sequences(df, feature_cols, seq_len=SEQ_LEN)
-    train_group_set = set(groups[train_idx].tolist())
-    val_group_set = set(groups[val_idx].tolist())
-    seq_train_idx = np.array([i for i, group in enumerate(groups_seq) if group in train_group_set], dtype=np.int64)
-    seq_val_idx = np.array([i for i, group in enumerate(groups_seq) if group in val_group_set], dtype=np.int64)
-    logger.info("Temporal split: train=%d, validation=%d", len(seq_train_idx), len(seq_val_idx))
-
-    ae_model, ae_scaler = train_autoencoder(X_seq, seq_train_idx, X_seq.shape[2], epochs=AE_EPOCHS, latent_dim=AE_LATENT_DIM)
-    embeddings = extract_embeddings(ae_model, ae_scaler, X_seq, X_seq.shape[2])
-
-    emb_cols = [f"emb_{i}" for i in range(embeddings.shape[1])]
-    for col in emb_cols:
-        df[col] = np.nan
-    for row_idx, embedding in zip(seq_indices, embeddings):
-        df.loc[row_idx, emb_cols] = embedding
-    for col in emb_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-
-    feature_cols_with_embeddings = feature_cols + emb_cols
-    X = dataframe_to_matrix(df, feature_cols_with_embeddings)
-
-    fault_model = None
-    fault_feature_names = None
-    fault_labels_for_artifact = FAULT_LABELS
-
-    if weak_training is not None:
-        X_weak, y_weak, w_weak, weak_feature_cols, weak_training_df = weak_training
-        weak_groups = weak_training_df["transformer_id"].to_numpy()
-        weak_train_idx, weak_val_idx = group_split(X_weak, weak_groups)
-        fault_model = train_student_fault_classifier(
-            X_weak.iloc[weak_train_idx], y_weak[weak_train_idx], w_weak[weak_train_idx],
-            X_weak.iloc[weak_val_idx], y_weak[weak_val_idx], w_weak[weak_val_idx], labels=WEAK_GROUPS)
-        fault_feature_names = weak_feature_cols
-        fault_labels_for_artifact = WEAK_GROUPS
-    elif y_fault is not None:
-        fault_train_X = X.iloc[train_idx]
-        fault_val_X = X.iloc[val_idx]
-        fault_model = train_fault_cls(fault_train_X, y_fault[train_idx], fault_val_X, y_fault[val_idx])
-        fault_feature_names = feature_cols_with_embeddings
-        fault_labels_for_artifact = FAULT_LABELS
-    else:
-        logger.warning("No fault targets available; fault classifier will not be trained.")
-
-    severity_feature_names = feature_cols_with_embeddings
-    sev_train_X = X.iloc[train_idx]
-    sev_val_X = X.iloc[val_idx]
-    sev_cls_model = train_severity_cls(sev_train_X, y_severity_cls[train_idx], sev_val_X, y_severity_cls[val_idx])
-    sev_reg_model = train_severity_reg(sev_train_X, y_severity_score[train_idx], sev_val_X, y_severity_score[val_idx])
-
-    temp_model, temp_scaler = train_temporal(
-        X_seq,
-        y_severity_score[np.array([df.index.get_loc(idx) for idx in seq_indices])],
-        seq_train_idx, seq_val_idx, X_seq.shape[2])
-
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-
-    torch.save(ae_model.state_dict(), MODEL_DIR / "temporal_autoencoder.pt")
-    joblib.dump(ae_scaler, MODEL_DIR / "temporal_ae_scaler.joblib")
-    joblib.dump({"feature_names": feature_cols, "embedding_features": emb_cols, "seq_len": SEQ_LEN,
-                 "latent_dim": AE_LATENT_DIM, "device": str(DEVICE)}, MODEL_DIR / "temporal_autoencoder_meta.joblib")
-
-    if fault_model is not None:
-        joblib.dump({"model": fault_model, "features": fault_feature_names, "labels": fault_labels_for_artifact,
-                     "target_type": "weak_group" if fault_labels_for_artifact == WEAK_GROUPS else "fault_detail"},
-                    MODEL_DIR / "fault_unsupervised_model.joblib")
-
-    joblib.dump({"model": sev_cls_model, "features": severity_feature_names, "labels": ["NORMAL", "WATCHLIST", "CRITICAL"],
-                 "target_type": "ieee_c57_104_2019_dga_status",
-                 "note": "Surrogate model only. Rule-based IEEE status remains authoritative."},
-                MODEL_DIR / "severity_classifier.joblib")
-    joblib.dump({"model": sev_reg_model, "features": severity_feature_names,
-                 "target_type": "ieee_c57_104_2019_application_score",
-                 "note": "Surrogate model only. The rule-based severity score remains authoritative."},
-                MODEL_DIR / "severity_regressor.joblib")
-
-    torch.save(temp_model.state_dict(), MODEL_DIR / "temporal_model_state_dict.pt")
-    joblib.dump(temp_scaler, MODEL_DIR / "temporal_scaler.joblib")
-    joblib.dump({"feature_names": feature_cols_with_embeddings, "seq_len": SEQ_LEN,
-                 "target": "severity_score", "device": str(DEVICE)}, MODEL_DIR / "temporal_model_meta.joblib")
-
-    metadata = {
-        "standard": "IEEE C57.104-2019",
-        "fluid_type": "MINERAL_OIL",
-        "random_state": parsed.seed,
-        "device": str(DEVICE),
-        "static_feature_count": len(feature_cols_with_embeddings),
-        "base_feature_count": len(feature_cols),
-        "embedding_feature_count": len(emb_cols),
-        "sequence_length": SEQ_LEN,
-        "weak_supervision": bool(parsed.weak_supervision),
-        "weak_confidence_threshold": WEAK_CONFIDENCE_THRESHOLD,
-        "train_transformers": int(len(set(groups[train_idx].tolist()))),
-        "validation_transformers": int(len(set(groups[val_idx].tolist()))),
-        "note": ("Severity Status is rule-based according to IEEE C57.104-2019 norms; "
-                 "ML severity models are surrogate estimators and must not override the rule-based status."),
-    }
-    joblib.dump(metadata, MODEL_DIR / "training_metadata.joblib")
-    logger.info("Training complete. Models saved to %s", MODEL_DIR)
+    parser = argparse.ArgumentParser(); parser.add_argument("--mode", choices=["benchmark", "unlabeled", "transfer", "all"], default="all"); parser.add_argument("--use-snorkel", action="store_true"); parser.add_argument("--seed", type=int, default=cfg.RANDOM_STATE); parsed = parser.parse_args(args)
+    set_global_seed(parsed.seed); unlabeled_result = None
+    if parsed.mode in {"unlabeled", "transfer", "all"}: unlabeled_result = run_unlabeled_pipeline(parsed.seed, parsed.use_snorkel)
+    benchmark = None
+    if parsed.mode in {"benchmark", "all"}:
+        benchmark = run_labeled_benchmark(parsed.seed); print("\n=== Traditional individual ==="); print(benchmark["individual"].sort_values(["granularity", "macro_f1"], ascending=[True, False]).to_string(index=False)); print("\n=== Best traditional combinations on locked test ==="); print(benchmark["combinations"].query("split == 'locked_test'").sort_values(["granularity", "macro_f1"], ascending=[True, False]).groupby("granularity").head(10).to_string(index=False)); print("\n=== Supervised reference ==="); print(benchmark["supervised"].query("split == 'locked_test'").sort_values("macro_f1", ascending=False).head(20).to_string(index=False))
+    if parsed.mode in {"transfer", "all"}:
+        if unlabeled_result is None: unlabeled_result = run_unlabeled_pipeline(parsed.seed, parsed.use_snorkel)
+        labeled = apply_consensus(load_labeled_csv_data()); weak_transfer = benchmark_weak_transfer(labeled, unlabeled_result[2], parsed.seed); print("\n=== Weak-supervision transfer ==="); print(weak_transfer.query("split == 'locked_test'").sort_values(["granularity", "macro_f1"], ascending=[True, False]).head(30).to_string(index=False))
+    try:
+        from experiment import build_excel_report
+        build_excel_report(REPORT_DIR, DATASET_DIR / "processed", REPORT_DIR / "dga_research_report.xlsx"); logger.info("Excel report saved to %s", REPORT_DIR / "dga_research_report.xlsx")
+    except Exception: logger.exception("Excel report generation failed")
 
 if __name__ == "__main__":
     main()

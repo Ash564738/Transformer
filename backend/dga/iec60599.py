@@ -3,11 +3,26 @@ from __future__ import annotations
 
 import logging
 
+from attrs import field
+from typing import List
 import numpy as np
 import pandas as pd
 
 from config import config as cfg
-
+DIAGNOSTIC_GASES: List[str] = [
+    "h2",
+    "ch4",
+    "c2h2",
+    "c2h4",
+    "c2h6",
+]
+L1_LIMITS = {
+    "h2": 100,
+    "ch4": 120,
+    "c2h2": 1,
+    "c2h4": 50,
+    "c2h6": 65,
+}
 logger = logging.getLogger(__name__)
 
 
@@ -80,12 +95,12 @@ def _applicable(row: pd.Series) -> bool:
     60599:2022 condition-assessment procedure.
     """
 
-    for gas_name in cfg.DIAGNOSTIC_GASES:
+    for gas_name in DIAGNOSTIC_GASES:
         value = _gas(row, gas_name)
 
         if (
             np.isfinite(value)
-            and value >= cfg.L1_LIMITS[gas_name]
+            and value >= L1_LIMITS[gas_name]
         ):
             return True
 

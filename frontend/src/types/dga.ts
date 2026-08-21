@@ -1,16 +1,33 @@
-// Types mirror the payload produced by inference_service.create_payload()
-// in the Flask backend (app.py -> /predict). Field names match the raw
-// pandas columns the pipeline emits (dga/*.py, consensus.py, severity.py,
-// ranking.py) so the frontend can render diagnostic detail without
-// re-deriving anything the backend already computed.
+// src/types/dga.ts
+export type NativeSeverityLabel =
+  | "STATUS_1"
+  | "STATUS_2"
+  | "STATUS_3"
+  | "INSUFFICIENT_DATA";
 
-export type UiSeverity = "Severe" | "Moderate" | "Low";
+/** IEEE C57.104 DGA screening status. This is NOT maintenance priority. */
+export type RiskStatus =
+  | "Normal"
+  | "Watch"
+  | "High"
+  | "Insufficient data";
 
-/** Native 4-tier severity bucket computed by severity.py (SEVERITY_CLASS_BOUNDARIES). */
-export type NativeSeverityLabel = "NORMAL" | "WATCHLIST" | "WARNING" | "CRITICAL";
+/** Operational maintenance queue emitted by the backend. */
+export type MaintenancePriority =
+  | "CRITICAL"
+  | "HIGH_RISK"
+  | "WATCH"
+  | "NORMAL"
+  | "DATA_REVIEW";
 
-/** Fixed 4-tier status shown in the UI, matching UI-SPEC-DGA-DASHBOARD-01. */
-export type RiskStatus = "Normal" | "Watch" | "High" | "Critical";
+export type FaultCriticalityClass =
+  | "NO_FAULT"
+  | "LOWER_URGENCY"
+  | "ELEVATED_URGENCY"
+  | "HIGH_CONCERN"
+  | "CONTEXT_DEPENDENT"
+  | "UNKNOWN"
+  | string;
 
 export type TrendDirection = "worsening" | "stable" | "improving";
 
@@ -23,9 +40,26 @@ export interface Prediction {
   row_index: number;
   transformer_id: string;
   pred_ensemble: number;
-  severity: UiSeverity;
+  ieee_status?: number;
+  ieee_status_label?: NativeSeverityLabel | string;
+  status?: RiskStatus;
+  severity: RiskStatus | string;
+
+  maintenance_priority?: MaintenancePriority | string;
+  critical_front?: boolean;
+  maintenance_priority_reason?: string;
+  critical_evidence_ratio?: number | null;
+
   fault_type: string;
+  fault_group?: string;
+  fault_criticality_class?: FaultCriticalityClass;
+  fault_source?: string;
+  fault_confidence?: number | null;
+  fault_entropy?: number | null;
+  fault_evidence_level?: string;
   reason: string;
+  confirmation_required?: boolean;
+  anomaly_percentile?: number | null;
   top_features: TopFeature[];
 }
 
@@ -40,10 +74,10 @@ export interface DiagnosticVotes {
   [method: string]: string | undefined;
 }
 
-/** Raw feature-engineered row — one DGA sample. Superset of known fields. */
 export interface DgaRow {
   transformer_id: string;
   sample_day: string;
+
   loc?: string;
   name?: string;
   ser?: string;
@@ -63,72 +97,172 @@ export interface DgaRow {
   water?: number;
   temp?: number;
 
-  severity_score?: number;
-  severity_label?: NativeSeverityLabel;
+  ieee_dga_status?: number;
+  ieee_dga_status_label?: NativeSeverityLabel | string;
+  ieee_dga_status_reason?: string;
+  ieee_recommended_action?: string;
+  ieee_confirmation_required?: boolean;
+
+  ieee_max_standardized_exceedance?: number;
+  ieee_max_status3_standardized_exceedance?: number;
+  ieee_standard_trigger_count?: number;
+
+  ieee_table1_max_exceedance_ratio?: number;
+  ieee_table2_max_exceedance_ratio?: number;
+  ieee_table3_max_exceedance_ratio?: number;
+  ieee_table4_max_exceedance_ratio?: number;
+
+  ieee_table1_exceeding_gases?: string[];
+  ieee_table2_exceeding_gases?: string[];
+  ieee_table3_exceeding_gases?: string[];
+  ieee_table4_exceeding_gases?: string[];
+
+  ieee_delta_available?: boolean;
+  ieee_rate_available?: boolean;
+  ieee_rate_span_months?: number;
+
+  ieee_o2_n2_ratio?: number;
+  ieee_o2_n2_section?: string;
+  ieee_age_bucket?: string;
+  ieee_transformer_age_years?: number;
+
+  ieee_tdcg_ppm?: number;
+
+  iec_60599_standard?: string;
+  iec_60599_ratio_available?: boolean;
+  iec_60599_ratio_count?: number;
+  iec_60599_ratios?: Record<string, number | null>;
+  iec_60599_interpretation_flags?: string[];
+
+  ieee_delta?: Record<string, number>;
+  ieee_gas_rate_ppm_per_year?: Record<string, number>;
+
   consensus_fault?: string;
-  mixed_components?: string[];
+  consensus_fault_traditional?: string;
+  consensus_fault_group?: string;
+
+  final_fault?: string;
+  final_fault_group?: string;
+  final_fault_source?: string;
+  final_fault_conflict?: boolean;
+  final_fault_same_coarse_different_fine?: boolean;
+
+  fault_criticality_class?: FaultCriticalityClass;
+  fault_criticality_source?: string;
+
   diagnostic_confidence?: number;
-  diagnostic_votes?: DiagnosticVotes;
+  diagnostic_coverage?: number;
+  diagnostic_agreement_ratio?: number;
+
+  weak_fine_fault?: string;
+  weak_fine_fault_group?: string;
+  weak_fine_posterior_max?: number;
+  weak_fine_entropy?: number;
+
+  weak_coarse_fault?: string;
+  weak_coarse_fault_group?: string;
+  weak_coarse_posterior_max?: number;
+  weak_coarse_entropy?: number;
+
+  anomaly_percentile?: number;
+  anomaly_is_severity_input?: boolean;
 
   keygas_fault?: string;
   iec_fault?: string;
   rogers_fault?: string;
   doernenburg_fault?: string;
   duval_triangle_fault?: string;
+  duval_pentagon_fault?: string;
+  duval_pentagon_p1_fault?: string;
+  duval_pentagon_p2_fault?: string;
   fault_p1?: string;
   fault_p2?: string;
-  duval_pentagon_fault?: string;
 
-  iec_r1_c2h2_c2h4?: number;
-  iec_r2_ch4_h2?: number;
-  iec_r3_c2h4_c2h6?: number;
-  r1_ch4_h2?: number;
-  r2_c2h2_c2h4?: number;
-  r3_c2h4_c2h6?: number;
-  dr_r1_ch4_h2?: number;
-  dr_r2_c2h2_c2h4?: number;
-  dr_r3_c2h2_ch4?: number;
-  dr_r4_c2h6_c2h2?: number;
-  ratio_co2_co?: number;
-
-  h2_rate_per_day?: number;
-  c2h2_rate_per_day?: number;
-  tdcg_rate_per_day?: number;
-
-  t_x?: number;
-  t_y?: number;
-  p_x?: number;
-  p_y?: number;
+  student_fault_label?: string;
+  student_fault_group?: string;
+  student_fault_confidence?: number;
+  student_model_name?: string;
+  student_training_type?: string;
 
   [key: string]: unknown;
 }
 
-/** Composition of the fleet-wide ranking score (backend/ranking.py final_score),
- * distinct from the per-record severity_score breakdown: this explains why a
- * transformer ranks where it does relative to the rest of the fleet — current
- * severity weighted most heavily, but historical (EWM) severity, trend,
- * critical-event history, and diagnostic confidence all contribute. */
 export interface RankingBreakdown {
-  final_score: number;
-  severity_score: number;
-  trend_slope: number | null;
+  current_status: number;
+  fleet_priority_percent?: number | null;
+  maintenance_priority?: MaintenancePriority | string;
+  maintenance_rank?: number;
+  critical_front?: boolean;
+  current_status3_standardized_exceedance?: number | null;
+  current_standardized_exceedance?: number | null;
+  current_delta_exceedance?: number;
+  current_standard_trigger_count?: number;
+  pareto_dominance_count?: number;
+  pareto_front?: boolean;
+  history_max_status_before_current?: number;
+  historical_max_standardized_exceedance?: number | null;
+  history_abnormal_record_ratio?: number | null;
+  history_critical_record_ratio?: number | null;
+  history_fault_recurrence_rate?: number | null;
+  history_worsening_transition_ratio?: number | null;
+  trend_slope?: number | null;
 }
 
 export interface TransformerSummary {
   rank: number;
+  maintenance_rank?: number;
+  rank_tie?: boolean;
+  rank_group_size?: number;
+
   transformer_id: string;
   latest_sample_day: string;
-  latest_score: number;
-  severity: UiSeverity;
-  fault_type: string;
-  trend: TrendDirection;
-  priority_score: number;
-  priority_label: UiSeverity;
-  recommended_action: string;
-  reason: string;
-  features: Record<string, unknown>;
   loc?: string;
   name?: string;
+
+  ieee_status?: number;
+  ieee_status_label?: NativeSeverityLabel | string;
+  status?: RiskStatus;
+  severity: RiskStatus | string;
+
+  maintenance_priority: MaintenancePriority | string;
+  maintenance_priority_ordinal?: number;
+  maintenance_priority_reason?: string;
+  critical_front?: boolean;
+  critical_rule?: string;
+  critical_reference?: string;
+  critical_evidence_table?: string | null;
+  critical_evidence_gas?: string | null;
+  critical_evidence_ratio?: number | null;
+
+  fault_type: string;
+  fault_group?: string;
+  fault_criticality_class?: FaultCriticalityClass;
+  fault_criticality_source?: string;
+  trend?: TrendDirection;
+
+  priority_score: number;
+  priority_label: MaintenancePriority | string;
+  recommended_action: string;
+  reason: string;
+
+  current_standardized_exceedance?: number | null;
+  current_status3_standardized_exceedance?: number | null;
+  current_delta_exceedance?: number;
+  current_standard_trigger_count?: number;
+  historical_max_standardized_exceedance?: number | null;
+  history_max_status_before_current?: number;
+  history_record_count?: number;
+  history_worsening_transition_ratio?: number | null;
+  history_recurrent_fault_fraction?: number | null;
+  pareto_dominance_count?: number;
+  pareto_front?: boolean;
+
+  maintenance_priority_rank_percentile?: number | null;
+  priority_score_type?: string;
+  ranking_policy?: string;
+  ranking_is_weighted?: boolean;
+  ranking_is_health_score?: boolean;
+  features: Record<string, unknown>;
   ranking_breakdown?: RankingBreakdown;
 }
 
@@ -136,32 +270,55 @@ export interface TimeseriesPoint {
   "Sample Day": string;
   H2: number;
   C2H2: number;
-  TCG: number;
+  TDCG: number;
   pred_ensemble: number;
+  ieee_status?: number;
+  ieee_status_label?: NativeSeverityLabel | string;
+  status?: RiskStatus;
   fault_type: string;
+  fault_group?: string;
+  fault_criticality_class?: FaultCriticalityClass;
   severity: NativeSeverityLabel | string;
+  critical_front?: boolean;
+  critical_evidence_ratio?: number | null;
+  confirmation_required?: boolean;
 }
 
 export interface DatasetSummary {
   total_transformers: number;
   total_rows: number;
+  severity_status_1?: number;
+  severity_status_2?: number;
+  severity_status_3?: number;
+  severity_insufficient_data?: number;
+  critical_transformer_count?: number;
+  high_risk_transformer_count?: number;
+  maintenance_priority_counts?: Partial<Record<MaintenancePriority, number>> & Record<string, number>;
+  critical_queue_top20?: Array<Record<string, unknown>>;
+  critical_rule?: string;
+  critical_reference?: string;
+  fault_criticality_context_counts?: Record<string, number>;
+  fault_criticality_source?: string;
+  traditional_abstain_rows?: number;
+  student_fallback_rows?: number;
+  student_traditional_physical_conflicts?: number;
 }
 
 export interface StudentTraditionalComparisonRow {
   transformer_id: string;
   n_samples: number;
-  agreement_rate: number;
-  disagree_count: number;
-  latest_student_fault: string;
-  latest_traditional_fault: string;
-  latest_severity_score: number;
-  latest_severity_label: NativeSeverityLabel | string;
-  latest_sample_day: string;
+  n_joint_active: number;
+  coarse_agreement_rate?: number;
+  fine_agreement_rate?: number;
+  traditional_abstain_count: number;
+  student_abstain_count: number;
+  student_used_as_fallback_count: number;
+  physical_conflict_count: number;
 }
 
 export interface ChatContextPayload {
   transformer_summary: TransformerSummary[];
-  dataset_summary: DatasetSummary;
+  dataset_summary?: DatasetSummary;
 }
 
 export interface DgaPayload {

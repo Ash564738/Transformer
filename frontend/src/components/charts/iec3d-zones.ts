@@ -1,4 +1,4 @@
-// iec3d-zones.ts
+// src/components/charts/iec3d-zones.ts
 //
 // These boxes must match backend/dga/iec60599.py's iec_ratio_method() exactly
 // — that function is the actual classifier; this file only visualizes its

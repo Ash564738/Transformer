@@ -1,3 +1,4 @@
+// src/components/ui/badge.tsx
 import { cn } from "@/lib/utils";
 import { STATUS_STYLES, STATUS_ICON_LABEL } from "@/lib/severity";
 import type { RiskStatus } from "@/types/dga";

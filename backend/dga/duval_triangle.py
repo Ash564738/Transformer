@@ -5,7 +5,6 @@ import logging
 
 import numpy as np
 import pandas as pd
-from config import config as cfg
 from matplotlib.path import Path
 
 logger = logging.getLogger(__name__)
@@ -286,7 +285,7 @@ def duval_triangle_1(
 
     total = float(values.sum())
 
-    if total < cfg.DUVAL_MIN_TOTAL_GAS:
+    if total < 0.1:
         return "ABSTAIN"
 
     xy = ternary_to_xy(
@@ -381,7 +380,7 @@ def apply_duval_triangle(
 
         total = float(values.sum())
 
-        if total < cfg.DUVAL_MIN_TOTAL_GAS:
+        if total < 0.1:
             xs.append(np.nan)
             ys.append(np.nan)
 

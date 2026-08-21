@@ -1,4 +1,4 @@
-// build-iec-traces.ts
+// src/components/charts/build-iec-traces.ts
 import { Iec3DZone } from "./iec3d-config";
 
 // react-plotly.js ships no first-party type defs; trace objects are plain

@@ -1,3 +1,4 @@
+// src/store/use-auth-store.ts
 import { create } from "zustand";
 import { ApiError, fetchCurrentUser, getAuthToken, loginAccount, logoutAccount, type AuthUser } from "@/lib/api";
 

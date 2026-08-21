@@ -1,3 +1,4 @@
+// src/components/detail/gas-trend-chart.tsx
 "use client";
 
 import { useMemo, useState } from "react";

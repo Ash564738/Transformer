@@ -1,12 +1,4 @@
-// Small shared glossary/taxonomy for DGA fault codes. The actual diagnostic
-// LOGIC (Duval Triangle/Pentagon geometry, Rogers/IEC/Doernenburg/Key Gas
-// thresholds) lives only in the Python backend (backend/dga/*.py) — this
-// frontend does not reimplement it. Duval Triangle/Pentagon diagrams are
-// rendered server-side (backend/app.py `/chart/*` routes reuse the existing
-// matplotlib plotting functions) and embedded here as <img>; ratio numbers
-// and fault codes shown elsewhere come directly from the row data the
-// backend already computed.
-
+// src/lib/dga-methods.ts
 export const FAULT_EXPLANATIONS: Record<string, string> = {
   NORMAL: "Normal",
   PD: "Partial discharge",
@@ -16,6 +8,7 @@ export const FAULT_EXPLANATIONS: Record<string, string> = {
   T1: "Thermal fault < 300°C",
   T2: "Thermal fault 300°C–700°C",
   T3: "Thermal fault > 700°C",
+  T1_T2: "Thermal fault spanning T1/T2 classification",
   T3_H: "Thermal fault > 700°C (oil only)",
   C: "Carbonization of paper insulation",
   O: "Overheating < 250°C",
@@ -26,9 +19,6 @@ export const FAULT_EXPLANATIONS: Record<string, string> = {
   ABSTAIN: "ABSTAIN diagnosis",
 };
 
-// Mirrors config.py's FAULT_GROUPS — a static label taxonomy (not a
-// diagnostic algorithm) used only to decide whether a method's vote agrees
-// with the transformer's consensus fault group.
 const FAULT_GROUPS: Record<string, string> = {
   NORMAL: "NORMAL",
   PD: "DISCHARGE",
@@ -38,6 +28,7 @@ const FAULT_GROUPS: Record<string, string> = {
   T1: "THERMAL",
   T2: "THERMAL",
   T3: "THERMAL",
+  T1_T2: "THERMAL",
   T3_H: "THERMAL",
   THERMAL_OIL: "THERMAL",
   THERMAL_CELLULOSE: "CELLULOSE",
@@ -48,10 +39,14 @@ const FAULT_GROUPS: Record<string, string> = {
   MIXED: "MIXED",
 };
 
-/** Mirrors consensus.py's unify_fault(): maps a specific fault code to its broad group. */
 export function unifyFault(label?: string): string {
   if (!label) return "ABSTAIN";
-  const key = label.trim().toUpperCase();
-  return FAULT_GROUPS[key === "T3-H" ? "T3_H" : key] ?? "ABSTAIN";
+  const key = label.trim().toUpperCase().replace("-", "_");
+  return FAULT_GROUPS[key] ?? "ABSTAIN";
 }
 
+export function faultExplanation(label?: string): string {
+  if (!label) return "Unknown fault";
+  const key = label.trim().toUpperCase();
+  return FAULT_EXPLANATIONS[key] ?? label;
+}

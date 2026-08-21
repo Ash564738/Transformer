@@ -1,3 +1,4 @@
+// src/components/overview/fault-distribution-chart.tsx
 "use client";
 
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -5,11 +6,24 @@ import type { DgaRow, TransformerSummary } from "@/types/dga";
 
 const PALETTE = ["#184843", "#316f64", "#4f8f83", "#c96f28", "#e08a3c", "#854318", "#7db0a6", "#a8571c"];
 
-export function FaultDistributionChart({ summaries, rows }: { summaries: TransformerSummary[]; rows?: DgaRow[] }) {
+export function FaultDistributionChart({
+  summaries,
+  rows,
+}: {
+  summaries: TransformerSummary[];
+  rows?: DgaRow[];
+}) {
   const counts = new Map<string, number>();
   const sourceRows = rows && rows.length > 0 ? rows : summaries;
   for (const item of sourceRows) {
-    const rawKey = "consensus_fault" in item ? item.consensus_fault : item.fault_type;
+    const rawKey =
+      "final_fault" in item &&
+      item.final_fault &&
+      item.final_fault !== "ABSTAIN"
+        ? item.final_fault
+        : "consensus_fault" in item
+          ? item.consensus_fault
+          : item.fault_type;
     const key = typeof rawKey === "string" && rawKey.trim() ? rawKey : "ABSTAIN";
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
@@ -45,4 +59,3 @@ export function FaultDistributionChart({ summaries, rows }: { summaries: Transfo
     </ResponsiveContainer>
   );
 }
-

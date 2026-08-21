@@ -1,7 +1,9 @@
 # dga/rogers.py
 from __future__ import annotations
 
+from dataclasses import field
 import logging
+from typing import List
 
 import numpy as np
 import pandas as pd
@@ -11,6 +13,27 @@ from config import config as cfg
 logger = logging.getLogger(__name__)
 
 
+ROGERS_R1_LOW: float = 0.1
+ROGERS_R1_HIGH: float = 3.0
+ROGERS_R2_LOW: float = 0.1
+ROGERS_R2_HIGH: float = 1.0
+ROGERS_R3_LOW: float = 1.0
+ROGERS_R3_HIGH: float = 3.0
+
+DIAGNOSTIC_GASES: List[str] = [
+    "h2",
+    "ch4",
+    "c2h2",
+    "c2h4",
+    "c2h6",
+]
+L1_LIMITS = {
+    "h2": 100,
+    "ch4": 120,
+    "c2h2": 1,
+    "c2h4": 50,
+    "c2h6": 65,
+}
 # ============================================================
 # SAFE GAS / RATIO
 # ============================================================
@@ -62,12 +85,12 @@ def _rogers_applicable(row: pd.Series) -> bool:
     method to reach its IEEE L1 value.
     """
 
-    for gas in cfg.DIAGNOSTIC_GASES:
+    for gas in DIAGNOSTIC_GASES:
         value = _gas(row, gas)
 
         if (
             np.isfinite(value)
-            and value >= cfg.L1_LIMITS[gas]
+            and value >= L1_LIMITS[gas]
         ):
             return True
 
@@ -82,10 +105,10 @@ def _code_r1(ratio: float) -> int | None:
     if not np.isfinite(ratio):
         return None
 
-    if ratio < cfg.ROGERS_R1_LOW:
+    if ratio < ROGERS_R1_LOW:
         return 0
 
-    if ratio <= cfg.ROGERS_R1_HIGH:
+    if ratio <= ROGERS_R1_HIGH:
         return 1
 
     return 2
@@ -95,10 +118,10 @@ def _code_r2(ratio: float) -> int | None:
     if not np.isfinite(ratio):
         return None
 
-    if ratio < cfg.ROGERS_R2_LOW:
+    if ratio < ROGERS_R2_LOW:
         return 0
 
-    if ratio <= cfg.ROGERS_R2_HIGH:
+    if ratio <= ROGERS_R2_HIGH:
         return 1
 
     return 2
@@ -108,10 +131,10 @@ def _code_r3(ratio: float) -> int | None:
     if not np.isfinite(ratio):
         return None
 
-    if ratio < cfg.ROGERS_R3_LOW:
+    if ratio < ROGERS_R3_LOW:
         return 0
 
-    if ratio <= cfg.ROGERS_R3_HIGH:
+    if ratio <= ROGERS_R3_HIGH:
         return 1
 
     return 2

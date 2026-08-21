@@ -1,3 +1,4 @@
+// src/components/detail/gas-indicator-cards.tsx
 import type { DgaRow } from "@/types/dga";
 import { formatNumber } from "@/lib/utils";
 

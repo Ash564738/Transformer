@@ -1,168 +1,67 @@
-import pandas as pd
-import numpy as np
-import joblib
-import logging
+# train_supervised_models.py
+from __future__ import annotations
+"""Small supervised reference baseline. This file is intentionally separate from the production weak-supervision path. It trains on the labeled benchmark only and reports a holdout metric. It is a reference baseline, not the model used to label the operational dataset."""
+import json, logging
 from pathlib import Path
+import joblib, numpy as np, pandas as pd
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, classification_report, f1_score
+from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.pipeline import Pipeline
+from config import DATASET_DIR, MODEL_DIR, REPORT_DIR, config as cfg
+from consensus import ABSTAIN, normalize_fault
 
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.model_selection import StratifiedKFold, cross_val_score, cross_val_predict
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-
-from config import DATASET_DIR, DATABASE_DIR, MODEL_DIR, REPORT_DIR
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
-
-# ========== CONFIG ==========
-
-LABELED_CSV_PATH = Path(DATASET_DIR) / "IEC_TC10_121.csv"
-UNLABELED_CSV_PATH = Path(DATASET_DIR) / "processed" / "accumulated_clean.csv"
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 MODEL_OUTPUT_PATH = Path(MODEL_DIR) / "fault_supervised_model.joblib"
-PREDICTION_OUTPUT_PATH = Path(DATASET_DIR) / "processed" / "unlabeled_predictions.csv"
+GAS_COLS = list(cfg.COMMON_BENCHMARK_GASES)
 
-GAS_COLS = ['h2', 'ch4', 'c2h6', 'c2h4', 'c2h2', 'co', 'co2']
-
-# ========== 1. ĐỌC DỮ LIỆU LABELED ==========
-def load_labeled_data(path):
-    """Đọc CSV labeled, chuẩn hóa tên cột, trả về DataFrame có cột label."""
-    df = pd.read_csv(path)
-    df.columns = [c.strip().lower() for c in df.columns]
-
-    # Đảm bảo cột nhãn tồn tại
-    if 'label' not in df.columns:
-        raise ValueError("Không tìm thấy cột 'label' trong file labeled")
-
-    df['label'] = df['label'].astype(str).str.strip().str.upper()
-    # Chỉ giữ các cột cần thiết
-    df = df[GAS_COLS + ['label']].copy()
-    # Chuyển gas sang numeric, điền NaN = 0 (có thể thay bằng median)
-    df[GAS_COLS] = df[GAS_COLS].apply(pd.to_numeric, errors='coerce').fillna(0)
-    logger.info(f"Đã đọc {len(df)} mẫu labeled, nhãn: {df['label'].unique()}")
+def load_labeled(path: Path, label_col: str):
+    df = pd.read_csv(path, encoding="utf-8-sig")
+    df.columns = [str(c).strip().lower().replace("\ufeff", "") for c in df.columns]
+    for col in GAS_COLS: df[col] = pd.to_numeric(df[col], errors="coerce") if col in df.columns else np.nan
+    df["fault"] = df[label_col].map(normalize_fault)
+    df = df[(df["fault"] != ABSTAIN) & df["fault"].isin(cfg.BENCHMARK_FINE_CLASSES)].copy()
     return df
 
-# ========== 2. HUẤN LUYỆN MODEL ==========
-def train_model(df):
-    """Train RandomForest với cross-validation, lưu artifacts."""
-    X = df[GAS_COLS].values
-    y_raw = df['label'].values
+def build_dataset():
+    a = load_labeled(Path(DATASET_DIR) / "IEC_TC10_121.csv", "label")
+    b = load_labeled(Path(DATASET_DIR) / "DGA dataset.csv", "type")
+    return pd.concat([a, b], ignore_index=True)
 
-    # Mã hóa nhãn thành số
-    le = LabelEncoder()
-    y = le.fit_transform(y_raw)
-
-    # Scale features
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    # Model
-    clf = RandomForestClassifier(
-        n_estimators=200,
-        class_weight='balanced',
-        random_state=42,
-        n_jobs=-1
-    )
-
-    # Cross-validation
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    scores = cross_val_score(clf, X_scaled, y, cv=skf, scoring='accuracy')
-    logger.info(f"Cross-validation accuracy: {scores.mean():.3f} ± {scores.std():.3f}")
-
-    # In báo cáo chi tiết dùng cross_val_predict
-    y_pred = cross_val_predict(clf, X_scaled, y, cv=skf)
-    print("\n=== Classification Report (Cross-Validation) ===")
-    print(classification_report(y, y_pred, target_names=le.classes_))
-    print("Confusion Matrix:\n", confusion_matrix(y, y_pred))
-
-    # Train trên toàn bộ dữ liệu
-    clf.fit(X_scaled, y)
-    logger.info("Model đã huấn luyện xong trên toàn bộ labeled data.")
-
-    # Lưu artifacts
-    MODEL_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({
-        'model': clf,
-        'scaler': scaler,
-        'label_encoder': le,
-        'feature_cols': GAS_COLS,
-    }, MODEL_OUTPUT_PATH)
-    logger.info(f"Đã lưu model tại: {MODEL_OUTPUT_PATH}")
-
-    return clf, scaler, le
-
-# ========== 3. ĐỌC DỮ LIỆU UNLABELED ==========
-def load_unlabeled_data(path):
-    """Đọc file unlabeled (CSV/Excel), trả về DataFrame có đủ gas columns."""
-    if path.suffix.lower() in ['.xlsx', '.xls']:
-        df = pd.read_excel(path)
-    else:
-        df = pd.read_csv(path)
-
-    df.columns = [c.strip().lower() for c in df.columns]
-
-    # Đổi tên nếu cần (các tên cột có thể khác)
-    rename_map = {
-        'hydrogen': 'h2',
-        'methane': 'ch4',
-        'ethane': 'c2h6',
-        'ethylene': 'c2h4',
-        'acetylene': 'c2h2',
-        'carbon_monoxide': 'co',
-        'carbon_dioxide': 'co2',
+def train_model(df: pd.DataFrame, seed=42):
+    mapping = {c: i for i, c in enumerate(cfg.BENCHMARK_FINE_CLASSES)}
+    X = df[GAS_COLS].to_numpy(float)
+    y = df["fault"].map(mapping).to_numpy(int)
+    counts = pd.Series(y).value_counts()
+    if counts.min() < 2: raise ValueError(f"Cannot stratify: {counts.to_dict()}")
+    split = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=seed)
+    train_idx, test_idx = next(split.split(X, y))
+    model = Pipeline([
+        ("imputer", SimpleImputer(strategy="median", add_indicator=True)),
+        ("classifier", ExtraTreesClassifier(n_estimators=500, class_weight="balanced", random_state=seed, n_jobs=-1)),
+    ])
+    model.fit(X[train_idx], y[train_idx])
+    pred = model.predict(X[test_idx])
+    labels = list(range(len(cfg.BENCHMARK_FINE_CLASSES)))
+    metrics = {
+        "accuracy": float(accuracy_score(y[test_idx], pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(y[test_idx], pred)),
+        "macro_f1": float(f1_score(y[test_idx], pred, labels=labels, average="macro", zero_division=0)),
+        "n_train": int(len(train_idx)), "n_test": int(len(test_idx)), "feature_set": "common_5_gases",
     }
-    df.rename(columns=rename_map, inplace=True)
+    logger.info("Supervised reference metrics: %s", metrics)
+    logger.info("\n%s", classification_report(y[test_idx], pred, labels=labels, target_names=cfg.BENCHMARK_FINE_CLASSES, zero_division=0))
+    model.fit(X, y)
+    Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
+    joblib.dump({"model": model, "labels": list(cfg.BENCHMARK_FINE_CLASSES), "feature_cols": GAS_COLS, "evaluation_metrics": metrics}, MODEL_OUTPUT_PATH)
+    Path(REPORT_DIR).mkdir(parents=True, exist_ok=True)
+    (Path(REPORT_DIR) / "supervised_reference_metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    return model, metrics
 
-    # Kiểm tra các cột gas bắt buộc
-    missing = [c for c in GAS_COLS if c not in df.columns]
-    if missing:
-        raise ValueError(f"Thiếu cột khí: {missing}. Các cột hiện có: {df.columns.tolist()}")
+def main():
+    train_model(build_dataset(), cfg.RANDOM_STATE)
 
-    # Chuyển numeric, fill NaN = 0 (hoặc median từ train, nhưng tạm dùng 0)
-    df[GAS_COLS] = df[GAS_COLS].apply(pd.to_numeric, errors='coerce').fillna(0)
-    logger.info(f"Đã đọc {len(df)} mẫu unlabeled.")
-    return df
-
-# ========== 4. DỰ ĐOÁN ==========
-def predict_unlabeled(artifacts, df):
-    """Dự đoán nhãn cho unlabeled DataFrame."""
-    clf = artifacts['model']
-    scaler = artifacts['scaler']
-    le = artifacts['label_encoder']
-    feature_cols = artifacts['feature_cols']
-
-    X = df[feature_cols].values
-    X_scaled = scaler.transform(X)
-
-    y_pred = clf.predict(X_scaled)
-    proba = clf.predict_proba(X_scaled).max(axis=1)
-
-    df['predicted_label'] = le.inverse_transform(y_pred)
-    df['confidence'] = proba
-
-    # Thêm xác suất từng lớp (tùy chọn)
-    proba_df = pd.DataFrame(
-        clf.predict_proba(X_scaled),
-        columns=[f'prob_{cls}' for cls in le.classes_]
-    )
-    df = pd.concat([df, proba_df], axis=1)
-
-    return df
-
-# ========== MAIN ==========
-if __name__ == '__main__':
-    # 1. Train
-    labeled_df = load_labeled_data(LABELED_CSV_PATH)
-    clf, scaler, le = train_model(labeled_df)
-
-    # 2. Predict unlabeled (chỉ chạy nếu file tồn tại)
-    if UNLABELED_CSV_PATH.exists():
-        unlabeled_df = load_unlabeled_data(UNLABELED_CSV_PATH)
-        results = predict_unlabeled(
-            joblib.load(MODEL_OUTPUT_PATH), unlabeled_df
-        )
-        results.to_csv(PREDICTION_OUTPUT_PATH, index=False)
-        logger.info(f"Đã lưu kết quả dự đoán tại: {PREDICTION_OUTPUT_PATH}")
-        print("\n=== 5 mẫu dự đoán đầu tiên ===")
-        print(results[['predicted_label', 'confidence'] + GAS_COLS].head())
-    else:
-        logger.warning(f"File unlabeled không tồn tại: {UNLABELED_CSV_PATH}")
+if __name__ == "__main__":
+    main()

@@ -1,3 +1,4 @@
+// src/components/chat/floating-chat.tsx
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -7,7 +8,7 @@ import { useDashboardStore } from "@/store/use-dashboard-store";
 import { cn } from "@/lib/utils";
 
 const SUGGESTIONS = [
-  "Which transformers are Critical right now?",
+  "Which transformers are High risk right now?",
   "Why is this transformer flagged?",
   "What does acetylene (C₂H₂) indicate?",
   "How is the severity score calculated?",
@@ -160,8 +161,8 @@ export function FloatingChat() {
         aria-label="Open DGA Assistant"
       >
         <Bot className="h-6 w-6" />
-        {payload && payload.transformer_summary.some((s) => s.latest_score >= 13) && (
-          <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-status-critical ring-2 ring-teal-800" />
+          {payload && payload.transformer_summary.some((s) => (s.ieee_status ?? 0) >= 3) && (
+          <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-status-high ring-2 ring-teal-800" />
         )}
       </motion.button>
 

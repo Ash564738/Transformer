@@ -1,8 +1,9 @@
+// src/app/analytics/page.tsx
 "use client";
 
 import { useDashboardStore } from "@/store/use-dashboard-store";
-import { StatCards } from "@/components/overview/stat-cards";
-import { RankingTable, RiskLegend } from "@/components/overview/ranking-table";
+import { StatCards } from "@/components/analytics/stat-cards";
+import { RankingTable, RiskLegend } from "@/components/analytics/ranking-table";
 import { EmptyState } from "@/components/layout/empty-state";
 
 export default function AnalyticsPage() {

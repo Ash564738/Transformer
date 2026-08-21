@@ -11,7 +11,13 @@ from config import config as cfg
 
 logger = logging.getLogger(__name__)
 
-
+L1_LIMITS = {
+    "h2": 100,
+    "ch4": 120,
+    "c2h2": 1,
+    "c2h4": 50,
+    "c2h6": 65,
+}
 # ============================================================
 # SAFE GAS / RATIO HELPERS
 # ============================================================
@@ -80,7 +86,7 @@ def _applicable_to_doernenburg(
         "c2h4": gases["c2h4"],
     }
 
-    l1 = cfg.L1_DOERNENBURG
+    l1 = L1_LIMITS
 
     high_gases = [
         gas
@@ -121,7 +127,7 @@ def _ratio_valid(
     of the gases forming that ratio exceeds its L1 limit.
     """
 
-    l1 = cfg.L1_DOERNENBURG
+    l1 = L1_LIMITS
 
     if pd.isna(numerator) or pd.isna(denominator):
         return False

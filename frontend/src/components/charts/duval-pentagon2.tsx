@@ -1,3 +1,4 @@
+// src/components/charts/duval-pentagon2.tsx
 "use client";
 
 import React, { useMemo, useState } from "react";

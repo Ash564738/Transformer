@@ -1,323 +1,309 @@
+# config.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List
+from typing import ClassVar, Dict, Tuple
+
 
 @dataclass
 class DiagnosticConfig:
-    """
-    DGA diagnostic configuration.
+    """Auditable configuration for DGA inference and maintenance ranking.
 
-    Standard basis:
-        IEEE Std C57.104-2019
-        Mineral-oil-immersed transformers
-
-    Important:
-        The concentration limits below are the L1 limits used by
-        the IEEE 2019 Doernenburg procedure.
-
-        IEEE C57.104-2019 does NOT recommend using a fixed
-        MIN_TDCG value such as 100 ppm as a universal "normal"
-        criterion. Therefore TDCG is not used as the normal gate.
+    Design principles:
+      * IEEE C57.104-2019 remains the primary DGA status engine.
+      * No hand-assigned diagnostic or severity weights are used.
+      * CRITICAL is an operational extreme-DGA extension, NOT IEEE Status 4.
+      * Transformer ordering is lexicographic over explicit evidence fields.
+      * Fault criticality is qualitative context only and never overrides IEEE status.
     """
 
     STANDARD: str = "IEEE C57.104-2019"
+    IEC_STANDARD: str = "IEC 60599:2022"
+
     FLUID_TYPE: str = "MINERAL_OIL"
     DGA_UNIT: str = "ppm"
 
-    # --------------------------------------------------------
-    # Fault grouping
-    # --------------------------------------------------------
-
-    FAULT_GROUPS: Dict[str, str] = field(default_factory=lambda: {
-        "NORMAL": "NORMAL",
-
-        "PD": "DISCHARGE",
-        "D1": "DISCHARGE", 
-        "D2": "DISCHARGE",
-
-        "T1": "THERMAL",
-        "T2": "THERMAL",
-        "T3": "THERMAL",
-        "T3_H": "THERMAL",
-        "THERMAL_OIL": "THERMAL",
-        "O": "THERMAL",
-
-        "THERMAL_CELLULOSE": "CELLULOSE",
-        "C": "CELLULOSE",
-
-        "S": "STRAY_GASSING",
-
-        "DT": "MIXED",
-        "MIXED": "MIXED",
-        "ABSTAIN": "ABSTAIN",
-    })
-
-    FAULT_SEVERITY_RANK = {
-        "NORMAL": 0,
-
-        "S": 1,
-        "O": 1,
-        "T1": 1,
-        "PD": 1,
-
-        "T2": 2,
-        "T3_H": 2,
-
-        "T3": 3,
-        "D1": 3,
-        "C": 3,
-
-        "D2": 4,
-
-        "DT": None,
-        "MIXED": None,
-        "ABSTAIN": None,
-    }
-
-    # --------------------------------------------------------
-    # Consensus
-    #
-    # Do NOT double-count Duval Pentagon P1 and P2.
-    # Only one Pentagon should be included in this consensus.
-    # --------------------------------------------------------
-
-    METHOD_WEIGHTS: Dict[str, float] = field(default_factory=lambda: {
-        "duval_pentagon_p2_fault": 1.0,
-        "duval_triangle_fault": 1.0,
-        "iec_fault": 1.0,
-        "rogers_fault": 1.0,
-        "doernenburg_fault": 1.0,
-        "keygas_fault": 1.0,
-    })
-
-    MIXED_THRESHOLD: float = 0.65
-    MIN_SECOND_GROUP_WEIGHT_RATIO: float = 0.30
-
-    # Minimum number of independent diagnostic votes required
-    # before calling a result a strong consensus.
-    MIN_ACTIVE_METHODS_FOR_CONFIDENCE: int = 1
-
-    # --------------------------------------------------------
-    # IEEE C57.104-2019 L1 concentrations
-    #
-    # Doernenburg applicability limits
-    # --------------------------------------------------------
-
-    L1_LIMITS: Dict[str, float] = field(default_factory=lambda: {
-        "h2": 100.0,
-        "ch4": 120.0,
-        "co": 350.0,
-        "c2h2": 1.0,
-        "c2h4": 50.0,
-        "c2h6": 65.0,
-    })
-
-    # Explicit copy for Doernenburg.
-    L1_DOERNENBURG: Dict[str, float] = field(default_factory=lambda: {
-        "h2": 100.0,
-        "ch4": 120.0,
-        "co": 350.0,
-        "c2h2": 1.0,
-        "c2h4": 50.0,
-        "c2h6": 65.0,
-    })
-
-    # --------------------------------------------------------
-    # Rogers applicability
-    #
-    # Rogers is a ratio diagnostic method.
-    # IEEE warns that it should not be used on samples with
-    # very low gas levels.
-    #
-    # We therefore use the L1 limits as the conservative
-    # applicability gate.
-    # --------------------------------------------------------
-
-    DIAGNOSTIC_GASES: List[str] = field(default_factory=lambda: [
-        "h2",
-        "ch4",
-        "c2h2",
-        "c2h4",
-        "c2h6",
-    ])
-
-    # --------------------------------------------------------
-    # Rogers ratio boundaries
-    #
-    # R1 = C2H2 / C2H4
-    # R2 = CH4 / H2
-    # R3 = C2H4 / C2H6
-    #
-    # IEEE C57.104-2019:
-    #
-    # R1:
-    #   < 0.1       -> code 0
-    #   0.1..3.0    -> code 1
-    #   > 3.0       -> code 2
-    #
-    # R2:
-    #   < 0.1       -> code 0
-    #   0.1..1.0    -> code 1
-    #   > 1.0       -> code 2
-    #
-    # R3:
-    #   < 1.0       -> code 0
-    #   1.0..3.0    -> code 1
-    #   > 3.0       -> code 2
-    # --------------------------------------------------------
-
-    ROGERS_R1_LOW: float = 0.1
-    ROGERS_R1_HIGH: float = 3.0
-
-    ROGERS_R2_LOW: float = 0.1
-    ROGERS_R2_HIGH: float = 1.0
-
-    ROGERS_R3_LOW: float = 1.0
-    ROGERS_R3_HIGH: float = 3.0
-
-    # --------------------------------------------------------
-    # Doernenburg ratio limits - mineral oil
-    #
-    # R1 = CH4 / H2
-    # R2 = C2H2 / C2H4
-    # R3 = C2H2 / CH4
-    # R4 = C2H6 / C2H2
-    #
-    # IEEE C57.104-2019 Annex G
-    # --------------------------------------------------------
-
-    DOERNENBURG_OIL_LIMITS: Dict[str, Dict[str, float | str]] = field(
-        default_factory=lambda: {
-            "THERMAL": {
-                "r1": "gt_1.0",
-                "r2": "lt_0.75",
-                "r3": "lt_0.3",
-                "r4": "gt_0.4",
-            },
-            "PD": {
-                "r1": "lt_0.1",
-                "r2": "not_significant",
-                "r3": "lt_0.3",
-                "r4": "gt_0.4",
-            },
-            "D2": {
-                "r1": "gt_0.1_lt_1.0",
-                "r2": "gt_0.75",
-                "r3": "gt_0.3",
-                "r4": "lt_0.4",
-            },
-        }
+    BENCHMARK_FINE_CLASSES: ClassVar[Tuple[str, ...]] = (
+        "NORMAL", "PD", "D1", "D2", "T1", "T2", "T3",
     )
 
-    # --------------------------------------------------------
-    # Duval Triangle 1
-    #
-    # Coordinates are expressed as percentages:
-    #
-    # %CH4
-    # %C2H4
-    # %C2H2
-    #
-    # The actual classification polygons are implemented in
-    # dga/duval_triangle.py.
-    # --------------------------------------------------------
+    BENCHMARK_AMBIGUOUS_FINE_CLASSES: ClassVar[Tuple[str, ...]] = ("T1_T2",)
 
-    DUVAL_TRIANGLE_GASES: List[str] = field(default_factory=lambda: [
-        "ch4",
-        "c2h4",
-        "c2h2",
-    ])
-
-    DUVAL_MIN_TOTAL_GAS: float = 0.1
-
-    # --------------------------------------------------------
-    # Legacy / UI severity
-    #
-    # These values are NOT claimed to be the IEEE 2019
-    # statistical normal limits.
-    #
-    # Keep only for backward compatibility with existing UI.
-    # --------------------------------------------------------
-
-    SEVERITY_LABELS: List[str] = field(default_factory=lambda: [
+    COARSE_FAULT_GROUPS: ClassVar[Tuple[str, ...]] = (
         "NORMAL",
-        "WATCHLIST",
-        "WARNING",
-        "CRITICAL",
-    ])
+        "DISCHARGE",
+        "THERMAL",
+        "CELLULOSE",
+        "STRAY_GASSING",
+        "MIXED",
+        "ABSTAIN",
+    )
 
-    SEVERITY_TO_UI: Dict[str, str] = field(default_factory=lambda: {
-        "CRITICAL": "Severe",
-        "WARNING": "Moderate",
-        "WATCHLIST": "Low",
-        "NORMAL": "Low",
-    })
+    FINE_FAULT_CLASSES: ClassVar[Tuple[str, ...]] = (
+        "NORMAL", "PD", "D1", "D2", "T1", "T2", "T3",
+        "T1_T2", "T3_H", "DT", "THERMAL_OIL", "THERMAL_CELLULOSE",
+        "C", "O", "S", "MIXED", "ABSTAIN",
+    )
 
-    SEVERITY_ACCENT: Dict[str, str] = field(default_factory=lambda: {
-        "Severe": "red",
-        "Moderate": "amber",
-        "Low": "green",
-    })
+    FAULT_GROUPS: ClassVar[Dict[str, str]] = {
+        "NORMAL": "NORMAL",
+        "PD": "DISCHARGE", "D1": "DISCHARGE", "D2": "DISCHARGE",
+        "T1": "THERMAL", "T2": "THERMAL", "T3": "THERMAL",
+        "T1_T2": "THERMAL", "T3_H": "THERMAL",
+        "THERMAL_OIL": "THERMAL", "O": "THERMAL",
+        "THERMAL_CELLULOSE": "CELLULOSE", "C": "CELLULOSE",
+        "S": "STRAY_GASSING",
+        "DT": "MIXED", "MIXED": "MIXED", "ABSTAIN": "ABSTAIN",
+    }
 
-    # --------------------------------------------------------
-    # Consensus policy
-    # --------------------------------------------------------
+    # Qualitative context only. This mapping is intentionally NOT a numeric
+    # severity scale and is never included in maintenance ranking.
+    # It is used to help engineers interpret the diagnosed fault type.
+    FAULT_CRITICALITY_CONTEXT: ClassVar[Dict[str, str]] = {
+        "NORMAL": "NO_FAULT",
+        "PD": "LOWER_URGENCY",
+        "D1": "ELEVATED_URGENCY",
+        "D2": "HIGH_CONCERN",
+        "T1": "LOWER_URGENCY",
+        "T2": "ELEVATED_URGENCY",
+        "T3": "HIGH_CONCERN",
+        "T1_T2": "ELEVATED_URGENCY",
+        "T3_H": "HIGH_CONCERN",
+        "THERMAL_OIL": "ELEVATED_URGENCY",
+        "THERMAL_CELLULOSE": "HIGH_CONCERN",
+        "C": "HIGH_CONCERN",
+        "O": "CONTEXT_DEPENDENT",
+        "S": "CONTEXT_DEPENDENT",
+        "DT": "CONTEXT_DEPENDENT",
+        "MIXED": "CONTEXT_DEPENDENT",
+        "ABSTAIN": "UNKNOWN",
+    }
 
-    # Rogers NORMAL is a valid Rogers case, but NORMAL is not
-    # treated as a fault vote.
-    COUNT_NORMAL_AS_FAULT_VOTE: bool = False
+    FAULT_CRITICALITY_SOURCE: str = (
+        "Qualitative fault-context layer informed by the standard fault taxonomy and "
+        "transformer diagnostic literature; not a numeric severity weight and not used "
+        "to override IEEE DGA status."
+    )
 
-    # DT is ambiguous by definition. It contributes to both
-    # thermal and discharge evidence but is not allowed to
-    # manufacture a specific fault label by itself.
-    DT_IS_AMBIGUOUS: bool = True
+    BENCHMARK_FAULT_ALIASES: ClassVar[Dict[str, str]] = {
+        "NORMAL": "NORMAL",
+        "PD": "PD", "PARTIAL_DISCHARGE": "PD", "PARTIAL DISCHARGE": "PD", "CORONA": "PD",
+        "D1": "D1", "LOW_ENERGY_DISCHARGE": "D1", "LOW ENERGY DISCHARGE": "D1",
+        "SPARK_DISCHARGE": "D1", "SPARK DISCHARGE": "D1",
+        "D2": "D2", "HIGH_ENERGY_DISCHARGE": "D2", "HIGH ENERGY DISCHARGE": "D2",
+        "ARC_DISCHARGE": "D2", "ARC DISCHARGE": "D2", "ARCING": "D2",
+        "T1": "T1", "LOW_TEMPERATURE_THERMAL": "T1", "LOW TEMPERATURE THERMAL": "T1",
+        "LOW_TEMPERATURE_OVERHEATING": "T1", "LOW TEMPERATURE OVERHEATING": "T1",
+        "T2": "T2", "MEDIUM_TEMPERATURE_THERMAL": "T2", "MEDIUM TEMPERATURE THERMAL": "T2",
+        "MIDDLE_TEMPERATURE_OVERHEATING": "T2", "MIDDLE TEMPERATURE OVERHEATING": "T2",
+        "T3": "T3", "HIGH_TEMPERATURE_THERMAL": "T3", "HIGH TEMPERATURE THERMAL": "T3",
+        "HIGH_TEMPERATURE_OVERHEATING": "T3", "HIGH TEMPERATURE OVERHEATING": "T3",
+        "T1_T2": "T1_T2", "T1/T2": "T1_T2",
+        "LOW_MIDDLE_TEMPERATURE_OVERHEATING": "T1_T2",
+        "LOW/MIDDLE-TEMPERATURE OVERHEATING": "T1_T2",
+        "LOW/MIDDLE TEMPERATURE OVERHEATING": "T1_T2",
+        "LOW MIDDLE TEMPERATURE OVERHEATING": "T1_T2",
+        "THERMAL_OIL": "THERMAL_OIL", "O": "O",
+        "THERMAL_CELLULOSE": "THERMAL_CELLULOSE",
+        "CELLULOSE": "C", "C": "C",
+        "STRAY_GASSING": "S", "S": "S",
+        "DT": "DT", "MIXED": "MIXED", "ABSTAIN": "ABSTAIN",
+    }
+
+    DIAGNOSTIC_METHODS: ClassVar[Tuple[str, ...]] = (
+        "keygas_fault", "iec_fault", "rogers_fault",
+        "doernenburg_fault", "duval_triangle_fault",
+        "duval_pentagon_p1_fault", "duval_pentagon_p2_fault",
+    )
+    DIAGNOSTIC_METHOD_TO_COLUMN: ClassVar[Dict[str, str]] = {
+        m: m for m in DIAGNOSTIC_METHODS
+    }
+
+    COMMON_BENCHMARK_GASES: ClassVar[Tuple[str, ...]] = (
+        "h2", "ch4", "c2h6", "c2h4", "c2h2",
+    )
+    FULL_EXTERNAL_GASES: ClassVar[Tuple[str, ...]] = (
+        "h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2",
+    )
+    ALL_DGA_GASES: ClassVar[Tuple[str, ...]] = FULL_EXTERNAL_GASES
+    SEVERITY_REQUIRED_GASES: ClassVar[Tuple[str, ...]] = FULL_EXTERNAL_GASES
+
+    TABLE_1_90TH: ClassVar[Dict[str, Dict[str, Dict[str, float]]]] = {
+        "LE_0_2": {
+            "unknown": {"h2": 80, "ch4": 90, "c2h6": 90, "c2h4": 50, "c2h2": 1, "co": 900, "co2": 9000},
+            "1_9": {"h2": 75, "ch4": 45, "c2h6": 30, "c2h4": 20, "c2h2": 1, "co": 900, "co2": 5000},
+            "10_30": {"h2": 90, "ch4": 90, "c2h6": 90, "c2h4": 50, "c2h2": 1, "co": 900, "co2": 10000},
+            "gt_30": {"h2": 100, "ch4": 110, "c2h6": 150, "c2h4": 90, "c2h2": 1, "co": 900, "co2": 10000},
+        },
+        "GT_0_2": {
+            "unknown": {"h2": 40, "ch4": 20, "c2h6": 15, "c2h4": 50, "c2h2": 2, "co": 500, "co2": 5000},
+            "1_9": {"h2": 40, "ch4": 20, "c2h6": 15, "c2h4": 25, "c2h2": 2, "co": 500, "co2": 3500},
+            "10_30": {"h2": 40, "ch4": 20, "c2h6": 15, "c2h4": 60, "c2h2": 2, "co": 500, "co2": 5500},
+            "gt_30": {"h2": 40, "ch4": 20, "c2h6": 15, "c2h4": 60, "c2h2": 2, "co": 500, "co2": 5500},
+        },
+    }
+
+    TABLE_2_95TH: ClassVar[Dict[str, Dict[str, Dict[str, float]]]] = {
+        "LE_0_2": {
+            "unknown": {"h2": 200, "ch4": 150, "c2h6": 175, "c2h4": 100, "c2h2": 2, "co": 1100, "co2": 12500},
+            "1_9": {"h2": 200, "ch4": 100, "c2h6": 70, "c2h4": 40, "c2h2": 2, "co": 1100, "co2": 7000},
+            "10_30": {"h2": 200, "ch4": 150, "c2h6": 175, "c2h4": 95, "c2h2": 2, "co": 1100, "co2": 14000},
+            "gt_30": {"h2": 200, "ch4": 250, "c2h6": 175, "c2h4": 175, "c2h2": 4, "co": 1100, "co2": 14000},
+        },
+        "GT_0_2": {
+            "unknown": {"h2": 90, "ch4": 50, "c2h6": 40, "c2h4": 100, "c2h2": 7, "co": 600, "co2": 7000},
+            "1_9": {"h2": 90, "ch4": 60, "c2h6": 30, "c2h4": 80, "c2h2": 7, "co": 600, "co2": 5000},
+            "10_30": {"h2": 90, "ch4": 60, "c2h6": 40, "c2h4": 125, "c2h2": 7, "co": 600, "co2": 8000},
+            "gt_30": {"h2": 90, "ch4": 30, "c2h6": 40, "c2h4": 125, "c2h2": 7, "co": 600, "co2": 8000},
+        },
+    }
+
+    TABLE_3_DELTA_95TH: ClassVar[Dict[str, Dict[str, float | None]]] = {
+        "LE_0_2": {"h2": 40, "ch4": 30, "c2h6": 25, "c2h4": 20, "c2h2": None, "co": 250, "co2": 2500},
+        "GT_0_2": {"h2": 25, "ch4": 10, "c2h6": 7, "c2h4": 20, "c2h2": None, "co": 175, "co2": 1750},
+    }
+
+    TABLE_4_RATE_95TH: ClassVar[Dict[str, Dict[str, Dict[str, float | None]]]] = {
+        "LE_0_2": {
+            "4_9": {"h2": 25, "ch4": 4, "c2h6": 3, "c2h4": 7, "c2h2": None, "co": 100, "co2": 1000},
+            "10_24": {"h2": 10, "ch4": 3, "c2h6": 2, "c2h4": 5, "c2h2": None, "co": 80, "co2": 800},
+        },
+        "GT_0_2": {
+            "4_9": {"h2": 50, "ch4": 15, "c2h6": 15, "c2h4": 10, "c2h2": None, "co": 200, "co2": 1750},
+            "10_24": {"h2": 20, "ch4": 10, "c2h6": 9, "c2h4": 7, "c2h2": None, "co": 100, "co2": 1000},
+        },
+    }
+
+    SEVERITY_LABELS: ClassVar[Tuple[str, ...]] = (
+        "INSUFFICIENT_DATA", "STATUS_1", "STATUS_2", "STATUS_3"
+    )
+    SEVERITY_ORDER: ClassVar[Dict[str, int]] = {
+        "INSUFFICIENT_DATA": 0, "STATUS_1": 1, "STATUS_2": 2, "STATUS_3": 3,
+    }
+    ORDINAL_TO_SEVERITY: ClassVar[Dict[int, str]] = {v: k for k, v in SEVERITY_ORDER.items()}
+
+    RATE_MIN_POINTS: int = 3
+    RATE_MAX_POINTS: int = 6
+    RATE_MIN_MONTHS: float = 4.0
+    RATE_MAX_MONTHS: float = 24.0
+    MIN_RECORDS_FOR_OBSERVED_TREND: int = 3
+
+    USE_WEIGHTED_SEVERITY_SCORE: bool = False
+    USE_FAILURE_PROBABILITY_AS_SEVERITY: bool = False
+
+    # Operational extension. This is explicitly NOT an IEEE Status 4.
+    # CRITICAL is assigned only to Status-3 transformers on the current-evidence
+    # Pareto frontier. No arbitrary numeric multiplier or hand weight is used.
+    CRITICAL_RULE: str = "IEEE_STATUS_3_CURRENT_EVIDENCE_PARETO_FRONTIER"
+    CRITICAL_REFERENCE: str = (
+        "Operational multi-criterion Pareto-frontier rule over current standardized DGA evidence; "
+        "not an IEEE C57.104-2019 severity level."
+    )
+
+    MAINTENANCE_PRIORITY_LABELS: ClassVar[Dict[int, str]] = {
+        4: "CRITICAL",
+        3: "HIGH_RISK",
+        2: "WATCH",
+        1: "NORMAL",
+        0: "DATA_REVIEW",
+    }
+
+    RANKING_POLICY: ClassVar[Tuple[str, ...]] = (
+        "maintenance_priority",
+        "current_status",
+        "current_status3_standardized_exceedance",
+        "current_delta_exceedance",
+        "current_standard_trigger_count",
+        "historical_max_status_before_current",
+        "historical_max_standardized_exceedance",
+        "same_fault_recurrence_fraction",
+        "worsening_transition_ratio",
+    )
+    RANKING_TIE_POLICY: str = (
+        "Identical evidence vectors receive the same rank; missing history never lowers current priority."
+    )
+
+    WEAK_ABSTAIN_LABEL: int = -1
+    WEAK_COARSE_GROUPS: ClassVar[Tuple[str, ...]] = (
+        "NORMAL", "DISCHARGE", "THERMAL", "CELLULOSE", "STRAY_GASSING", "MIXED",
+    )
+    WEAK_FINE_GROUPS: ClassVar[Tuple[str, ...]] = BENCHMARK_FINE_CLASSES
+
+    CLASSICAL_ML_MODELS: ClassVar[Tuple[str, ...]] = (
+        "logistic_regression", "random_forest", "extra_trees",
+        "svm_rbf", "hist_gradient_boosting", "knn", "sklearn_mlp",
+    )
+    STUDENT_FEATURE_MODES: ClassVar[Tuple[str, ...]] = (
+        "gas_only", "gas_plus_traditional",
+    )
+    PRIMARY_SELECTION_METRIC: str = "macro_f1"
+    RANDOM_STATE: int = 42
+    DEV_SIZE: float = 0.20
+    TEST_SIZE: float = 0.20
+    BOOTSTRAP_ITERATIONS: int = 2000
+    BOOTSTRAP_CONFIDENCE: float = 0.95
+
+    FAULT_METRICS: ClassVar[Tuple[str, ...]] = (
+        "accuracy", "balanced_accuracy", "macro_precision", "macro_recall",
+        "macro_f1", "weighted_f1", "coverage", "selective_accuracy",
+    )
+    SEVERITY_METRICS: ClassVar[Tuple[str, ...]] = (
+        "accuracy", "balanced_accuracy", "macro_f1", "ordinal_mae",
+        "quadratic_weighted_kappa",
+    )
+
+    UNLABELED_RAW_COLUMNS: ClassVar[Tuple[str, ...]] = (
+        "loc", "name", "codetx", "mfg", "ser", "kv", "mva", "year_energized",
+        "sample_day", "tested_day", "o2", "n2", "co2", "co", "h2", "ch4",
+        "c2h2", "c2h4", "c2h6", "c3h6", "c3h8", "tcg", "temp", "water", "nb",
+    )
+
+    BACKEND_ROOT: Path = field(default_factory=lambda: Path(__file__).resolve().parent, init=False, repr=False)
+
+    @property
+    def DATASET_DIR(self) -> Path:
+        return self.BACKEND_ROOT / "dataset"
+
+    @property
+    def DATABASE_DIR(self) -> Path:
+        return self.BACKEND_ROOT / "database"
+
+    @property
+    def MODEL_DIR(self) -> Path:
+        return self.BACKEND_ROOT / "models"
+
+    @property
+    def REPORT_DIR(self) -> Path:
+        return self.BACKEND_ROOT / "reports"
+
+    def ensure_directories(self) -> None:
+        for directory in (
+            self.DATASET_DIR,
+            self.DATABASE_DIR,
+            self.MODEL_DIR,
+            self.REPORT_DIR,
+            self.DATASET_DIR / "processed",
+            self.REPORT_DIR / "benchmark",
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
 
 
 config = DiagnosticConfig()
+config.ensure_directories()
 
+BACKEND_ROOT = config.BACKEND_ROOT
+DATASET_DIR = config.DATASET_DIR
+DATABASE_DIR = config.DATABASE_DIR
+MODEL_DIR = config.MODEL_DIR
+REPORT_DIR = config.REPORT_DIR
 
-# ============================================================
-# Paths
-# ============================================================
-
-BACKEND_ROOT = Path(__file__).resolve().parent
-
-DATASET_DIR = BACKEND_ROOT / "dataset"
-DATASET_DIR.mkdir(parents=True, exist_ok=True)
-
-DATABASE_DIR = BACKEND_ROOT / "database"
-DATABASE_DIR.mkdir(parents=True, exist_ok=True)
-
-MODEL_DIR = BACKEND_ROOT / "models"
-MODEL_DIR.mkdir(parents=True, exist_ok=True)
-
-REPORT_DIR = BACKEND_ROOT / "reports"
-REPORT_DIR.mkdir(parents=True, exist_ok=True)
-
-
-# ============================================================
-# Canonical fault labels
-# ============================================================
-
-FAULT_LABELS = [
-    "NORMAL",
-    "PD",
-    "D1",
-    "D2",
-    "DT",
-    "T1",
-    "T2",
-    "T3",
-    "T3_H",
-    "THERMAL_OIL",
-    "THERMAL_CELLULOSE",
-    "C",
-    "O",
-    "S",
-    "ABSTAIN",
-    "MIXED",
-]
-
-SEVERITY_LABELS = config.SEVERITY_LABELS
+FAULT_LABELS = list(config.FINE_FAULT_CLASSES)
+SEVERITY_LABELS = list(config.SEVERITY_LABELS)
+COARSE_FAULT_GROUPS = list(config.COARSE_FAULT_GROUPS)
+WEAK_GROUPS = list(config.WEAK_COARSE_GROUPS)
+DIAGNOSTIC_METHODS = list(config.DIAGNOSTIC_METHODS)
+CORE_GASES = list(config.FULL_EXTERNAL_GASES)
+COMBUSTIBLE_GASES = ["h2", "ch4", "c2h6", "c2h4", "c2h2", "co"]
+OPTIONAL_GASES = ["o2", "n2", "c3h6", "c3h8"]
+SEVERITY_ORDINAL = dict(config.SEVERITY_ORDER)
