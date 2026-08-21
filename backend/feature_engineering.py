@@ -159,10 +159,10 @@ def filter_rows_for_model(df: pd.DataFrame, max_missing_core: int = 3) -> pd.Dat
 
 def impute_optional_context_by_transformer(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
+    # Only static metadata may be propagated forward. O2/N2 are sample-specific
+    # inputs for IEEE screening and must remain missing when not measured.
     if "year_energized" in out.columns:
         out["year_energized"] = out.groupby("transformer_id", sort=False)["year_energized"].transform("ffill")
-    for col in ["o2", "n2"]:
-        if col in out.columns: out[col] = out.groupby("transformer_id", sort=False)[col].transform(lambda s: s.ffill())
     return out
 
 def add_missingness_flags(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:

@@ -29,6 +29,7 @@ class DiagnosticConfig:
     )
 
     BENCHMARK_AMBIGUOUS_FINE_CLASSES: ClassVar[Tuple[str, ...]] = ("T1_T2",)
+    BENCHMARK_AMBIGUOUS_ACCEPTED_PREDICTIONS: ClassVar[Dict[str, Tuple[str, ...]]] = {"T1_T2": ("T1", "T2")}
 
     COARSE_FAULT_GROUPS: ClassVar[Tuple[str, ...]] = (
         "NORMAL",
@@ -192,17 +193,14 @@ class DiagnosticConfig:
     USE_WEIGHTED_SEVERITY_SCORE: bool = False
     USE_FAILURE_PROBABILITY_AS_SEVERITY: bool = False
 
-    # Operational extension. This is explicitly NOT an IEEE Status 4.
-    # CRITICAL is assigned only to Status-3 transformers on the current-evidence
-    # Pareto frontier. No arbitrary numeric multiplier or hand weight is used.
-    CRITICAL_RULE: str = "IEEE_STATUS_3_CURRENT_EVIDENCE_PARETO_FRONTIER"
+    # Deprecated compatibility fields. No additional Status-4/Critical class is used.
+    CRITICAL_RULE: str = "NOT_USED"
     CRITICAL_REFERENCE: str = (
-        "Operational multi-criterion Pareto-frontier rule over current standardized DGA evidence; "
-        "not an IEEE C57.104-2019 severity level."
+        "No additional severity class is created. IEEE Status 1/2/3 remain the condition classes; "
+        "fleet priority is an explicit lexicographic evidence ranking."
     )
 
     MAINTENANCE_PRIORITY_LABELS: ClassVar[Dict[int, str]] = {
-        4: "CRITICAL",
         3: "HIGH_RISK",
         2: "WATCH",
         1: "NORMAL",
@@ -210,10 +208,11 @@ class DiagnosticConfig:
     }
 
     RANKING_POLICY: ClassVar[Tuple[str, ...]] = (
-        "maintenance_priority",
         "current_status",
         "current_status3_standardized_exceedance",
-        "current_delta_exceedance",
+        "current_table2_exceedance_count",
+        "current_table4_exceedance_count",
+        "current_table3_exceedance_count",
         "current_standard_trigger_count",
         "historical_max_status_before_current",
         "historical_max_standardized_exceedance",
@@ -238,6 +237,9 @@ class DiagnosticConfig:
         "gas_only", "gas_plus_traditional",
     )
     PRIMARY_SELECTION_METRIC: str = "macro_f1"
+    HYBRID_METHODS: ClassVar[Tuple[str, ...]] = (
+        "student_only", "agreement_only",
+    )
     RANDOM_STATE: int = 42
     DEV_SIZE: float = 0.20
     TEST_SIZE: float = 0.20

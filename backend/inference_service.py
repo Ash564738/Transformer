@@ -52,7 +52,7 @@ def _save_parquet(df, path: Path):
 def _run_external_research_benchmark(operational_df: pd.DataFrame, weak_students: dict, seed: int):
     logger.info("RESEARCH BENCHMARK START")
     try:
-        from train_unsupervised_models import (BENCHMARK_DIR, benchmark_traditional_combinations, benchmark_traditional_individual, benchmark_traditional_ppm_coverage, benchmark_weak_transfer, diagnostic_method_summary, load_labeled_csv_data)
+        from train_unsupervised_models import (BENCHMARK_DIR, benchmark_traditional_combinations, benchmark_traditional_individual, benchmark_traditional_ppm_coverage, benchmark_weak_transfer, benchmark_weak_traditional_hybrids, diagnostic_method_summary, load_labeled_csv_data)
         from consensus import apply_consensus, pairwise_label_agreement
         labeled_raw = load_labeled_csv_data()
         labeled = apply_consensus(labeled_raw)
@@ -80,10 +80,17 @@ def _run_external_research_benchmark(operational_df: pd.DataFrame, weak_students
                 weak_transfer = pd.DataFrame()
         else: weak_transfer = pd.DataFrame()
         if not weak_transfer.empty: _save_csv(weak_transfer, BENCHMARK_DIR / "weak_transfer_fault_benchmark.csv")
-        return {"status": "completed", "error": None, "traditional_individual": traditional_individual, "traditional_combinations": traditional_combinations, "traditional_ppm": traditional_ppm, "pairwise": pairwise, "method_summary": method_summary, "supervised": supervised, "weak_transfer": weak_transfer}
+        try:
+            hybrid = benchmark_weak_traditional_hybrids(labeled, weak_students, seed) if weak_students else pd.DataFrame()
+        except Exception:
+            logger.exception("Weak + traditional hybrid benchmark failed")
+            hybrid = pd.DataFrame()
+        if not hybrid.empty: _save_csv(hybrid, BENCHMARK_DIR / "weak_traditional_hybrid_benchmark.csv")
+        logger.info("Benchmark outputs | traditional=%d rows | combinations=%d | supervised=%d | weak_transfer=%d | hybrid=%d", len(traditional_individual), len(traditional_combinations), len(supervised), len(weak_transfer), len(hybrid))
+        return {"status": "completed", "error": None, "traditional_individual": traditional_individual, "traditional_combinations": traditional_combinations, "traditional_ppm": traditional_ppm, "pairwise": pairwise, "method_summary": method_summary, "supervised": supervised, "weak_transfer": weak_transfer, "hybrid": hybrid}
     except Exception:
         logger.exception("External research benchmark failed")
-        return {"status": "failed", "error": "External research benchmark failed.", "traditional_individual": pd.DataFrame(), "traditional_combinations": pd.DataFrame(), "traditional_ppm": pd.DataFrame(), "pairwise": pd.DataFrame(), "method_summary": pd.DataFrame(), "supervised": pd.DataFrame(), "weak_transfer": pd.DataFrame()}
+        return {"status": "failed", "error": "External research benchmark failed.", "traditional_individual": pd.DataFrame(), "traditional_combinations": pd.DataFrame(), "traditional_ppm": pd.DataFrame(), "pairwise": pd.DataFrame(), "method_summary": pd.DataFrame(), "supervised": pd.DataFrame(), "weak_transfer": pd.DataFrame(), "hybrid": pd.DataFrame()}
 
 def _run_weak_students(df_coarse, df_fine, seed):
     try:
@@ -129,7 +136,7 @@ def _apply_research_students(df: pd.DataFrame, weak_students: dict):
         for key, artifact in artifacts.items():
             try:
                 feature_names = artifact["features"]
-                X = _align_feature_frame(out, feature_names, granularity).to_numpy(np.float32)
+                X = _align_feature_frame(out, feature_names, granularity)
                 model = artifact["model"]
                 labels = list(artifact["labels"])
                 raw_prediction = model.predict(X)
@@ -194,9 +201,12 @@ def _prepare_student_matrix(df, feature_columns):
     return df[feature_columns].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
 
 def _validate_student_artifact(artifact):
-    if not isinstance(artifact, dict): return False
-    if artifact.get("model") is None: return False
-    if not artifact.get("labels"): return False
+    if not isinstance(artifact, dict):
+        return False
+    if artifact.get("model") is None or not artifact.get("labels"):
+        return False
+    if str(artifact.get("granularity", "")).lower() != "fine":
+        return False
     features = artifact.get("feature_cols", artifact.get("features", cfg.COMMON_BENCHMARK_GASES))
     return bool(features)
 
@@ -212,24 +222,47 @@ def _load_student_model():
     return artifact
 
 def _train_student_fallback(df_weak: pd.DataFrame):
-    target = next((c for c in ("weak_coarse_fault_group", "weak_fault_group") if c in df_weak.columns), None)
-    if target is None: raise ValueError("No weak coarse target column found.")
-    clean = df_weak[df_weak[target].notna()].copy()
-    clean[target] = clean[target].astype(str).str.upper().str.strip()
-    clean = clean[~clean[target].isin({"ABSTAIN", "", "NAN", "NONE"})].copy()
-    if clean.empty: raise ValueError("No usable weak-labeled rows remain for student-model training.")
-    if clean[target].nunique() < 2: raise ValueError("Student model requires at least two weak-labeled classes.")
+    target = "weak_fine_fault"
+    abstain_column = "weak_fine_is_ABSTAIN"
+    if target not in df_weak.columns:
+        raise ValueError("No weak fine target column found for production fallback.")
+    clean = df_weak.copy()
+    if abstain_column in clean.columns:
+        clean = clean[~clean[abstain_column].astype(bool)]
+    clean[target] = clean[target].map(normalize_fault)
+    clean = clean[clean[target].isin(cfg.BENCHMARK_FINE_CLASSES)].copy()
+    if clean.empty:
+        raise ValueError("No usable weak fine labels remain for student-model training.")
+    if clean[target].nunique() < 2:
+        raise ValueError("Production fine student requires at least two classes.")
     feature_columns = _student_feature_columns()
     X = _prepare_student_matrix(clean, feature_columns)
     y = clean[target].astype(str).to_numpy()
-    model = Pipeline(steps=[("imputer", SimpleImputer(strategy="median", add_indicator=True)), ("classifier", ExtraTreesClassifier(n_estimators=500, random_state=cfg.RANDOM_STATE, n_jobs=-1))])
+    model = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="median", add_indicator=True)),
+        ("classifier", ExtraTreesClassifier(n_estimators=500, class_weight="balanced", random_state=cfg.RANDOM_STATE, n_jobs=-1)),
+    ])
     model.fit(X, y)
     classifier = model.named_steps["classifier"]
     classes = [str(v) for v in classifier.classes_]
-    class_counts = pd.Series(y).value_counts().sort_index().to_dict()
-    artifact = {"model": model, "feature_mode": "gas_only", "feature_cols": feature_columns, "features": feature_columns, "diagnostic_methods": [], "labels": classes, "model_name": "extra_trees", "training_type": "weak_supervision_runtime_fallback", "training_dataset": "operational_unlabeled_dataset", "target_column": target, "class_counts": {str(k): int(v) for k, v in class_counts.items()}, "uses_manual_weights": False, "uses_diagnostic_method_weights": False}
+    artifact = {
+        "model": model,
+        "granularity": "fine",
+        "feature_mode": "gas_only",
+        "feature_cols": feature_columns,
+        "features": feature_columns,
+        "diagnostic_methods": list(cfg.DIAGNOSTIC_METHODS),
+        "labels": classes,
+        "model_name": "extra_trees",
+        "training_type": "weak_supervision_runtime_fallback",
+        "training_dataset": "operational_unlabeled_dataset",
+        "target_column": target,
+        "class_counts": {str(k): int(v) for k, v in pd.Series(y).value_counts().items()},
+        "uses_manual_weights": False,
+        "uses_diagnostic_method_weights": False,
+    }
     joblib.dump(artifact, STUDENT_MODEL_PATH)
-    logger.info("Built runtime weak-label student model | rows=%d | classes=%s", len(clean), classes)
+    logger.info("Built runtime fine weak-label student model | rows=%d | classes=%s", len(clean), classes)
     return artifact
 
 def _apply_student(df: pd.DataFrame, artifact: dict):
@@ -349,13 +382,47 @@ def create_payload(df, ranking_df, comparison_df=None):
             series.append({"Sample Day": str(row["sample_day"]), "H2": _safe_float(row.get("h2", np.nan), 0.0), "C2H2": _safe_float(row.get("c2h2", np.nan), 0.0), "TDCG": _safe_float(row.get("tdcg", row.get("ieee_tdcg_ppm", np.nan)), 0.0), "pred_ensemble": status, "ieee_status": status, "ieee_status_label": row.get("ieee_dga_status_label", "INSUFFICIENT_DATA"), "status": _ui_status(status), "fault_type": fault, "fault_group": row.get("final_fault_group", row.get("consensus_fault_group", "ABSTAIN")), "fault_criticality_class": classify_fault_criticality(fault), "severity": row.get("severity_label_text", "INSUFFICIENT_DATA"), "critical_front": critical_front, "critical_evidence_ratio": critical_ratio, "confirmation_required": bool(row.get("ieee_confirmation_required", False))})
         timeseries[str(transformer_id)] = series
     status_series = pd.to_numeric(df.get("ieee_dga_status", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
-    priority_counts = ranking_df["maintenance_priority"].value_counts().reindex(["CRITICAL", "HIGH_RISK", "WATCH", "NORMAL", "DATA_REVIEW"]).fillna(0).astype(int).to_dict() if "maintenance_priority" in ranking_df.columns else {}
+    priority_counts = ranking_df["maintenance_priority"].value_counts().reindex(["HIGH_RISK", "WATCH", "NORMAL", "DATA_REVIEW"]).fillna(0).astype(int).to_dict() if "maintenance_priority" in ranking_df.columns else {}
     fault_context_counts = ranking_df["fault_criticality_class"].value_counts().to_dict() if "fault_criticality_class" in ranking_df.columns else {}
-    critical_queue = []
-    if "maintenance_priority" in ranking_df.columns:
-        for _, r in ranking_df[ranking_df["maintenance_priority"] == "CRITICAL"].head(20).iterrows():
-            critical_queue.append({"rank": _safe_int(r.get("rank", 0)), "transformer_id": r.get("transformer_id"), "maintenance_priority": r.get("maintenance_priority"), "ieee_status": _safe_int(r.get("transformer_overall_severity_level", 0)), "current_status3_standardized_exceedance": _safe_float(r.get("current_status3_standardized_exceedance", np.nan)), "critical_evidence_table": r.get("critical_evidence_table"), "critical_evidence_gas": r.get("critical_evidence_gas"), "critical_evidence_ratio": _safe_float(r.get("critical_evidence_ratio", np.nan)), "fault_type": r.get("current_fault", "ABSTAIN"), "fault_group": r.get("current_fault_group", "ABSTAIN"), "fault_criticality_class": r.get("fault_criticality_class", "UNKNOWN"), "recommended_action": r.get("recommended_action", "")})
-    dataset_summary = {"total_transformers": int(df["transformer_id"].nunique()), "total_rows": int(len(df)), "severity_status_1": int((status_series == 1).sum()), "severity_status_2": int((status_series == 2).sum()), "severity_status_3": int((status_series == 3).sum()), "severity_insufficient_data": int((status_series == 0).sum()), "maintenance_priority_counts": priority_counts, "critical_transformer_count": int(priority_counts.get("CRITICAL", 0)), "high_risk_transformer_count": int(priority_counts.get("HIGH_RISK", 0)), "critical_queue_top20": critical_queue, "critical_rule": cfg.CRITICAL_RULE, "critical_reference": cfg.CRITICAL_REFERENCE, "fault_criticality_context_counts": fault_context_counts, "fault_criticality_source": fault_criticality_source(), "traditional_abstain_rows": int((_normalize_series(df.get("consensus_fault", pd.Series("ABSTAIN", index=df.index))) == "ABSTAIN").sum()), "student_fallback_rows": int(df.get("student_used_as_fallback", pd.Series(False, index=df.index)).sum()), "student_traditional_physical_conflicts": int(df.get("final_fault_conflict", pd.Series(False, index=df.index)).sum())}
+    top_queue = []
+    if ranking_df is not None and not ranking_df.empty:
+        for _, r in ranking_df.head(20).iterrows():
+            top_queue.append({
+                "rank": _safe_int(r.get("rank", 0)),
+                "transformer_id": r.get("transformer_id"),
+                "maintenance_priority": r.get("maintenance_priority", "DATA_REVIEW"),
+                "severity_rank_within_class": _safe_int(r.get("severity_rank_within_class", 0)),
+                "severity_class_size": _safe_int(r.get("severity_class_size", 0)),
+                "ieee_status": _safe_int(r.get("transformer_overall_severity_level", 0)),
+                "current_standardized_exceedance": _safe_float(r.get("current_standardized_exceedance", np.nan)),
+                "current_status3_standardized_exceedance": _safe_float(r.get("current_status3_standardized_exceedance", np.nan)),
+                "table2_exceed_count": _safe_int(r.get("table2_exceed_count", 0)),
+                "table4_exceed_count": _safe_int(r.get("table4_exceed_count", 0)),
+                "table3_exceed_count": _safe_int(r.get("table3_exceed_count", 0)),
+                "fault_type": r.get("current_fault", "ABSTAIN"),
+                "fault_group": r.get("current_fault_group", "ABSTAIN"),
+                "recommended_action": r.get("recommended_action", ""),
+            })
+    dataset_summary = {
+        "total_transformers": int(df["transformer_id"].nunique()),
+        "total_rows": int(len(df)),
+        "severity_status_1": int((status_series == 1).sum()),
+        "severity_status_2": int((status_series == 2).sum()),
+        "severity_status_3": int((status_series == 3).sum()),
+        "severity_insufficient_data": int((status_series == 0).sum()),
+        "maintenance_priority_counts": priority_counts,
+        "high_risk_transformer_count": int(priority_counts.get("HIGH_RISK", 0)),
+        "watch_transformer_count": int(priority_counts.get("WATCH", 0)),
+        "normal_transformer_count": int(priority_counts.get("NORMAL", 0)),
+        "maintenance_queue_top20": top_queue,
+        "critical_rule": "NOT_USED",
+        "critical_reference": "No additional Status-4 severity class is used.",
+        "fault_criticality_context_counts": fault_context_counts,
+        "fault_criticality_source": fault_criticality_source(),
+        "traditional_abstain_rows": int((_normalize_series(df.get("consensus_fault", pd.Series("ABSTAIN", index=df.index))) == "ABSTAIN").sum()),
+        "student_fallback_rows": int(df.get("student_used_as_fallback", pd.Series(False, index=df.index)).sum()),
+        "student_traditional_physical_conflicts": int(df.get("final_fault_conflict", pd.Series(False, index=df.index)).sum()),
+    }
     return {"predictions": predictions, "rows": rows, "preview_rows": rows[:20], "transformer_summary": transformer_summary, "transformer_timeseries": timeseries, "dataset_summary": dataset_summary, "student_traditional_comparison": [] if comparison_df is None or comparison_df.empty else comparison_df.to_dict(orient="records"), "chat_context_payload": {"transformer_summary": transformer_summary, "dataset_summary": dataset_summary}}
 
 def _build_student_comparison(df):
@@ -376,7 +443,7 @@ def _build_student_comparison(df):
     return pd.DataFrame(rows)
 
 def _write_inference_metadata(df, artifact, weak_metadata, elapsed_seconds):
-    metadata = {"pipeline_type": "operational_unlabeled_inference", "n_rows": int(len(df)), "n_transformers": int(df["transformer_id"].nunique()), "diagnostic_methods": list(cfg.DIAGNOSTIC_METHODS), "diagnostic_consensus": "unweighted_majority_with_abstain", "diagnostic_method_weights": None, "severity_standard": cfg.STANDARD, "severity_is_weighted": False, "severity_uses_manual_weights": False, "severity_uses_nei": False, "severity_uses_anomaly": False, "severity_type": "IEEE_ORDINAL_STATUS", "ranking_policy": list(cfg.RANKING_POLICY), "ranking_is_weighted": False, "ranking_is_health_score": False, "ranking_uses_manual_weights": False, "ranking_uses_fault_criticality_as_severity": False, "ranking_score_type": "LEXICOGRAPHIC_STANDARD_EVIDENCE_RANK_NO_WEIGHTED_SUM", "maintenance_priority_extension": "STATUS3_CURRENT_EVIDENCE_PARETO_FRONT_NOT_IEEE_STATUS_4", "critical_rule": cfg.CRITICAL_RULE, "critical_reference": cfg.CRITICAL_REFERENCE, "fault_criticality_source": fault_criticality_source(), "student_model_name": artifact.get("model_name", "UNKNOWN"), "student_training_type": artifact.get("training_type", "UNKNOWN"), "student_features": artifact.get("feature_cols", cfg.COMMON_BENCHMARK_GASES), "weak_supervision_backend": weak_metadata.get("backend") if isinstance(weak_metadata, dict) else None, "weak_supervision_granularity": weak_metadata.get("granularity") if isinstance(weak_metadata, dict) else None, "processing_seconds": float(elapsed_seconds)}
+    metadata = {"pipeline_type": "operational_unlabeled_inference", "n_rows": int(len(df)), "n_transformers": int(df["transformer_id"].nunique()), "diagnostic_methods": list(cfg.DIAGNOSTIC_METHODS), "diagnostic_consensus": "unweighted_majority_with_abstain", "diagnostic_method_weights": None, "severity_standard": cfg.STANDARD, "severity_is_weighted": False, "severity_uses_manual_weights": False, "severity_uses_nei": False, "severity_uses_anomaly": False, "severity_type": "IEEE_ORDINAL_STATUS", "ranking_policy": list(cfg.RANKING_POLICY), "ranking_is_weighted": False, "ranking_is_health_score": False, "ranking_uses_manual_weights": False, "ranking_uses_fault_criticality_as_severity": False, "ranking_score_type": "LEXICOGRAPHIC_STANDARD_EVIDENCE_RANK_NO_WEIGHTED_SUM", "maintenance_priority_extension": "NONE; IEEE_STATUS_1_2_3_ONLY", "critical_rule": "NOT_USED", "critical_reference": cfg.CRITICAL_REFERENCE, "fault_criticality_source": fault_criticality_source(), "student_model_name": artifact.get("model_name", "UNKNOWN"), "student_training_type": artifact.get("training_type", "UNKNOWN"), "student_features": artifact.get("feature_cols", cfg.COMMON_BENCHMARK_GASES), "weak_supervision_backend": weak_metadata.get("backend") if isinstance(weak_metadata, dict) else None, "weak_supervision_granularity": weak_metadata.get("granularity") if isinstance(weak_metadata, dict) else None, "processing_seconds": float(elapsed_seconds)}
     INFERENCE_METADATA_PATH.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def process_dataframe(uploaded_df: pd.DataFrame):
@@ -429,7 +496,7 @@ def process_dataframe(uploaded_df: pd.DataFrame):
         artifact = _load_student_model()
         if artifact is None:
             logger.info("No compatible stored production student model.")
-            artifact = _train_student_fallback(df_weak_coarse)
+            artifact = _train_student_fallback(df_weak_fine)
         df_labeled = _apply_student(df_labeled, artifact)
         _log_stage(8, total_steps, "Combining traditional + weak + student evidence")
         df_labeled = _combine_consensus_and_student(df_labeled)
@@ -467,7 +534,7 @@ def process_dataframe(uploaded_df: pd.DataFrame):
         excel_status = "completed" if excel_path is not None else "failed"
         _write_inference_metadata(df_labeled, artifact, weak_metadata, elapsed)
         payload = create_payload(df_labeled, ranking_df, comparison_df)
-        payload["pipeline"] = {"status": "completed" if (research_status == "completed" and excel_status == "completed") else "completed_with_warnings", "rows": int(len(df_labeled)), "transformers": int(df_labeled["transformer_id"].nunique()), "elapsed_seconds": float(elapsed), "weak_backend": weak_metadata["backend"], "student_models": {"coarse": len(weak_students["coarse"]), "fine": len(weak_students["fine"])}, "research_benchmark": {"status": research_status, "traditional_rows": int(len(research_results["traditional_individual"])), "combination_rows": int(len(research_results["traditional_combinations"])), "supervised_rows": int(len(research_results["supervised"])), "weak_transfer_rows": int(len(research_results["weak_transfer"]))}, "excel": {"status": excel_status}, "files": {"processed_parquet": str(PROCESSED_OUTPUT_PATH), "ranking_parquet": str(RANKING_PATH), "ranking_csv": str(REPORT_DIR / "transformer_ranking.csv"), "excel_report": str(excel_path) if excel_path else None, "student_comparison": str(STUDENT_COMPARISON_PATH), "weak_coarse_parquet": str(PROCESSED_DIR / "dga_weak_labels_coarse.parquet"), "weak_fine_parquet": str(PROCESSED_DIR / "dga_weak_labels_fine.parquet")}}
+        payload["pipeline"] = {"status": "completed" if (research_status == "completed" and excel_status == "completed") else "completed_with_warnings", "rows": int(len(df_labeled)), "transformers": int(df_labeled["transformer_id"].nunique()), "elapsed_seconds": float(elapsed), "weak_backend": weak_metadata["backend"], "student_models": {"coarse": len(weak_students["coarse"]), "fine": len(weak_students["fine"])}, "research_benchmark": {"status": research_status, "traditional_rows": int(len(research_results["traditional_individual"])), "combination_rows": int(len(research_results["traditional_combinations"])), "supervised_rows": int(len(research_results["supervised"])), "weak_transfer_rows": int(len(research_results["weak_transfer"])), "hybrid_rows": int(len(research_results.get("hybrid", pd.DataFrame())))}, "excel": {"status": excel_status}, "files": {"processed_parquet": str(PROCESSED_OUTPUT_PATH), "ranking_parquet": str(RANKING_PATH), "ranking_csv": str(REPORT_DIR / "transformer_ranking.csv"), "excel_report": str(excel_path) if excel_path else None, "student_comparison": str(STUDENT_COMPARISON_PATH), "weak_coarse_parquet": str(PROCESSED_DIR / "dga_weak_labels_coarse.parquet"), "weak_fine_parquet": str(PROCESSED_DIR / "dga_weak_labels_fine.parquet")}}
         from data_store import save_payload_to_db
         save_payload_to_db(payload)
         logger.info("=" * 110)
@@ -480,7 +547,7 @@ def process_dataframe(uploaded_df: pd.DataFrame):
         logger.info("Severity           : %s", df_labeled["ieee_dga_status"].value_counts().sort_index().to_dict())
         if not ranking_df.empty:
             logger.info("Maintenance queue  : %s", ranking_df["maintenance_priority"].value_counts().to_dict())
-            logger.info("Critical count     : %d", int((ranking_df["maintenance_priority"] == "CRITICAL").sum()))
+            logger.info("High-risk count    : %d", int((ranking_df["maintenance_priority"] == "HIGH_RISK").sum()))
         logger.info("Excel report       : %s", excel_path)
         logger.info("Benchmark outputs  : %s", REPORT_DIR / "benchmark")
         logger.info("Processed data     : %s", PROCESSED_OUTPUT_PATH)

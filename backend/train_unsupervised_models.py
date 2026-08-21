@@ -12,6 +12,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
 from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
@@ -33,6 +34,7 @@ try: from catboost import CatBoostClassifier
 except Exception: CatBoostClassifier = None
 from config import DATASET_DIR, MODEL_DIR, REPORT_DIR, config as cfg
 from consensus import ABSTAIN, apply_consensus, apply_consensus_from_existing_diagnostics, diagnostic_method_summary, evaluate_method_labels, normalize_fault, pairwise_label_agreement, unify_fault
+from evaluation import evaluate_ambiguous_fine_predictions, empirical_fault_class_coverage
 from feature_engineering import build_training_features_from_clean
 from logging_config import init_logging
 from ranking import build_transformer_ranking, log_ranking_diagnostics
@@ -182,7 +184,7 @@ def build_models(seed: int):
         "logistic_regression": _build_pipeline(LogisticRegression(max_iter=3000, class_weight="balanced", random_state=seed), True),
         "random_forest": _build_pipeline(RandomForestClassifier(n_estimators=500, class_weight="balanced", random_state=seed, n_jobs=-1)),
         "extra_trees": _build_pipeline(ExtraTreesClassifier(n_estimators=500, class_weight="balanced", random_state=seed, n_jobs=-1)),
-        "svm_rbf": _build_pipeline(SVC(C=1.0, kernel="rbf", class_weight="balanced", probability=True, random_state=seed), True),
+        "svm_rbf": _build_pipeline(CalibratedClassifierCV(SVC(C=1.0, kernel="rbf", class_weight="balanced", probability=False, random_state=seed), ensemble=False), True),
         "sklearn_mlp": _build_pipeline(MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=800, early_stopping=True, random_state=seed), True),
         "knn": _build_pipeline(KNeighborsClassifier(n_neighbors=5, weights="distance"), True),
         "gaussian_nb": _build_pipeline(GaussianNB(), True),
@@ -219,36 +221,110 @@ def iter_nonempty_method_combinations(methods: Sequence[str]) -> Iterable[Tuple[
         for combo in combinations(tuple(methods), n): yield names[n], combo
 
 def _prepare_truth(labeled_df):
-    fine = labeled_df["fault_type_label"].map(normalize_fault); fine = fine.where(fine.isin(cfg.BENCHMARK_FINE_CLASSES), ABSTAIN)
-    if "fine_label_conflict" in labeled_df.columns: fine = fine.where(~labeled_df["fine_label_conflict"].astype(bool), ABSTAIN)
-    coarse = labeled_df["fault_type_label"].map(unify_fault); coarse = coarse.where(coarse.isin(cfg.COARSE_FAULT_GROUPS), ABSTAIN)
+    fine = labeled_df["fault_type_label"].map(normalize_fault)
+    fine = fine.where(fine.isin(cfg.BENCHMARK_FINE_CLASSES), ABSTAIN)
+    fine_conflict = labeled_df.get("fine_label_conflict", pd.Series(False, index=labeled_df.index)).astype(bool)
+    fine = fine.where(~fine_conflict, ABSTAIN)
+    coarse = fine.map(unify_fault)
+    coarse_conflict = labeled_df.get("coarse_label_conflict", pd.Series(False, index=labeled_df.index)).astype(bool)
+    coarse = coarse.where(~coarse_conflict, ABSTAIN)
     return fine, coarse
 
+def _make_ambiguity_eval_split(labeled_df, seed):
+    fine = labeled_df["fault_type_label"].map(normalize_fault)
+    conflict = labeled_df.get("fine_label_conflict", pd.Series(False, index=labeled_df.index)).astype(bool)
+    coarse_conflict = labeled_df.get("coarse_label_conflict", pd.Series(False, index=labeled_df.index)).astype(bool)
+    valid = fine.isin(set(cfg.BENCHMARK_FINE_CLASSES) | set(cfg.BENCHMARK_AMBIGUOUS_FINE_CLASSES)) & ~conflict & ~coarse_conflict
+    data = labeled_df.loc[valid].reset_index(drop=True).copy()
+    if data.empty: return data, np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int)
+    data["evaluation_group"] = data["evaluation_group"].astype(str)
+    coarse = data["fault_type_label"].map(normalize_fault).map(unify_fault)
+    coarse_codes = coarse.map({c: i for i, c in enumerate(cfg.COARSE_FAULT_GROUPS)}).astype(int).to_numpy()
+    tr, dev, test = train_dev_test_split(data, coarse_codes, seed)
+    return data, tr, dev, test
+
+
 def benchmark_traditional_individual(labeled_df):
-    fine_truth, coarse_truth = _prepare_truth(labeled_df); rows = []
+    """Evaluate individual traditional methods on DEV and LOCKED TEST."""
+    eval_df = labeled_df.copy().reset_index(drop=True)
+    fine_truth_all, coarse_truth_all = _prepare_truth(eval_df)
+    conflict = eval_df.get("fine_label_conflict", pd.Series(False, index=eval_df.index)).astype(bool)
+    coarse_conflict = eval_df.get("coarse_label_conflict", pd.Series(False, index=eval_df.index)).astype(bool)
+    valid = fine_truth_all.isin(cfg.BENCHMARK_FINE_CLASSES) & ~conflict & ~coarse_conflict
+    eval_df = eval_df.loc[valid].reset_index(drop=True)
+    fine_truth = fine_truth_all.loc[valid].reset_index(drop=True)
+    coarse_truth = coarse_truth_all.loc[valid].reset_index(drop=True)
+    eval_df["evaluation_group"] = eval_df.get("evaluation_group", eval_df[list(cfg.COMMON_BENCHMARK_GASES)].round(8).fillna(-999999.0).astype(str).agg("|".join, axis=1)).astype(str)
+    mapping = {c: i for i, c in enumerate(cfg.BENCHMARK_FINE_CLASSES)}
+    y = fine_truth.map(mapping).astype(int).to_numpy()
+    tr, dev, test = train_dev_test_split(eval_df, y, cfg.RANDOM_STATE)
+    rows = []
     for method, column in cfg.DIAGNOSTIC_METHOD_TO_COLUMN.items():
-        pred_fine = labeled_df.get(column, pd.Series(ABSTAIN, index=labeled_df.index)).map(normalize_fault); pred_coarse = pred_fine.map(unify_fault)
-        rows.append({"method": method, "granularity": "fine", **_evaluate_method_labels_safely(fine_truth, pred_fine, cfg.BENCHMARK_FINE_CLASSES)})
-        rows.append({"method": method, "granularity": "coarse", **_evaluate_method_labels_safely(coarse_truth, pred_coarse, cfg.COARSE_FAULT_GROUPS)})
-    result = pd.DataFrame(rows); result.to_csv(BENCHMARK_DIR / "traditional_individual_benchmark.csv", index=False, encoding="utf-8-sig"); return result
+        pred = labeled_df.get(column, pd.Series(ABSTAIN, index=labeled_df.index)).map(normalize_fault).loc[valid].reset_index(drop=True)
+        for split_name, idx in (("development", dev), ("locked_test", test)):
+            fine_metric = _evaluate_method_labels_safely(fine_truth.iloc[idx], pred.iloc[idx], cfg.BENCHMARK_FINE_CLASSES)
+            coarse_metric = _evaluate_method_labels_safely(coarse_truth.iloc[idx], pred.iloc[idx].map(unify_fault), cfg.COARSE_FAULT_GROUPS)
+            rows.append({"method": method, "granularity": "fine", "split": split_name, **fine_metric})
+            rows.append({"method": method, "granularity": "coarse", "split": split_name, **coarse_metric})
+        amb_data, _, amb_dev, amb_test = _make_ambiguity_eval_split(labeled_df, cfg.RANDOM_STATE)
+        if not amb_data.empty:
+            amb_truth = amb_data["fault_type_label"].map(normalize_fault); amb_pred = amb_data.get(column, pd.Series(ABSTAIN, index=amb_data.index)).map(normalize_fault).reset_index(drop=True)
+            for split_name, idx in (("development", amb_dev), ("locked_test", amb_test)):
+                metric = evaluate_ambiguous_fine_predictions(amb_truth.iloc[idx], amb_pred.iloc[idx])
+                rows.append({"method": method, "granularity": "fine_ambiguous_tolerant", "split": split_name, **metric})
+    result = pd.DataFrame(rows)
+    result["selected_on_development"] = False
+    for granularity in ("fine", "coarse"):
+        dev_rows = result[(result["granularity"] == granularity) & (result["split"] == "development")]
+        if not dev_rows.empty:
+            best = dev_rows.sort_values(["macro_f1", "balanced_accuracy", "coverage"], ascending=False, na_position="last").iloc[0]
+            result.loc[(result["granularity"] == granularity) & (result["method"] == best["method"]), "selected_on_development"] = True
+    result.to_csv(BENCHMARK_DIR / "traditional_individual_benchmark.csv", index=False, encoding="utf-8-sig")
+    return result
 
 def benchmark_traditional_combinations(labeled_df, split=None):
+    """Evaluate all combinations on DEV and LOCKED TEST; selection is based only on DEV."""
     eval_df = labeled_df.copy().reset_index(drop=True)
-    if "fine_label_conflict" in eval_df.columns: eval_df = eval_df[~eval_df["fine_label_conflict"].astype(bool)].reset_index(drop=True)
-    fine_truth, coarse_truth = _prepare_truth(eval_df); _, valid_encoding = _encode_fine_truth(fine_truth); valid_mask = (fine_truth != ABSTAIN) & valid_encoding
-    split_frame = eval_df.loc[valid_mask].reset_index(drop=True); split_truth = fine_truth.loc[valid_mask].reset_index(drop=True)
-    if split_frame.empty: raise ValueError("No valid benchmark rows remain after fine-label filtering.")
-    split_frame = split_frame.assign(evaluation_group=split_frame["evaluation_group"].astype(str)); mapping = {c: i for i, c in enumerate(cfg.BENCHMARK_FINE_CLASSES)}; split_y = split_truth.map(mapping).astype(int).to_numpy(); _, dev, test = train_dev_test_split(split_frame, split_y, cfg.RANDOM_STATE)
+    fine_truth_all, coarse_truth_all = _prepare_truth(eval_df)
+    conflict = eval_df.get("fine_label_conflict", pd.Series(False, index=eval_df.index)).astype(bool)
+    coarse_conflict = eval_df.get("coarse_label_conflict", pd.Series(False, index=eval_df.index)).astype(bool)
+    valid_mask = fine_truth_all.isin(cfg.BENCHMARK_FINE_CLASSES) & ~conflict & ~coarse_conflict
+    eval_df = eval_df.loc[valid_mask].reset_index(drop=True)
+    fine_truth = fine_truth_all.loc[valid_mask].reset_index(drop=True)
+    coarse_truth = coarse_truth_all.loc[valid_mask].reset_index(drop=True)
+    if eval_df.empty:
+        raise ValueError("No valid benchmark rows remain after conflict filtering.")
+    if "evaluation_group" not in eval_df.columns:
+        eval_df["evaluation_group"] = eval_df[list(cfg.COMMON_BENCHMARK_GASES)].round(8).fillna(-999999.0).astype(str).agg("|".join, axis=1)
+    eval_df["evaluation_group"] = eval_df["evaluation_group"].astype(str)
+    mapping = {c: i for i, c in enumerate(cfg.BENCHMARK_FINE_CLASSES)}
+    y = fine_truth.map(mapping).astype(int).to_numpy()
+    tr, dev, test = train_dev_test_split(eval_df, y, cfg.RANDOM_STATE)
     rows = []
     for level, combo in iter_nonempty_method_combinations(cfg.DIAGNOSTIC_METHODS):
-        pred = apply_consensus_from_existing_diagnostics(eval_df, combo); pred_valid = pred.loc[valid_mask].reset_index(drop=True); coarse_valid = coarse_truth.loc[valid_mask].reset_index(drop=True)
+        predicted = apply_consensus_from_existing_diagnostics(eval_df, combo)
         for split_name, idx in (("development", dev), ("locked_test", test)):
-            fine = _evaluate_method_labels_safely(split_truth.iloc[idx], pred_valid["consensus_fault"].iloc[idx], cfg.BENCHMARK_FINE_CLASSES); coarse = _evaluate_method_labels_safely(coarse_valid.iloc[idx], pred_valid["consensus_fault_group"].iloc[idx], cfg.COARSE_FAULT_GROUPS)
-            rows.extend([
-                {"combination_level": level, "methods": "+".join(combo), "method_count": len(combo), "split": split_name, "granularity": "fine", **fine},
-                {"combination_level": level, "methods": "+".join(combo), "method_count": len(combo), "split": split_name, "granularity": "coarse", **coarse},
-            ])
-    result = pd.DataFrame(rows); result.to_csv(BENCHMARK_DIR / "traditional_combinations_benchmark.csv", index=False, encoding="utf-8-sig"); logger.info("Traditional combination benchmark complete | rows=%d", len(result)); return result
+            fine_metric = _evaluate_method_labels_safely(fine_truth.iloc[idx], predicted["consensus_fault"].iloc[idx], cfg.BENCHMARK_FINE_CLASSES)
+            coarse_metric = _evaluate_method_labels_safely(coarse_truth.iloc[idx], predicted["consensus_fault_group"].iloc[idx], cfg.COARSE_FAULT_GROUPS)
+            rows.append({"combination_level": level, "methods": "+".join(combo), "method_count": len(combo), "split": split_name, "granularity": "fine", **fine_metric})
+            rows.append({"combination_level": level, "methods": "+".join(combo), "method_count": len(combo), "split": split_name, "granularity": "coarse", **coarse_metric})
+    amb_data, _, amb_dev, amb_test = _make_ambiguity_eval_split(labeled_df, cfg.RANDOM_STATE)
+    if not amb_data.empty:
+        for level, combo in iter_nonempty_method_combinations(cfg.DIAGNOSTIC_METHODS):
+            predicted_amb = apply_consensus_from_existing_diagnostics(amb_data, combo)
+            for split_name, idx in (("development", amb_dev), ("locked_test", amb_test)):
+                metric = evaluate_ambiguous_fine_predictions(amb_data["fault_type_label"].map(normalize_fault).iloc[idx], predicted_amb["consensus_fault"].iloc[idx])
+                rows.append({"combination_level": level, "methods": "+".join(combo), "method_count": len(combo), "split": split_name, "granularity": "fine_ambiguous_tolerant", **metric})
+    result = pd.DataFrame(rows)
+    result["selected_on_development"] = False
+    for granularity in ("fine", "coarse"):
+        dev_rows = result[(result["granularity"] == granularity) & (result["split"] == "development")]
+        if not dev_rows.empty:
+            best = dev_rows.sort_values(["macro_f1", "balanced_accuracy", "coverage"], ascending=False, na_position="last").iloc[0]
+            result.loc[(result["granularity"] == granularity) & (result["methods"] == best["methods"]), "selected_on_development"] = True
+    result.to_csv(BENCHMARK_DIR / "traditional_combinations_benchmark.csv", index=False, encoding="utf-8-sig")
+    logger.info("Traditional combination benchmark complete | rows=%d", len(result))
+    return result
 
 def benchmark_traditional_ppm_coverage(labeled_df):
     rows = []
@@ -256,8 +332,13 @@ def benchmark_traditional_ppm_coverage(labeled_df):
         active = labeled_df.get(column, pd.Series(ABSTAIN, index=labeled_df.index)).map(normalize_fault) != ABSTAIN
         for gas in cfg.COMMON_BENCHMARK_GASES:
             x = pd.to_numeric(labeled_df[gas], errors="coerce"); valid = active & x.notna(); values = x[valid].to_numpy(float)
-            rows.append({"method": method, "gas": gas, "active_count": int(len(values)), "coverage": float(len(values) / max(len(labeled_df), 1)), "min_ppm": float(np.min(values)) if len(values) else np.nan, "p05_ppm": float(np.quantile(values, 0.05)) if len(values) else np.nan, "median_ppm": float(np.median(values)) if len(values) else np.nan, "p95_ppm": float(np.quantile(values, 0.95)) if len(values) else np.nan, "max_ppm": float(np.max(values)) if len(values) else np.nan})
-    result = pd.DataFrame(rows); result.to_csv(BENCHMARK_DIR / "traditional_ppm_coverage.csv", index=False, encoding="utf-8-sig"); return result
+            rows.append({"method": method, "gas": gas, "active_count": int(len(values)), "coverage": float(len(values) / max(len(labeled_df), 1)), "min_ppm": float(np.min(values)) if len(values) else np.nan, "p05_ppm": float(np.quantile(values, 0.05)) if len(values) else np.nan, "median_ppm": float(np.median(values)) if len(values) else np.nan, "p95_ppm": float(np.quantile(values, 0.95)) if len(values) else np.nan, "max_ppm": float(np.max(values)) if len(values) else np.nan, "observed_range_ppm": float(np.max(values) - np.min(values)) if len(values) else np.nan})
+    result = pd.DataFrame(rows)
+    result.to_csv(BENCHMARK_DIR / "traditional_ppm_coverage.csv", index=False, encoding="utf-8-sig")
+    class_coverage = empirical_fault_class_coverage(labeled_df, "fine")
+    class_coverage.to_csv(BENCHMARK_DIR / "traditional_fault_class_coverage.csv", index=False, encoding="utf-8-sig")
+    return result
+
 
 def _benchmark_supervised_feature_mode(labeled_df, seed, feature_mode, models=None):
     labels, _ = _prepare_truth(labeled_df); mask = labels != ABSTAIN; data = labeled_df.loc[mask].reset_index(drop=True); y_names = labels.loc[mask].reset_index(drop=True)
@@ -270,11 +351,12 @@ def _benchmark_supervised_feature_mode(labeled_df, seed, feature_mode, models=No
     Xdf = build_feature_frame(data, feature_mode, "fine"); model_map = models or build_models(seed); dev_rows = []
     for name, model in model_map.items():
         try:
-            model.fit(Xdf.iloc[tr], y[tr]); pred = _predict_model(model, Xdf.iloc[dev]); pred = np.asarray(pred).reshape(-1); dev_rows.append({"model": name, "feature_mode": feature_mode, "dataset": "external_labeled", "split": "development", "granularity": "fine", **evaluate_numeric(y[dev], pred, cfg.BENCHMARK_FINE_CLASSES)})
+            model.fit(Xdf.iloc[tr], y[tr]); pred = _predict_model(model, Xdf.iloc[dev]); pred = np.asarray(pred).reshape(-1); dev_rows.append({"model": name, "feature_mode": feature_mode, "dataset": "external_labeled", "split": "development", "granularity": "fine", "selected_on_dev": False, **evaluate_numeric(y[dev], pred, cfg.BENCHMARK_FINE_CLASSES)})
         except Exception as exc: logger.warning("Supervised dev failed: %s: %s", name, exc)
     dev_df = pd.DataFrame(dev_rows)
     if dev_df.empty: return pd.DataFrame()
     best = dev_df.sort_values(["macro_f1", "balanced_accuracy", "accuracy"], ascending=False).iloc[0]["model"]
+    dev_df.loc[dev_df["model"] == best, "selected_on_dev"] = True
     train_dev = np.concatenate([tr, dev]); test_rows = []
     for name in model_map:
         try:
@@ -323,16 +405,74 @@ def benchmark_weak_transfer(labeled_df, weak_students, seed):
             dev_metric = _evaluate_method_labels_safely(td.reset_index(drop=True), pred_dev_labels.to_numpy(), allowed); test_metric = _evaluate_method_labels_safely(tt.reset_index(drop=True), pred_test_labels.to_numpy(), allowed)
             base = {"granularity": granularity, "model": key.split("__", 1)[1], "feature_mode": artifact["feature_mode"], "training_dataset": "unlabeled_operational_weak", "evaluation_dataset": "external_labeled", "selected_on_dev": False}
             rows.append({**base, "split": "development", **dev_metric}); rows.append({**base, "split": "locked_test", **test_metric})
+    amb_data, _, amb_dev, amb_test = _make_ambiguity_eval_split(labeled_df, seed)
+    if not amb_data.empty and "fine" in weak_students:
+        amb_truth = amb_data["fault_type_label"].map(normalize_fault)
+        for key, artifact in weak_students.get("fine", {}).items():
+            feature_names = artifact["features"]; Xdf_amb = _align_feature_frame(amb_data, feature_names, "fine"); pred_amb = pd.Series(_decode_class_predictions(_predict_model(artifact["model"], Xdf_amb), list(artifact["labels"])), index=amb_data.index)
+            for split_name, idx in (("development", amb_dev), ("locked_test", amb_test)):
+                metric = evaluate_ambiguous_fine_predictions(amb_truth.iloc[idx], pred_amb.iloc[idx])
+                rows.append({"granularity": "fine_ambiguous_tolerant", "model": key.split("__", 1)[1], "feature_mode": artifact["feature_mode"], "training_dataset": "unlabeled_operational_weak", "evaluation_dataset": "external_labeled", "selected_on_dev": False, "split": split_name, "macro_f1": np.nan, "balanced_accuracy": np.nan, "macro_precision": np.nan, "macro_recall": np.nan, "weighted_f1": np.nan, **metric})
     result = pd.DataFrame(rows)
     if not result.empty:
-        for granularity in result["granularity"].unique():
+        for granularity in ("fine", "coarse"):
             sub = result[(result["granularity"] == granularity) & (result["split"] == "development")]
             if not sub.empty:
                 best_idx = sub.sort_values(["macro_f1", "balanced_accuracy", "accuracy"], ascending=False).index[0]; best_model = result.loc[best_idx, "model"]; best_mode = result.loc[best_idx, "feature_mode"]; mask = (result["granularity"] == granularity) & (result["model"] == best_model) & (result["feature_mode"] == best_mode); result.loc[mask, "selected_on_dev"] = True
     result.to_csv(BENCHMARK_DIR / "weak_transfer_fault_benchmark.csv", index=False, encoding="utf-8-sig"); return result
 
+def benchmark_weak_traditional_hybrids(labeled_df, weak_students, seed):
+    """Evaluate non-weighted hybrid policies on the independent labeled benchmark.
+
+    agreement_only keeps a prediction only when the weak student and the unweighted
+    traditional consensus agree exactly. Disagreement becomes ABSTAIN; no arbitrary
+    numeric fusion weight is introduced.
+    """
+    fine_truth, coarse_truth = _prepare_truth(labeled_df)
+    conflict = labeled_df.get("fine_label_conflict", pd.Series(False, index=labeled_df.index)).astype(bool)
+    valid = (fine_truth != ABSTAIN) & ~conflict
+    data = labeled_df.loc[valid].reset_index(drop=True)
+    fine_truth = fine_truth.loc[valid].reset_index(drop=True); coarse_truth = coarse_truth.loc[valid].reset_index(drop=True)
+    encoded = fine_truth.map({c: i for i, c in enumerate(cfg.BENCHMARK_FINE_CLASSES)})
+    keep = encoded.notna().to_numpy(dtype=bool)
+    data = data.loc[keep].reset_index(drop=True); fine_truth = fine_truth.loc[keep].reset_index(drop=True); coarse_truth = coarse_truth.loc[keep].reset_index(drop=True); y = encoded.loc[keep].astype(int).to_numpy()
+    if data.empty: return pd.DataFrame()
+    data = data.assign(evaluation_group=data["evaluation_group"].astype(str))
+    _, dev, test = train_dev_test_split(data, y, seed)
+    traditional = apply_consensus(data)
+    rows = []
+    for granularity in ("coarse", "fine"):
+        artifacts = weak_students.get(granularity, {})
+        for key, artifact in artifacts.items():
+            feature_names = artifact["features"]; Xdf = _align_feature_frame(data, feature_names, granularity); model = artifact["model"]; labels = list(artifact["labels"])
+            student = pd.Series(_decode_class_predictions(_predict_model(model, Xdf), labels), index=data.index)
+            trad = traditional["consensus_fault_group" if granularity == "coarse" else "consensus_fault"].map(unify_fault if granularity == "coarse" else normalize_fault)
+            hybrid = student.where(student == trad, ABSTAIN)
+            if granularity == "fine": td, tt, allowed = fine_truth, fine_truth, cfg.BENCHMARK_FINE_CLASSES
+            else: td, tt, allowed = coarse_truth, coarse_truth, cfg.COARSE_FAULT_GROUPS
+            for split_name, idx in (("development", dev), ("locked_test", test)):
+                yt = td.iloc[idx]; yp = hybrid.iloc[idx]
+                metric = _evaluate_method_labels_safely(yt.reset_index(drop=True), yp.to_numpy(), allowed)
+                ambiguous = evaluate_ambiguous_fine_predictions(yt, yp) if granularity == "fine" else {}
+                rows.append({"granularity": granularity, "model": key.split("__", 1)[1], "feature_mode": artifact["feature_mode"], "hybrid_policy": "agreement_only", "training_dataset": "unlabeled_operational_weak", "evaluation_dataset": "external_labeled", "split": split_name, "selected_on_dev": False, **metric, "ambiguous_tolerant_accuracy": ambiguous.get("accuracy", np.nan), "ambiguous_truth_count": ambiguous.get("ambiguous_truth_count", 0)})
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        for granularity in result["granularity"].unique():
+            sub = result[(result["granularity"] == granularity) & (result["split"] == "development")]
+            if not sub.empty:
+                best_idx = sub.sort_values(["macro_f1", "balanced_accuracy", "coverage"], ascending=False, na_position="last").index[0]
+                best_model = result.loc[best_idx, "model"]; best_mode = result.loc[best_idx, "feature_mode"]
+                mask = (result["granularity"] == granularity) & (result["model"] == best_model) & (result["feature_mode"] == best_mode)
+                result.loc[mask, "selected_on_dev"] = True
+    result.to_csv(BENCHMARK_DIR / "weak_traditional_hybrid_benchmark.csv", index=False, encoding="utf-8-sig")
+    return result
+
+
 def benchmark_direct_supervised_transfer(unlabeled_df, labeled_df, seed):
-    result = benchmark_supervised_models(labeled_df, seed); best = result[result["split"] == "locked_test"].sort_values(["macro_f1", "balanced_accuracy", "accuracy"], ascending=False).head(1); best.to_csv(BENCHMARK_DIR / "direct_supervised_reference_best.csv", index=False, encoding="utf-8-sig"); return best
+    result = benchmark_supervised_models(labeled_df, seed)
+    candidates = result[(result["split"] == "locked_test") & result["selected_on_dev"].astype(bool)] if not result.empty else pd.DataFrame()
+    candidates.to_csv(BENCHMARK_DIR / "direct_supervised_reference_selected_on_dev.csv", index=False, encoding="utf-8-sig")
+    return candidates
 
 def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
     raw = load_unlabeled(); logger.info("UNLABELED START | rows=%d | transformers=%d", len(raw), raw["transformer_id"].nunique()); df = prepare_unlabeled(raw)
@@ -361,7 +501,8 @@ def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
 
 def run_labeled_benchmark(seed):
     labeled = apply_consensus(load_labeled_csv_data()); individual = benchmark_traditional_individual(labeled); combinations_result = benchmark_traditional_combinations(labeled, None); ppm = benchmark_traditional_ppm_coverage(labeled); pairwise = pairwise_label_agreement(labeled); pairwise.to_csv(BENCHMARK_DIR / "traditional_pairwise_agreement.csv", index=False, encoding="utf-8-sig"); method_summary = diagnostic_method_summary(labeled); method_summary.to_csv(BENCHMARK_DIR / "traditional_method_summary.csv", index=False, encoding="utf-8-sig"); supervised = benchmark_supervised_models(labeled, seed)
-    benchmark = {"individual": individual, "combinations": combinations_result, "ppm_coverage": ppm, "pairwise": pairwise, "method_summary": method_summary, "supervised": supervised}; benchmark["split_manifest"] = _write_split_manifest(labeled, seed); return benchmark
+    class_coverage = empirical_fault_class_coverage(labeled, "fine"); class_coverage.to_csv(BENCHMARK_DIR / "traditional_fault_class_coverage.csv", index=False, encoding="utf-8-sig")
+    benchmark = {"individual": individual, "combinations": combinations_result, "ppm_coverage": ppm, "class_coverage": class_coverage, "pairwise": pairwise, "method_summary": method_summary, "supervised": supervised}; benchmark["split_manifest"] = _write_split_manifest(labeled, seed); return benchmark
 
 def _write_split_manifest(labeled, seed):
     labels, _ = _prepare_truth(labeled); conflict = labeled.get("fine_label_conflict", pd.Series(False, index=labeled.index)).astype(bool); valid = (labels != ABSTAIN) & ~conflict; data = labeled.loc[valid].reset_index(drop=True); y = labels.loc[valid].map({c: i for i, c in enumerate(cfg.BENCHMARK_FINE_CLASSES)}).to_numpy(int); data = data.assign(evaluation_group=data["evaluation_group"].astype(str)); _, dev, test = train_dev_test_split(data, y, seed)
