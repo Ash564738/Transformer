@@ -21,45 +21,83 @@ except Exception as exc:
 DEFAULT_WEAK_METHODS = dict(cfg.DIAGNOSTIC_METHOD_TO_COLUMN)
 
 def _validate_groups(groups):
+    logger.debug("_validate_groups: input groups=%s", groups)
     groups = [str(value).strip().upper() for value in groups]
-    if len(groups) < 2: raise ValueError("Need at least two weak-supervision classes.")
-    if len(set(groups)) != len(groups): raise ValueError("Weak-supervision classes must be unique.")
+    if len(groups) < 2:
+        logger.error("_validate_groups: need at least two classes")
+        raise ValueError("Need at least two weak-supervision classes.")
+    if len(set(groups)) != len(groups):
+        logger.error("_validate_groups: duplicate groups found")
+        raise ValueError("Weak-supervision classes must be unique.")
+    logger.debug("_validate_groups: validated groups=%s", groups)
     return groups
 
 def _normalize_coarse_vote(raw_label):
     fine = normalize_fault(raw_label)
-    if fine == ABSTAIN_TEXT: return ABSTAIN_TEXT
+    logger.debug("_normalize_coarse_vote: raw=%r fine=%r", raw_label, fine)
+    if fine == ABSTAIN_TEXT:
+        logger.debug("_normalize_coarse_vote: fine is ABSTAIN -> ABSTAIN_TEXT")
+        return ABSTAIN_TEXT
     coarse = unify_fault(fine)
-    if coarse in cfg.WEAK_COARSE_GROUPS: return coarse
+    logger.debug("_normalize_coarse_vote: coarse=%s", coarse)
+    if coarse in cfg.WEAK_COARSE_GROUPS:
+        return coarse
+    logger.debug("_normalize_coarse_vote: coarse not in WEAK_COARSE_GROUPS -> ABSTAIN_TEXT")
     return ABSTAIN_TEXT
 
 def _normalize_fine_vote(raw_label):
     fine = normalize_fault(raw_label)
-    if fine in cfg.BENCHMARK_FINE_CLASSES: return fine
+    logger.debug("_normalize_fine_vote: raw=%r fine=%r", raw_label, fine)
+    if fine in cfg.BENCHMARK_FINE_CLASSES:
+        return fine
+    logger.debug("_normalize_fine_vote: fine not in BENCHMARK_FINE_CLASSES -> ABSTAIN_TEXT")
     return ABSTAIN_TEXT
 
 def build_label_matrix(df, label_columns=None, groups=None, granularity="coarse"):
+    logger.debug("build_label_matrix: granularity=%s, label_columns=%s, groups=%s", granularity, label_columns, groups)
     methods = dict(label_columns or DEFAULT_WEAK_METHODS)
     granularity = str(granularity).strip().lower()
-    if granularity == "coarse": default_groups = cfg.WEAK_COARSE_GROUPS; normalizer = _normalize_coarse_vote
-    elif granularity == "fine": default_groups = cfg.WEAK_FINE_GROUPS; normalizer = _normalize_fine_vote
-    else: raise ValueError("granularity must be 'coarse' or 'fine'.")
+    if granularity == "coarse":
+        default_groups = cfg.WEAK_COARSE_GROUPS
+        normalizer = _normalize_coarse_vote
+    elif granularity == "fine":
+        default_groups = cfg.WEAK_FINE_GROUPS
+        normalizer = _normalize_fine_vote
+    else:
+        logger.error("build_label_matrix: invalid granularity %s", granularity)
+        raise ValueError("granularity must be 'coarse' or 'fine'.")
     groups_list = _validate_groups(groups or default_groups)
     group_to_int = {group: idx for idx, group in enumerate(groups_list)}
+    logger.debug("build_label_matrix: group_to_int=%s", group_to_int)
     L = np.full((len(df), len(methods)), ABSTAIN, dtype=np.int64)
     for j, column in enumerate(methods.values()):
-        if column not in df.columns: continue
+        if column not in df.columns:
+            logger.debug("build_label_matrix: column %s not in df, skipping", column)
+            continue
         values = df[column].map(normalizer)
+        logger.debug("build_label_matrix: column=%s normalized unique=%s", column, values.unique())
         L[:, j] = values.map(lambda value: group_to_int.get(value, ABSTAIN)).to_numpy(dtype=np.int64)
+    logger.debug("build_label_matrix: L shape=%s, non-abstain rate=%.3f", L.shape, (L != ABSTAIN).mean())
     return L, list(methods.keys()), groups_list
 
 class EMLabelModel:
     def __init__(self, cardinality, random_state=42, max_iter=500, tol=1e-7, smoothing=1e-3):
-        self.cardinality = int(cardinality); self.random_state = int(random_state); self.max_iter = int(max_iter); self.tol = float(tol); self.smoothing = float(smoothing)
-        self.class_prior_ = None; self.confusion_ = None; self.n_iter_ = 0; self.fitted_ = False
+        self.cardinality = int(cardinality)
+        self.random_state = int(random_state)
+        self.max_iter = int(max_iter)
+        self.tol = float(tol)
+        self.smoothing = float(smoothing)
+        self.class_prior_ = None
+        self.confusion_ = None
+        self.n_iter_ = 0
+        self.fitted_ = False
+        logger.debug("EMLabelModel initialized: cardinality=%d, random_state=%d, max_iter=%d, tol=%.2e, smoothing=%.2e",
+                     self.cardinality, self.random_state, self.max_iter, self.tol, self.smoothing)
 
     def _initialize(self, L):
-        n, m = L.shape; k = self.cardinality
+        logger.debug("EMLabelModel._initialize: L shape=%s", L.shape)
+        n, m = L.shape
+        k = self.cardinality
         rng = np.random.default_rng(self.random_state)
         counts = np.array([(L == class_id).sum() for class_id in range(k)], dtype=float)
         prior = counts + self.smoothing
@@ -71,17 +109,21 @@ class EMLabelModel:
         self.confusion_[:, :, k] += 0.25
         self.confusion_ += rng.uniform(0.0, 1e-9, size=self.confusion_.shape)
         self.confusion_ /= self.confusion_.sum(axis=2, keepdims=True)
+        logger.debug("EMLabelModel._initialize: class_prior=%s, confusion shape=%s", self.class_prior_, self.confusion_.shape)
 
     def _log_joint(self, L):
-        n, m = L.shape; k = self.cardinality
+        n, m = L.shape
+        k = self.cardinality
         result = np.tile(np.log(np.clip(self.class_prior_, 1e-12, None)), (n, 1))
         for j in range(m):
             for latent in range(k):
                 for observed in range(k + 1):
                     observed_value = ABSTAIN if observed == k else observed
                     mask = L[:, j] == observed_value
-                    if not np.any(mask): continue
+                    if not np.any(mask):
+                        continue
                     result[mask, latent] += np.log(np.clip(self.confusion_[j, latent, observed], 1e-12, None))
+        logger.debug("EMLabelModel._log_joint: result shape=%s", result.shape)
         return result
 
     @staticmethod
@@ -91,61 +133,88 @@ class EMLabelModel:
         return exp / np.clip(exp.sum(axis=1, keepdims=True), 1e-12, None)
 
     def fit(self, L):
+        logger.debug("EMLabelModel.fit: start with L shape=%s", L.shape)
         L = np.asarray(L, dtype=np.int64)
-        if L.ndim != 2 or len(L) == 0 or L.shape[1] == 0: raise ValueError("L must be a non-empty 2D array.")
+        if L.ndim != 2 or len(L) == 0 or L.shape[1] == 0:
+            logger.error("EMLabelModel.fit: invalid L")
+            raise ValueError("L must be a non-empty 2D array.")
         self._initialize(L)
         previous = None
         for iteration in range(self.max_iter):
             posterior = self._softmax(self._log_joint(L))
-            prior = np.clip(posterior.mean(axis=0), self.smoothing, None); prior /= prior.sum()
+            prior = np.clip(posterior.mean(axis=0), self.smoothing, None)
+            prior /= prior.sum()
             k = self.cardinality
             confusion = np.full_like(self.confusion_, self.smoothing)
             for j in range(L.shape[1]):
                 for latent in range(k):
                     for observed in range(k):
                         mask = L[:, j] == observed
-                        if np.any(mask): confusion[j, latent, observed] += posterior[mask, latent].sum()
+                        if np.any(mask):
+                            confusion[j, latent, observed] += posterior[mask, latent].sum()
                     abstain_mask = L[:, j] == ABSTAIN
-                    if np.any(abstain_mask): confusion[j, latent, k] += posterior[abstain_mask, latent].sum()
+                    if np.any(abstain_mask):
+                        confusion[j, latent, k] += posterior[abstain_mask, latent].sum()
             confusion /= confusion.sum(axis=2, keepdims=True)
-            self.class_prior_ = prior; self.confusion_ = confusion
+            self.class_prior_ = prior
+            self.confusion_ = confusion
             log_joint = self._log_joint(L)
             maximum = log_joint.max(axis=1)
             objective = float(np.mean(np.log(np.clip(np.exp(log_joint - maximum[:, None]).sum(axis=1), 1e-12, None)) + maximum))
             self.n_iter_ = iteration + 1
-            if previous is not None and abs(objective - previous) < self.tol: break
+            if previous is not None and abs(objective - previous) < self.tol:
+                logger.debug("EMLabelModel.fit: converged at iteration %d objective=%.6f", iteration+1, objective)
+                break
             previous = objective
+            logger.debug("EMLabelModel.fit: iter %d objective=%.6f", iteration+1, objective)
         self.fitted_ = True
+        logger.debug("EMLabelModel.fit: complete, n_iter=%d", self.n_iter_)
         return self
 
     def predict_proba(self, L):
-        if not self.fitted_: raise RuntimeError("Model is not fitted.")
-        return self._softmax(self._log_joint(np.asarray(L, dtype=np.int64)))
+        if not self.fitted_:
+            raise RuntimeError("Model is not fitted.")
+        proba = self._softmax(self._log_joint(np.asarray(L, dtype=np.int64)))
+        logger.debug("EMLabelModel.predict_proba: proba shape=%s", proba.shape)
+        return proba
 
-    def predict(self, L): return self.predict_proba(L).argmax(axis=1)
+    def predict(self, L):
+        proba = self.predict_proba(L)
+        return proba.argmax(axis=1)
 
 def fit_label_model(L, cardinality, use_snorkel=True, random_state=42):
+    logger.debug("fit_label_model: start cardinality=%d, use_snorkel=%s, random_state=%d, L_shape=%s", cardinality, use_snorkel, random_state, L.shape)
     L = np.asarray(L, dtype=np.int64)
-    if L.ndim != 2 or L.shape[1] == 0: raise ValueError("L must be a non-empty 2D matrix.")
+    if L.ndim != 2 or L.shape[1] == 0:
+        logger.error("fit_label_model: L must be non-empty 2D")
+        raise ValueError("L must be a non-empty 2D matrix.")
     if use_snorkel and SNORKEL_AVAILABLE:
         try:
             logger.info("Weak supervision backend: Snorkel LabelModel")
             model = LabelModel(cardinality=cardinality, verbose=False)
             model.fit(L_train=L, n_epochs=500, log_freq=100, seed=random_state)
-            return model, model.predict_proba(L), "snorkel"
+            proba = model.predict_proba(L)
+            logger.debug("fit_label_model: Snorkel proba shape=%s", proba.shape)
+            return model, proba, "snorkel"
         except Exception as exc:
             logger.warning("Snorkel failed; using EM fallback: %s", exc)
     logger.info("Weak supervision backend: EM fallback")
     model = EMLabelModel(cardinality=cardinality, random_state=random_state)
     model.fit(L)
-    return model, model.predict_proba(L), "em"
+    proba = model.predict_proba(L)
+    logger.debug("fit_label_model: EM proba shape=%s", proba.shape)
+    return model, proba, "em"
 
 def predict_from_label_model(model, df, methods, groups, granularity):
+    logger.debug("predict_from_label_model: granularity=%s, methods=%s, groups=%s", granularity, methods, groups)
     method_mapping = {method: cfg.DIAGNOSTIC_METHOD_TO_COLUMN[method] for method in methods}
     L, _, _ = build_label_matrix(df, method_mapping, groups, granularity)
     probabilities = model.predict_proba(L)
     out = df.copy()
-    for index, group in enumerate(groups): out[f"weak_prob_{granularity}_{group.lower()}"] = probabilities[:, index]
+    for index, group in enumerate(groups):
+        col_name = f"weak_prob_{granularity}_{group.lower()}"
+        out[col_name] = probabilities[:, index]
+        logger.debug("predict_from_label_model: added column %s with mean %.3f", col_name, probabilities[:, index].mean())
     labels = np.asarray([groups[int(index)] for index in probabilities.argmax(axis=1)], dtype=object)
     active_count = (L != ABSTAIN).sum(axis=1)
     labels[active_count == 0] = ABSTAIN_TEXT
@@ -158,32 +227,51 @@ def predict_from_label_model(model, df, methods, groups, granularity):
     out[f"weak_{granularity}_lf_coverage"] = active_count / max(L.shape[1], 1) * 100.0
     out[f"weak_{granularity}_is_ABSTAIN"] = (active_count == 0)
     out[f"weak_{granularity}_backend"] = type(model).__name__
+    logger.debug("predict_from_label_model: active LF mean=%.2f, abstain rate=%.2f%%", active_count.mean(), (active_count==0).mean()*100)
     return out
 
 def create_student_training_targets(df, target_column, abstain_column, groups):
-    if target_column not in df.columns: raise ValueError(f"Missing weak target column: {target_column}")
+    logger.debug("create_student_training_targets: target_column=%s, abstain_column=%s, groups=%s", target_column, abstain_column, groups)
+    if target_column not in df.columns:
+        logger.error("create_student_training_targets: target column missing")
+        raise ValueError(f"Missing weak target column: {target_column}")
     work = df.copy()
     target = work[target_column].astype(str).str.upper().str.strip()
-    if abstain_column in work.columns: keep = ~work[abstain_column].astype(bool)
-    else: keep = target != ABSTAIN_TEXT
+    if abstain_column in work.columns:
+        keep = ~work[abstain_column].astype(bool)
+        logger.debug("create_student_training_targets: using abstain column %s, non-abstain rows=%d", abstain_column, int(keep.sum()))
+    else:
+        keep = target != ABSTAIN_TEXT
+        logger.debug("create_student_training_targets: abstain column not present, filtering by target != ABSTAIN, keep=%d", int(keep.sum()))
     allowed = {str(value).upper() for value in groups}
     keep &= target.isin(allowed)
     clean = work.loc[keep].copy()
-    if clean.empty: raise ValueError("No usable weak labels remain.")
+    if clean.empty:
+        logger.error("create_student_training_targets: no usable weak labels remain")
+        raise ValueError("No usable weak labels remain.")
     present = [group for group in groups if group in set(target.loc[keep])]
-    if len(present) < 2: raise ValueError("Student requires at least two classes.")
+    if len(present) < 2:
+        logger.error("create_student_training_targets: only %d classes present", len(present))
+        raise ValueError("Student requires at least two classes.")
     mapping = {group: index for index, group in enumerate(present)}
     y = target.loc[keep].map(mapping).to_numpy(dtype=np.int64)
+    logger.debug("create_student_training_targets: clean rows=%d, present classes=%s, y distribution=%s", len(clean), present, pd.Series(y).value_counts().to_dict())
     return clean.reset_index(drop=True), y, present
 
 def weak_supervision_pipeline(df, label_columns=None, groups=None, use_snorkel=True, random_state=None, granularity="coarse"):
     seed = cfg.RANDOM_STATE if random_state is None else int(random_state)
-    if granularity == "coarse": default_groups = cfg.WEAK_COARSE_GROUPS
-    elif granularity == "fine": default_groups = cfg.WEAK_FINE_GROUPS
-    else: raise ValueError("granularity must be coarse or fine.")
+    if granularity == "coarse":
+        default_groups = cfg.WEAK_COARSE_GROUPS
+    elif granularity == "fine":
+        default_groups = cfg.WEAK_FINE_GROUPS
+    else:
+        logger.error("weak_supervision_pipeline: invalid granularity %s", granularity)
+        raise ValueError("granularity must be coarse or fine.")
     groups = list(groups or default_groups)
     logger.info("Weak supervision START | granularity=%s | rows=%d | LFs=%d", granularity, len(df), len(label_columns or DEFAULT_WEAK_METHODS))
+    logger.debug("weak_supervision_pipeline: seed=%d, groups=%s, use_snorkel=%s", seed, groups, use_snorkel)
     L, methods, groups = build_label_matrix(df, label_columns, groups, granularity)
+    logger.debug("weak_supervision_pipeline: L shape=%s, methods=%s", L.shape, methods)
     model, probabilities, backend = fit_label_model(L, len(groups), use_snorkel=use_snorkel, random_state=seed)
     out = predict_from_label_model(model, df, methods, groups, granularity)
     pairwise = pairwise_label_agreement(df, methods)
@@ -201,10 +289,12 @@ def weak_supervision_pipeline(df, label_columns=None, groups=None, use_snorkel=T
         "uses_manual_lf_weights": False,
         "pairwise": pairwise.to_dict(orient="records"),
     }
+    logger.debug("weak_supervision_pipeline: metadata=%s", metadata)
     logger.info("Weak supervision COMPLETE | granularity=%s | backend=%s | abstain=%.2f%% | active_LF_mean=%.2f", granularity, backend, metadata["abstain_rate"] * 100.0, metadata["mean_active_lf_count"])
     return out, model, groups, metadata, L, probabilities, pairwise
 
 def save_weak_supervision_artifacts(df, model, groups, metadata, output_path=None, granularity="coarse"):
+    logger.debug("save_weak_supervision_artifacts: granularity=%s, output_path=%s", granularity, output_path)
     output_path = Path(output_path or DATASET_DIR / "processed" / f"dga_weak_labels_{granularity}.parquet")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path = output_path.parent / f"dga_weak_label_metadata_{granularity}.json"
@@ -212,4 +302,5 @@ def save_weak_supervision_artifacts(df, model, groups, metadata, output_path=Non
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump({"model": model, "groups": list(groups), "metadata": metadata}, MODEL_DIR / f"weak_label_model_{granularity}.joblib")
+    logger.debug("save_weak_supervision_artifacts: saved parquet=%s, metadata=%s, model=%s", output_path, metadata_path, MODEL_DIR / f"weak_label_model_{granularity}.joblib")
     return output_path, metadata_path

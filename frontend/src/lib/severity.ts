@@ -30,7 +30,6 @@ export const STATUS_ORDER: RiskStatus[] = [
 ];
 
 export const MAINTENANCE_PRIORITY_ORDER: MaintenancePriority[] = [
-  "CRITICAL",
   "HIGH_RISK",
   "WATCH",
   "NORMAL",
@@ -45,7 +44,6 @@ export const STATUS_HEX: Record<RiskStatus, string> = {
 };
 
 export const MAINTENANCE_PRIORITY_HEX: Record<MaintenancePriority, string> = {
-  CRITICAL: "#b42318",
   HIGH_RISK: "#9a4a1f",
   WATCH: "#a16a07",
   NORMAL: "#1f7a4d",
@@ -95,11 +93,6 @@ export const MAINTENANCE_PRIORITY_STYLES: Record<
   MaintenancePriority,
   MaintenancePriorityStyle
 > = {
-  CRITICAL: {
-    text: "text-red-800",
-    bg: "bg-red-50",
-    border: "border-red-300",
-  },
   HIGH_RISK: {
     text: "text-orange-800",
     bg: "bg-orange-50",
@@ -161,51 +154,20 @@ export function nativeToStatus(label: NativeSeverityLabel): RiskStatus {
   }
 }
 
-/** Backend has two independent axes. Status always comes from IEEE status. */
+/** IEEE status is the condition axis; maintenance priority is a separate queue. */
 export function statusFromSummary(summary: TransformerSummary): RiskStatus {
   return ieeeStatusToRiskStatus(summary.ieee_status);
 }
 
 /**
- * Backwards-compatible fallback for legacy UI code. Do not use this for
- * severity distribution: maintenance priority and IEEE status are separate.
+ * Legacy compatibility only. The current backend does not emit CRITICAL.
+ * Old CRITICAL payloads are mapped to HIGH_RISK so the UI remains readable.
  */
-export function maintenancePriorityToRiskStatus(
-  priority: MaintenancePriority | string | null | undefined,
-  ieeeStatus?: number | null
-): RiskStatus {
-  switch (String(priority ?? "").toUpperCase()) {
-    case "CRITICAL":
-    case "HIGH_RISK":
-      return "High";
-    case "WATCH":
-      return "Watch";
-    case "NORMAL":
-      return "Normal";
-    case "DATA_REVIEW":
-      return "Insufficient data";
-    default:
-      return ieeeStatusToRiskStatus(ieeeStatus);
-  }
-}
-
-export function statusFromValues(
-  ieeeStatus?: number | null,
-  label?: NativeSeverityLabel | string
-): RiskStatus {
-  if (ieeeStatus != null) return ieeeStatusToRiskStatus(ieeeStatus);
-  if (label === "STATUS_1" || label === "STATUS_2" || label === "STATUS_3") {
-    return nativeToStatus(label);
-  }
-  return "Insufficient data";
-}
-
 export function normalizeMaintenancePriority(
   priority: MaintenancePriority | string | null | undefined
 ): MaintenancePriority {
   switch (String(priority ?? "").toUpperCase()) {
     case "CRITICAL":
-      return "CRITICAL";
     case "HIGH_RISK":
       return "HIGH_RISK";
     case "WATCH":
@@ -223,16 +185,19 @@ export function maintenancePriorityFromSummary(
   return normalizeMaintenancePriority(summary.maintenance_priority);
 }
 
+export function isHighRiskSummary(summary: TransformerSummary): boolean {
+  return maintenancePriorityFromSummary(summary) === "HIGH_RISK";
+}
+
+/** @deprecated Use isHighRiskSummary. */
 export function isCriticalSummary(summary: TransformerSummary): boolean {
-  return maintenancePriorityFromSummary(summary) === "CRITICAL" || summary.critical_front === true;
+  return isHighRiskSummary(summary);
 }
 
 export function maintenancePriorityLabel(
   priority: MaintenancePriority | string | null | undefined
 ): string {
   switch (normalizeMaintenancePriority(priority)) {
-    case "CRITICAL":
-      return "Critical";
     case "HIGH_RISK":
       return "High Risk";
     case "WATCH":
@@ -242,6 +207,23 @@ export function maintenancePriorityLabel(
     default:
       return "Data Review";
   }
+}
+
+export function maintenancePriorityColor(
+  priority: MaintenancePriority | string | null | undefined
+): string {
+  return MAINTENANCE_PRIORITY_HEX[normalizeMaintenancePriority(priority)];
+}
+
+export function statusFromValues(
+  ieeeStatus?: number | null,
+  label?: NativeSeverityLabel | string
+): RiskStatus {
+  if (ieeeStatus != null) return ieeeStatusToRiskStatus(ieeeStatus);
+  if (label === "STATUS_1" || label === "STATUS_2" || label === "STATUS_3") {
+    return nativeToStatus(label);
+  }
+  return "Insufficient data";
 }
 
 export function formatTrend(

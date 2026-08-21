@@ -17,14 +17,19 @@ import { TechnicalNotes } from "@/components/detail/technical-notes";
 import { GasIndicatorCards } from "@/components/detail/gas-indicator-cards";
 import { HistoryTable } from "@/components/detail/history-table";
 import { ConfirmInspectionDialog } from "@/components/detail/confirm-inspection-dialog";
-import { latestRowFor, rowsForTransformer } from "@/lib/transformer-helpers";
+import {
+  latestRowFor,
+  rowsForTransformer,
+} from "@/lib/transformer-helpers";
 import { CheckCircle2 } from "lucide-react";
 
 export default function TransformerDetailPage() {
   const params = useParams<{ id: string }>();
   const transformerId = decodeURIComponent(params.id);
-  const payload = useDashboardStore((s) => s.payload);
-  const setSelectedTransformer = useDashboardStore((s) => s.setSelectedTransformer);
+  const payload = useDashboardStore((state) => state.payload);
+  const setSelectedTransformer = useDashboardStore(
+    (state) => state.setSelectedTransformer
+  );
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   useEffect(() => {
@@ -41,7 +46,9 @@ export default function TransformerDetailPage() {
     );
   }
 
-  const summary = payload.transformer_summary.find((s) => s.transformer_id === transformerId);
+  const summary = payload.transformer_summary.find(
+    (item) => item.transformer_id === transformerId
+  );
   const row = latestRowFor(payload, transformerId);
   const rows = rowsForTransformer(payload, transformerId);
 
@@ -78,39 +85,44 @@ export default function TransformerDetailPage() {
             <GasTrendChart rows={rows} />
           </CardContent>
         </Card>
-
-        <Card className="print:hidden">
-          <CardHeader>
-            <CardTitle>Traditional Diagnostic Methods</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <DiagnosticSwitcher row={row} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Why is this transformer flagged?</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <WhyFlagged row={row} />
-            {summary.ranking_breakdown && <RankingBreakdownPanel breakdown={summary.ranking_breakdown} />}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Technical Notes</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <TechnicalNotes rows={rows} />
-          </CardContent>
-        </Card>
       </div>
+
+      <Card className="print:hidden">
+        <CardHeader>
+          <CardTitle>Traditional Diagnostic Methods</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <DiagnosticSwitcher rows={rows} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Sample &amp; Fault History ({rows.length} record{rows.length === 1 ? "" : "s"})</CardTitle>
+          <CardTitle>Why is this transformer flagged?</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <WhyFlagged row={row} />
+          {summary.ranking_breakdown && (
+            <RankingBreakdownPanel breakdown={summary.ranking_breakdown} />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Technical Notes</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <TechnicalNotes rows={rows} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>
+            Sample &amp; Fault History ({rows.length} record
+            {rows.length === 1 ? "" : "s"})
+          </CardTitle>
         </CardHeader>
         <CardContent>
           <HistoryTable rows={rows} />
@@ -119,7 +131,8 @@ export default function TransformerDetailPage() {
 
       <div className="no-print flex justify-end">
         <Button onClick={() => setConfirmOpen(true)}>
-          <CheckCircle2 className="h-4 w-4" /> Confirm Field Inspection Result
+          <CheckCircle2 className="h-4 w-4" />
+          Confirm Field Inspection Result
         </Button>
       </div>
 

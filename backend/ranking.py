@@ -16,44 +16,65 @@ def _to_float(value):
         x = float(value)
     except (TypeError, ValueError):
         return np.nan
-    return x if np.isfinite(x) else np.nan
+    result = x if np.isfinite(x) else np.nan
+    logger.debug("_to_float: input=%r output=%r", value, result)
+    return result
 
 
 def _status_ordinal(value):
     if isinstance(value, str):
-        return int(cfg.SEVERITY_ORDER.get(value.strip().upper(), 0))
+        result = int(cfg.SEVERITY_ORDER.get(value.strip().upper(), 0))
+        logger.debug("_status_ordinal: str input=%r output=%d", value, result)
+        return result
     x = _to_float(value)
-    return int(np.clip(round(x), 0, 3)) if np.isfinite(x) else 0
+    result = int(np.clip(round(x), 0, 3)) if np.isfinite(x) else 0
+    logger.debug("_status_ordinal: numeric input=%r output=%d", value, result)
+    return result
 
 
 def _parse_list(value):
+    logger.debug("_parse_list: input type=%s value=%r", type(value).__name__, value)
     if isinstance(value, (list, tuple, set)):
-        return list(value)
+        result = list(value)
+        logger.debug("_parse_list: direct collection -> %s", result)
+        return result
     if value is None:
+        logger.debug("_parse_list: None -> []")
         return []
     if isinstance(value, float) and np.isnan(value):
+        logger.debug("_parse_list: NaN -> []")
         return []
     if isinstance(value, str):
         text = value.strip()
         if not text:
+            logger.debug("_parse_list: empty string -> []")
             return []
         try:
             parsed = ast.literal_eval(text)
             if isinstance(parsed, (list, tuple, set)):
-                return list(parsed)
+                result = list(parsed)
+                logger.debug("_parse_list: ast literal -> %s", result)
+                return result
         except Exception:
             pass
-        return [x.strip() for x in text.split(",") if x.strip()]
+        result = [x.strip() for x in text.split(",") if x.strip()]
+        logger.debug("_parse_list: comma split -> %s", result)
+        return result
+    logger.debug("_parse_list: fallback -> []")
     return []
 
 
 def classify_fault_criticality(label):
     fault = normalize_fault(label)
-    return cfg.FAULT_CRITICALITY_CONTEXT.get(fault, "UNKNOWN")
+    result = cfg.FAULT_CRITICALITY_CONTEXT.get(fault, "UNKNOWN")
+    logger.debug("classify_fault_criticality: label=%r fault=%s result=%s", label, fault, result)
+    return result
 
 
 def fault_criticality_source():
-    return cfg.FAULT_CRITICALITY_SOURCE
+    result = cfg.FAULT_CRITICALITY_SOURCE
+    logger.debug("fault_criticality_source: %s", result)
+    return result
 
 
 def _fault_sequence(group):
@@ -64,40 +85,51 @@ def _fault_sequence(group):
     elif "consensus_fault" in group.columns:
         source = group["consensus_fault"]
     else:
+        logger.debug("_fault_sequence: no valid fault column found; returning []")
         return []
     out = []
     for value in source:
         fault = normalize_fault(value)
         if fault not in {"ABSTAIN", "NORMAL"}:
             out.append(fault)
+    logger.debug("_fault_sequence: column=%s out=%s", source.name if hasattr(source, 'name') else 'unknown', out)
     return out
 
 
 def _coarse_fault_sequence(group):
-    return [
+    result = [
         coarse for coarse in (unify_fault(x) for x in _fault_sequence(group))
         if coarse not in {"ABSTAIN", "NORMAL"}
     ]
+    logger.debug("_coarse_fault_sequence: %s", result)
+    return result
 
 
 def _dominant_value(values):
     if not values:
+        logger.debug("_dominant_value: empty -> ABSTAIN")
         return "ABSTAIN"
     counts = pd.Series(values).value_counts()
     top = counts[counts == counts.max()].index.tolist()
-    return "MIXED" if len(top) > 1 else str(top[0])
+    result = "MIXED" if len(top) > 1 else str(top[0])
+    logger.debug("_dominant_value: values=%s counts=%s result=%s", values, counts.to_dict(), result)
+    return result
 
 
 def _entropy(values):
     if not values:
+        logger.debug("_entropy: empty -> NaN")
         return np.nan
     p = pd.Series(values).value_counts().to_numpy(dtype=float)
     p /= p.sum()
-    return float(-np.sum(p * np.log(np.clip(p, 1e-12, None))))
+    result = float(-np.sum(p * np.log(np.clip(p, 1e-12, None))))
+    logger.debug("_entropy: values=%s entropy=%s", values, result)
+    return result
 
 
 def _run_length(values):
     if not values:
+        logger.debug("_run_length: empty -> 0")
         return 0
     current = values[-1]
     length = 0
@@ -105,12 +137,14 @@ def _run_length(values):
         if value != current:
             break
         length += 1
+    logger.debug("_run_length: values=%s length=%d", values, length)
     return length
 
 
 def _transition_stats(statuses):
+    logger.debug("_transition_stats: input statuses=%s", statuses)
     if len(statuses) < 2:
-        return {
+        result = {
             "worsening_count": 0,
             "improving_count": 0,
             "stable_count": 0,
@@ -118,6 +152,8 @@ def _transition_stats(statuses):
             "worsening_ratio": np.nan,
             "improving_ratio": np.nan,
         }
+        logger.debug("_transition_stats: not enough data -> %s", result)
+        return result
     worsening = improving = stable = 0
     for previous, current in zip(statuses[:-1], statuses[1:]):
         if previous == 0 or current == 0:
@@ -129,7 +165,7 @@ def _transition_stats(statuses):
         else:
             stable += 1
     total = worsening + improving + stable
-    return {
+    result = {
         "worsening_count": worsening,
         "improving_count": improving,
         "stable_count": stable,
@@ -137,6 +173,8 @@ def _transition_stats(statuses):
         "worsening_ratio": worsening / total if total else np.nan,
         "improving_ratio": improving / total if total else np.nan,
     }
+    logger.debug("_transition_stats: result=%s", result)
+    return result
 
 
 def _history_fault_stats(group):
@@ -155,7 +193,7 @@ def _history_fault_stats(group):
         if latest_group not in {"ABSTAIN", "NORMAL"}
         else 0
     )
-    return {
+    stats = {
         "history_fault_occurrence_count": len(coarse),
         "history_dominant_fault": _dominant_value(coarse),
         "history_fault_entropy": _entropy(coarse),
@@ -170,11 +208,13 @@ def _history_fault_stats(group):
         "fault_criticality_class": classify_fault_criticality(latest_fault),
         "fault_criticality_source": fault_criticality_source(),
     }
+    logger.debug("_history_fault_stats: stats=%s", stats)
+    return stats
 
 
 def _evidence_key(row):
     """Explicit lexicographic ordering; no hand-assigned numeric weights."""
-    return (
+    key = (
         _status_ordinal(row.get("transformer_overall_severity_level", 0)),
         _to_float(row.get("current_status3_standardized_exceedance", 1.0))
         if np.isfinite(_to_float(row.get("current_status3_standardized_exceedance", 1.0)))
@@ -194,31 +234,42 @@ def _evidence_key(row):
         if np.isfinite(_to_float(row.get("history_worsening_transition_ratio", 0.0)))
         else 0.0,
     )
+    logger.debug("_evidence_key: transformer_id=%s key=%s", row.get("transformer_id", "?"), key)
+    return key
 
 
 def _priority(status):
-    return {3: 3, 2: 2, 1: 1}.get(int(status), 0)
+    result = {3: 3, 2: 2, 1: 1}.get(int(status), 0)
+    logger.debug("_priority: status=%s priority=%d", status, result)
+    return result
 
 
 def _priority_label(priority):
-    return cfg.MAINTENANCE_PRIORITY_LABELS.get(int(priority), "DATA_REVIEW")
+    result = cfg.MAINTENANCE_PRIORITY_LABELS.get(int(priority), "DATA_REVIEW")
+    logger.debug("_priority_label: priority=%s label=%s", priority, result)
+    return result
 
 
 def _priority_reason(status):
     if status == 3:
-        return "IEEE Status 3; ranked by current standardized DGA evidence and historical evidence using explicit lexicographic ordering."
-    if status == 2:
-        return "IEEE Status 2; ranked by current standardized DGA evidence and historical evidence using explicit lexicographic ordering."
-    if status == 1:
-        return "IEEE Status 1; ranked below Status 2 and Status 3, then ordered by explicit evidence fields."
-    return "Required IEEE screening evidence is insufficient."
+        reason = "IEEE Status 3; ranked by current standardized DGA evidence and historical evidence using explicit lexicographic ordering."
+    elif status == 2:
+        reason = "IEEE Status 2; ranked by current standardized DGA evidence and historical evidence using explicit lexicographic ordering."
+    elif status == 1:
+        reason = "IEEE Status 1; ranked below Status 2 and Status 3, then ordered by explicit evidence fields."
+    else:
+        reason = "Required IEEE screening evidence is insufficient."
+    logger.debug("_priority_reason: status=%s reason=%s", status, reason)
+    return reason
 
 
 def _build_transformer_summary(transformer_id, group):
+    logger.debug("_build_transformer_summary: transformer_id=%s input rows=%d", transformer_id, len(group))
     group = group.copy()
     group["sample_day"] = pd.to_datetime(group["sample_day"], errors="coerce")
     group = group.dropna(subset=["sample_day"]).sort_values("sample_day")
     if group.empty:
+        logger.debug("_build_transformer_summary: empty after date filtering; return None")
         return None
 
     latest = group.iloc[-1]
@@ -273,7 +324,7 @@ def _build_transformer_summary(transformer_id, group):
     abnormal_count = int(sum(s >= 2 for s in statuses))
     critical_count = int(sum(s >= 3 for s in statuses))
 
-    return {
+    summary = {
         "transformer_id": transformer_id,
         "loc": latest.get("loc"),
         "name": latest.get("name"),
@@ -337,6 +388,8 @@ def _build_transformer_summary(transformer_id, group):
         "ieee_rate_available": bool(latest.get("ieee_rate_available", False)),
         "ieee_rate_span_months": _to_float(latest.get("ieee_rate_span_months", np.nan)),
     }
+    logger.debug("_build_transformer_summary: completed for %s with status=%d", transformer_id, current_status)
+    return summary
 
 
 def _ranking_key(row):
@@ -344,25 +397,32 @@ def _ranking_key(row):
 
 
 def build_transformer_ranking(df):
+    logger.info("build_transformer_ranking: input rows=%d columns=%s", len(df), list(df.columns))
     required = {"transformer_id", "sample_day", "ieee_dga_status"}
     missing = sorted(required - set(df.columns))
     if missing:
+        logger.error("build_transformer_ranking: missing columns %s", missing)
         raise ValueError(f"Missing columns for transformer ranking: {missing}")
 
     work = df.copy()
     work["sample_day"] = pd.to_datetime(work["sample_day"], errors="coerce")
     work = work.dropna(subset=["transformer_id", "sample_day"])
+    logger.info("build_transformer_ranking: after cleaning rows=%d", len(work))
+
     summaries = []
 
     for transformer_id, group in work.sort_values(
         ["transformer_id", "sample_day"], kind="mergesort"
     ).groupby("transformer_id", sort=False):
+        logger.debug("build_transformer_ranking: processing transformer %s with %d records", transformer_id, len(group))
         item = _build_transformer_summary(transformer_id, group)
         if item is not None:
             summaries.append(item)
 
     ranking = pd.DataFrame(summaries)
+    logger.info("build_transformer_ranking: built %d transformer summaries", len(ranking))
     if ranking.empty:
+        logger.warning("build_transformer_ranking: no valid transformer summaries; returning empty DataFrame")
         return ranking
 
     ranking["_ranking_key"] = ranking.apply(_ranking_key, axis=1)
@@ -420,17 +480,21 @@ def build_transformer_ranking(df):
     ranking["pareto_front"] = False
     ranking["pareto_interpretation"] = "Deprecated compatibility field; Pareto frontier is not used for maintenance priority."
     ranking = ranking.drop(columns=["_ranking_key"])
+    logger.info("build_transformer_ranking: final ranking rows=%d", len(ranking))
     return ranking
 
 
 def _recommended_action(status):
     if int(status) == 3:
-        return "PRIORITY_1_INVESTIGATE_AND_INCREASE_SURVEILLANCE"
-    if int(status) == 2:
-        return "PRIORITY_2_CONFIRM_DGA_AND_INCREASE_SURVEILLANCE"
-    if int(status) == 1:
-        return "PRIORITY_3_ROUTINE_DGA_SURVEILLANCE"
-    return "PRIORITY_4_REVIEW_DATA_BEFORE_CONDITION_ASSESSMENT"
+        action = "PRIORITY_1_INVESTIGATE_AND_INCREASE_SURVEILLANCE"
+    elif int(status) == 2:
+        action = "PRIORITY_2_CONFIRM_DGA_AND_INCREASE_SURVEILLANCE"
+    elif int(status) == 1:
+        action = "PRIORITY_3_ROUTINE_DGA_SURVEILLANCE"
+    else:
+        action = "PRIORITY_4_REVIEW_DATA_BEFORE_CONDITION_ASSESSMENT"
+    logger.debug("_recommended_action: status=%d -> %s", status, action)
+    return action
 
 
 def log_ranking_diagnostics(ranking: pd.DataFrame, top_n: int = 20):

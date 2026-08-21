@@ -5,16 +5,14 @@ export type NativeSeverityLabel =
   | "STATUS_3"
   | "INSUFFICIENT_DATA";
 
-/** IEEE C57.104 DGA screening status. This is NOT maintenance priority. */
 export type RiskStatus =
   | "Normal"
   | "Watch"
   | "High"
   | "Insufficient data";
 
-/** Operational maintenance queue emitted by the backend. */
+/** Backend maintenance queue is separate from IEEE status. */
 export type MaintenancePriority =
-  | "CRITICAL"
   | "HIGH_RISK"
   | "WATCH"
   | "NORMAL"
@@ -44,12 +42,10 @@ export interface Prediction {
   ieee_status_label?: NativeSeverityLabel | string;
   status?: RiskStatus;
   severity: RiskStatus | string;
-
   maintenance_priority?: MaintenancePriority | string;
   critical_front?: boolean;
   maintenance_priority_reason?: string;
   critical_evidence_ratio?: number | null;
-
   fault_type: string;
   fault_group?: string;
   fault_criticality_class?: FaultCriticalityClass;
@@ -77,13 +73,11 @@ export interface DiagnosticVotes {
 export interface DgaRow {
   transformer_id: string;
   sample_day: string;
-
   loc?: string;
   name?: string;
   ser?: string;
   codetx?: string;
   mfg?: string;
-
   h2?: number;
   ch4?: number;
   c2h6?: number;
@@ -102,45 +96,36 @@ export interface DgaRow {
   ieee_dga_status_reason?: string;
   ieee_recommended_action?: string;
   ieee_confirmation_required?: boolean;
-
   ieee_max_standardized_exceedance?: number;
   ieee_max_status3_standardized_exceedance?: number;
   ieee_standard_trigger_count?: number;
-
   ieee_table1_max_exceedance_ratio?: number;
   ieee_table2_max_exceedance_ratio?: number;
   ieee_table3_max_exceedance_ratio?: number;
   ieee_table4_max_exceedance_ratio?: number;
-
   ieee_table1_exceeding_gases?: string[];
   ieee_table2_exceeding_gases?: string[];
   ieee_table3_exceeding_gases?: string[];
   ieee_table4_exceeding_gases?: string[];
-
   ieee_delta_available?: boolean;
   ieee_rate_available?: boolean;
   ieee_rate_span_months?: number;
-
   ieee_o2_n2_ratio?: number;
   ieee_o2_n2_section?: string;
   ieee_age_bucket?: string;
   ieee_transformer_age_years?: number;
-
   ieee_tdcg_ppm?: number;
-
   iec_60599_standard?: string;
   iec_60599_ratio_available?: boolean;
   iec_60599_ratio_count?: number;
   iec_60599_ratios?: Record<string, number | null>;
   iec_60599_interpretation_flags?: string[];
-
   ieee_delta?: Record<string, number>;
   ieee_gas_rate_ppm_per_year?: Record<string, number>;
 
   consensus_fault?: string;
   consensus_fault_traditional?: string;
   consensus_fault_group?: string;
-
   final_fault?: string;
   final_fault_group?: string;
   final_fault_source?: string;
@@ -149,7 +134,6 @@ export interface DgaRow {
 
   fault_criticality_class?: FaultCriticalityClass;
   fault_criticality_source?: string;
-
   diagnostic_confidence?: number;
   diagnostic_coverage?: number;
   diagnostic_agreement_ratio?: number;
@@ -158,7 +142,6 @@ export interface DgaRow {
   weak_fine_fault_group?: string;
   weak_fine_posterior_max?: number;
   weak_fine_entropy?: number;
-
   weak_coarse_fault?: string;
   weak_coarse_fault_group?: string;
   weak_coarse_posterior_max?: number;
@@ -192,7 +175,6 @@ export interface RankingBreakdown {
   fleet_priority_percent?: number | null;
   maintenance_priority?: MaintenancePriority | string;
   maintenance_rank?: number;
-  critical_front?: boolean;
   current_status3_standardized_exceedance?: number | null;
   current_standardized_exceedance?: number | null;
   current_delta_exceedance?: number;
@@ -213,7 +195,6 @@ export interface TransformerSummary {
   maintenance_rank?: number;
   rank_tie?: boolean;
   rank_group_size?: number;
-
   transformer_id: string;
   latest_sample_day: string;
   loc?: string;
@@ -227,6 +208,7 @@ export interface TransformerSummary {
   maintenance_priority: MaintenancePriority | string;
   maintenance_priority_ordinal?: number;
   maintenance_priority_reason?: string;
+
   critical_front?: boolean;
   critical_rule?: string;
   critical_reference?: string;
@@ -238,10 +220,10 @@ export interface TransformerSummary {
   fault_group?: string;
   fault_criticality_class?: FaultCriticalityClass;
   fault_criticality_source?: string;
-  trend?: TrendDirection;
 
-  priority_score: number;
-  priority_label: MaintenancePriority | string;
+  trend?: TrendDirection;
+  priority_score?: number | null;
+  priority_label?: MaintenancePriority | string;
   recommended_action: string;
   reason: string;
 
@@ -252,16 +234,22 @@ export interface TransformerSummary {
   historical_max_standardized_exceedance?: number | null;
   history_max_status_before_current?: number;
   history_record_count?: number;
-  history_worsening_transition_ratio?: number | null;
+  history_abnormal_record_ratio?: number | null;
   history_recurrent_fault_fraction?: number | null;
+  history_worsening_transition_ratio?: number | null;
   pareto_dominance_count?: number;
   pareto_front?: boolean;
-
   maintenance_priority_rank_percentile?: number | null;
+
+  /**
+   * Backend explicitly defines priority_score as a fleet-rank percentile,
+   * not a health/severity score and not a weighted sum.
+   */
   priority_score_type?: string;
   ranking_policy?: string;
   ranking_is_weighted?: boolean;
   ranking_is_health_score?: boolean;
+
   features: Record<string, unknown>;
   ranking_breakdown?: RankingBreakdown;
 }
@@ -279,9 +267,8 @@ export interface TimeseriesPoint {
   fault_group?: string;
   fault_criticality_class?: FaultCriticalityClass;
   severity: NativeSeverityLabel | string;
-  critical_front?: boolean;
-  critical_evidence_ratio?: number | null;
-  confirmation_required?: boolean;
+  maintenance_priority?: MaintenancePriority | string;
+  recommended_action?: string;
 }
 
 export interface DatasetSummary {
@@ -291,14 +278,20 @@ export interface DatasetSummary {
   severity_status_2?: number;
   severity_status_3?: number;
   severity_insufficient_data?: number;
-  critical_transformer_count?: number;
+
+  /** Backend maintenance queue: Status 3 / Status 2 / Status 1 / insufficient. */
   high_risk_transformer_count?: number;
-  maintenance_priority_counts?: Partial<Record<MaintenancePriority, number>> & Record<string, number>;
+  maintenance_priority_counts?: Partial<Record<MaintenancePriority, number>> &
+    Record<string, number>;
+
+  critical_transformer_count?: number;
   critical_queue_top20?: Array<Record<string, unknown>>;
   critical_rule?: string;
   critical_reference?: string;
+
   fault_criticality_context_counts?: Record<string, number>;
   fault_criticality_source?: string;
+
   traditional_abstain_rows?: number;
   student_fallback_rows?: number;
   student_traditional_physical_conflicts?: number;

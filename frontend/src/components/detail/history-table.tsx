@@ -35,17 +35,22 @@ export function HistoryTable({ rows }: { rows: DgaRow[] }) {
   const [sortKey, setSortKey] = useState<SortKey>("sample_day");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
-  const enriched = useMemo(() => rows.map((row) => ({
-    row,
-    status: ieeeStatusToRiskStatus(row.ieee_dga_status),
-  })), [rows]);
+  const enriched = useMemo(
+    () => rows.map((row) => ({ row, status: ieeeStatusToRiskStatus(row.ieee_dga_status) })),
+    [rows]
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     let list = enriched;
+
     if (q) {
       list = list.filter(({ row, status }) => [
-        formatDate(row.sample_day), status, row.final_fault, row.consensus_fault, row.fault_criticality_class,
+        formatDate(row.sample_day),
+        status,
+        row.final_fault,
+        row.consensus_fault,
+        row.fault_criticality_class,
         row.ieee_dga_status_reason,
         ...METHOD_COLUMNS.map((column) => String(row[column.key] ?? "")),
       ].join(" ").toLowerCase().includes(q));
@@ -64,7 +69,10 @@ export function HistoryTable({ rows }: { rows: DgaRow[] }) {
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortDir((dir) => (dir === "asc" ? "desc" : "asc"));
-    else { setSortKey(key); setSortDir("desc"); }
+    else {
+      setSortKey(key);
+      setSortDir("desc");
+    }
   }
 
   const insightCounts = useMemo(() => {
@@ -78,13 +86,22 @@ export function HistoryTable({ rows }: { rows: DgaRow[] }) {
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-cream-300 bg-cream-50 px-3 py-2.5 text-xs">
         <span className="font-semibold text-teal-700">{enriched.length} record{enriched.length === 1 ? "" : "s"}</span>
         {(["Normal", "Watch", "High", "Insufficient data"] as const).map((severity) =>
-          insightCounts[severity] ? <span key={severity} className={`rounded-full px-2 py-0.5 font-semibold ${STATUS_STYLES[severity].bg} ${STATUS_STYLES[severity].text}`}>{insightCounts[severity]} {severity}</span> : null
+          insightCounts[severity] ? (
+            <span key={severity} className={`rounded-full px-2 py-0.5 font-semibold ${STATUS_STYLES[severity].bg} ${STATUS_STYLES[severity].text}`}>
+              {insightCounts[severity]} {severity}
+            </span>
+          ) : null
         )}
       </div>
 
       <div className="relative">
         <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-teal-400" />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by date, IEEE status, fault, or evidence…" className="w-full rounded-lg border border-teal-200 bg-white py-2 pl-8 pr-3 text-xs text-teal-900 outline-none focus:border-teal-500" />
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search by date, IEEE status, fault, or evidence…"
+          className="w-full rounded-lg border border-teal-200 bg-white py-2 pl-8 pr-3 text-xs text-teal-900 outline-none focus:border-teal-500"
+        />
       </div>
 
       <div className="max-h-[420px] overflow-auto rounded-lg border border-cream-200">
@@ -104,7 +121,7 @@ export function HistoryTable({ rows }: { rows: DgaRow[] }) {
             {filtered.map(({ row, status }, index) => {
               const consensus = row.final_fault ?? row.consensus_fault ?? "ABSTAIN";
               return (
-                <tr key={`${row.sample_day}-${index}`} className="border-b border-cream-200 last:border-0 hover:bg-cream-50">
+                <tr key={`${row.transformer_id}-${row.sample_day}-${index}`} className="border-b border-cream-200 last:border-0 hover:bg-cream-50">
                   <td className="sticky left-0 z-10 whitespace-nowrap bg-white px-3 py-2 font-medium text-teal-800">{formatDate(row.sample_day)}</td>
                   <td className="px-3 py-2"><StatusBadge status={status} /></td>
                   <td className="px-3 py-2 font-mono text-teal-700">{row.ieee_max_status3_standardized_exceedance != null ? `${formatNumber(row.ieee_max_status3_standardized_exceedance, 2)}×` : "—"}</td>
@@ -132,7 +149,8 @@ function Header({ label, column, sortKey, sortDir, onSort }: { label: string; co
   return (
     <th className="px-3 py-2">
       <button type="button" onClick={() => onSort(column)} className="flex items-center gap-1 whitespace-nowrap hover:text-teal-800">
-        {label}{!active ? <ArrowUpDown className="h-3 w-3 text-teal-300" /> : sortDir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
+        {label}
+        {!active ? <ArrowUpDown className="h-3 w-3 text-teal-300" /> : sortDir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
       </button>
     </th>
   );

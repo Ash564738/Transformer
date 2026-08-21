@@ -3,12 +3,7 @@
 
 import { useDashboardStore } from "@/store/use-dashboard-store";
 import { EmptyState } from "@/components/layout/empty-state";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { SeverityDistributionChart } from "@/components/overview/severity-distribution-chart";
 import { FaultDistributionChart } from "@/components/overview/fault-distribution-chart";
 import { TopTrendChart } from "@/components/overview/top-trend-chart";
@@ -16,7 +11,7 @@ import { formatNumber } from "@/lib/utils";
 
 export default function OverviewPage() {
   const payload = useDashboardStore((s) => s.payload);
-  
+
   if (!payload) {
     return (
       <EmptyState
@@ -26,16 +21,23 @@ export default function OverviewPage() {
     );
   }
 
-  const avgConfidence =
-    payload.rows.reduce(
-      (sum, row) => sum + (Number(row.diagnostic_confidence) || 0),
-      0
-    ) / Math.max(1, payload.rows.length);
+  const confidenceValues = payload.rows
+    .map((row) => Number(row.diagnostic_confidence))
+    .filter((value) => Number.isFinite(value));
 
-  const criticalQueue =
-    payload.dataset_summary.critical_transformer_count ??
-    payload.dataset_summary.maintenance_priority_counts?.CRITICAL ??
-    0;
+  const avgConfidence =
+    confidenceValues.length > 0
+      ? confidenceValues.reduce((sum, value) => sum + value, 0) /
+        confidenceValues.length
+      : null;
+
+  const highRiskQueue =
+    payload.dataset_summary.high_risk_transformer_count ??
+    payload.dataset_summary.maintenance_priority_counts?.HIGH_RISK ??
+    payload.transformer_summary.filter(
+      (summary) =>
+        String(summary.maintenance_priority).toUpperCase() === "HIGH_RISK"
+    ).length;
 
   return (
     <div className="space-y-6">
@@ -43,10 +45,9 @@ export default function OverviewPage() {
         <h1 className="text-2xl font-extrabold tracking-tight text-teal-900">
           Overview
         </h1>
-
         <p className="mt-1 text-sm text-teal-500">
-          Fleet-wide trends across IEEE DGA status, maintenance priority,
-          fault type, and time.
+          Fleet-wide view of IEEE DGA condition status, maintenance ranking,
+          fault diagnostics, and temporal history.
         </p>
       </div>
 
@@ -55,31 +56,32 @@ export default function OverviewPage() {
           label="Transformers"
           value={payload.dataset_summary.total_transformers}
         />
-
         <MetricCard
           label="Total samples"
           value={payload.dataset_summary.total_rows}
         />
-
-        <MetricCard
-          label="Critical queue"
-          value={criticalQueue}
-        />
-
+        <MetricCard label="Maintenance high risk" value={highRiskQueue} />
         <MetricCard
           label="Avg. diagnostic confidence"
-          value={`${formatNumber(avgConfidence, 0)}%`}
+          value={
+            avgConfidence == null
+              ? "—"
+              : `${formatNumber(avgConfidence, 0)}%`
+          }
         />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="rounded-xl border border-teal-100 bg-teal-50 px-4 py-3 text-xs leading-5 text-teal-700">
+        IEEE Status and maintenance priority are separate axes. The ranking is
+        produced by an explicit lexicographic evidence policy; the displayed
+        priority percentile is not a weighted health score.
+      </div>
+
+      <div className="space-y-4">
         <Card>
           <CardHeader>
-            <CardTitle>
-              Trend of Top 5 Maintenance-Priority Transformers
-            </CardTitle>
+            <CardTitle>IEEE Status Trend</CardTitle>
           </CardHeader>
-
           <CardContent>
             <TopTrendChart payload={payload} />
           </CardContent>
@@ -89,11 +91,8 @@ export default function OverviewPage() {
           <CardHeader>
             <CardTitle>IEEE DGA Status Distribution</CardTitle>
           </CardHeader>
-
           <CardContent>
-            <SeverityDistributionChart
-              summaries={payload.transformer_summary}
-            />
+            <SeverityDistributionChart summaries={payload.transformer_summary} />
           </CardContent>
         </Card>
 
@@ -101,7 +100,6 @@ export default function OverviewPage() {
           <CardHeader>
             <CardTitle>Fault Type Distribution</CardTitle>
           </CardHeader>
-
           <CardContent>
             <FaultDistributionChart
               summaries={payload.transformer_summary}
@@ -126,7 +124,6 @@ function MetricCard({
       <div className="text-xs font-semibold uppercase tracking-wide text-teal-400">
         {label}
       </div>
-
       <div className="mt-1 text-2xl font-extrabold text-teal-900">
         {value}
       </div>

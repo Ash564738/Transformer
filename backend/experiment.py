@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import csv
 import math
+import json
 from pathlib import Path
+import numpy as np
 import pandas as pd
 from artifact_tool import SpreadsheetFile, Workbook
+import logging
+
+logger = logging.getLogger(__name__)
 
 REPORT_SHEETS = [
     ("Traditional_Individual", "traditional_individual_benchmark.csv"),
@@ -24,46 +29,153 @@ REPORT_SHEETS = [
 
 def read_csv_file(path):
     path = Path(path)
-    if not path.exists(): return None
-    with path.open("r", encoding="utf-8-sig", newline="") as handle: return list(csv.reader(handle))
+    logger.debug("read_csv_file: path=%s exists=%s", path, path.exists())
+    if not path.exists():
+        logger.debug("read_csv_file: returning None for missing file")
+        return None
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle))
+    logger.debug("read_csv_file: rows=%d", len(rows))
+    return rows
 
 
 def _col_name(number):
     output = ""
     while number:
-        number, remainder = divmod(number - 1, 26); output = chr(65 + remainder) + output
+        number, remainder = divmod(number - 1, 26)
+        output = chr(65 + remainder) + output
+    logger.debug("_col_name: input=%s output=%s", number, output)
     return output
 
 
+def _excel_safe(value):
+    """
+    Convert dataframe/object values into values accepted by openpyxl.
+
+    In particular, pandas/object columns can contain numpy arrays (including
+    empty arrays). openpyxl cannot store ndarray/list/dict objects directly
+    in a cell, so complex values are represented as text.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return ""
+        if value.ndim == 0:
+            return _excel_safe(value.item())
+        try:
+            return json.dumps(value.tolist(), ensure_ascii=False, default=str)
+        except Exception:
+            return str(value)
+
+    if isinstance(value, (list, tuple, set, dict)):
+        try:
+            return json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            return str(value)
+
+    if isinstance(value, np.generic):
+        try:
+            return _excel_safe(value.item())
+        except Exception:
+            return str(value)
+
+    if isinstance(value, (pd.Timestamp, pd.Timedelta)):
+        return value.to_pydatetime() if isinstance(value, pd.Timestamp) else str(value)
+
+    if value is pd.NaT:
+        return None
+
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+
+    try:
+        missing = pd.isna(value)
+        if isinstance(missing, (bool, np.bool_)) and bool(missing):
+            return None
+    except Exception:
+        pass
+
+    return value
+
+
 def write_table(sheet, rows, start_row=1, start_col=1, max_width=36):
-    if not rows: return
-    ncol = max(len(row) for row in rows); normalized = [list(row) + [""] * (ncol - len(row)) for row in rows]
-    end_row = start_row + len(normalized) - 1; end_col = start_col + ncol - 1
-    ref = f"{_col_name(start_col)}{start_row}:{_col_name(end_col)}{end_row}"; sheet.get_range(ref).values = normalized
-    header_ref = f"{_col_name(start_col)}{start_row}:{_col_name(end_col)}{start_row}"; sheet.get_range(header_ref).format.wrap_text = True
+    logger.debug(
+        "write_table: start_row=%s start_col=%s max_width=%s rows=%d",
+        start_row, start_col, max_width, len(rows),
+    )
+    if not rows:
+        logger.debug("write_table: no rows, skipping")
+        return
+
+    ncol = max(len(row) for row in rows)
+
+    normalized = [
+        [_excel_safe(value) for value in (list(row) + [""] * (ncol - len(row)))]
+        for row in rows
+    ]
+
+    end_row = start_row + len(normalized) - 1
+    end_col = start_col + ncol - 1
+    ref = f"{_col_name(start_col)}{start_row}:{_col_name(end_col)}{end_row}"
+    sheet.get_range(ref).values = normalized
+
+    header_ref = f"{_col_name(start_col)}{start_row}:{_col_name(end_col)}{start_row}"
+    sheet.get_range(header_ref).format.wrap_text = True
+
     body_start = start_row + 1
-    if body_start <= end_row: sheet.get_range(f"{_col_name(start_col)}{body_start}:{_col_name(end_col)}{end_row}").format.wrap_text = True
+    if body_start <= end_row:
+        sheet.get_range(
+            f"{_col_name(start_col)}{body_start}:{_col_name(end_col)}{end_row}"
+        ).format.wrap_text = True
+
     sheet.freeze_panes.freeze_rows(1)
-    for column in range(start_col, end_col + 1): sheet.get_range(f"{_col_name(column)}{start_row}:{_col_name(column)}{end_row}").format.column_width = max_width
+
+    for column in range(start_col, end_col + 1):
+        sheet.get_range(
+            f"{_col_name(column)}{start_row}:{_col_name(column)}{end_row}"
+        ).format.column_width = max_width
+
+    logger.debug("write_table: wrote range %s", ref)
 
 
 def _add_chart(sheet, source_ref, title, position, chart_type="bar"):
-    chart = sheet.charts.add(chart_type, sheet.get_range(source_ref), title=title); chart.title_text = title; chart.set_position(*position); return chart
+    logger.debug(
+        "_add_chart: source=%s title=%s position=%s type=%s",
+        source_ref, title, position, chart_type,
+    )
+    chart = sheet.charts.add(chart_type, sheet.get_range(source_ref), title=title)
+    chart.title_text = title
+    chart.set_position(*position)
+    return chart
 
 
 def _float(value, default=None):
     try:
-        x = float(value); return x if math.isfinite(x) else default
-    except (TypeError, ValueError): return default
+        x = float(value)
+        result = x if math.isfinite(x) else default
+    except (TypeError, ValueError):
+        result = default
+    logger.debug("_float: value=%r default=%r result=%r", value, default, result)
+    return result
 
 
 def _lookup(rows):
-    if not rows: return [], {}
-    header = rows[0]; return rows[1:], {name: i for i, name in enumerate(header)}
+    logger.debug("_lookup: rows=%d", len(rows))
+    if not rows:
+        return [], {}
+    header = rows[0]
+    index = {name: i for i, name in enumerate(header)}
+    logger.debug("_lookup: header=%s", header)
+    return rows[1:], index
 
 
 def _build_summary_sheet(wb, report_dir, processed_dir):
-    sheet = wb.worksheets.add("Dashboard"); sheet.get_range("A1:H1").merge(); sheet.get_range("A1").values = [["DGA RESEARCH REPORT — UNLABELED OPERATIONAL DATA"]]
+    logger.info("Building Summary sheet")
+    sheet = wb.worksheets.add("Dashboard")
+    sheet.get_range("A1:H1").merge()
+    sheet.get_range("A1").values = [["DGA RESEARCH REPORT — UNLABELED OPERATIONAL DATA"]]
     rows = [
         ["Item", "Definition"],
         ["Operational dataset", "4561-row unlabeled operational DGA dataset; traditional diagnostics are weak labeling functions and student models are trained only on operational weak labels."],
@@ -78,9 +190,11 @@ def _build_summary_sheet(wb, report_dir, processed_dir):
         ["Fleet ranking", "One transformer row per asset. Current IEEE status is the primary condition level; standardized current evidence and history are lexicographic tie-break evidence, not weighted into a health score."],
     ]
     write_table(sheet, rows, start_row=3, max_width=100)
+    logger.info("Summary sheet completed")
 
 
 def _build_protocol_sheet(wb, benchmark_dir):
+    logger.info("Building Protocol sheet")
     sheet = wb.worksheets.add("Evaluation_Protocol")
     rows = [
         ["Item", "Protocol"],
@@ -98,101 +212,226 @@ def _build_protocol_sheet(wb, benchmark_dir):
         ["Class coverage", "LF activation rate within each labeled fault class."],
     ]
     write_table(sheet, rows, start_row=2, max_width=96)
+    logger.info("Protocol sheet completed")
 
 
 def _build_traditional_chart(wb, benchmark_dir):
-    rows = read_csv_file(benchmark_dir / "traditional_individual_benchmark.csv"); data, idx = _lookup(rows)
-    if not data or not {"method", "granularity", "split", "macro_f1", "coverage"}.issubset(idx): return
+    logger.info("Building traditional methods chart")
+    rows = read_csv_file(benchmark_dir / "traditional_individual_benchmark.csv")
+    data, idx = _lookup(rows)
+    if not data or not {"method", "granularity", "split", "macro_f1", "coverage"}.issubset(idx):
+        logger.warning("traditional_individual_benchmark.csv missing required columns; skipping chart")
+        return
+    logger.debug("traditional chart data rows=%d", len(data))
     selected = [r for r in data if r[idx["granularity"]] == "fine" and r[idx["split"]] == "locked_test" and str(r[idx.get("selected_on_development", -1)]).lower() == "true"]
-    if not selected: selected = [r for r in data if r[idx["granularity"]] == "fine" and r[idx["split"]] == "locked_test"]
+    if not selected:
+        selected = [r for r in data if r[idx["granularity"]] == "fine" and r[idx["split"]] == "locked_test"]
+        logger.debug("using all fine locked_test rows (selected_on_development absent or no true rows)")
+    logger.debug("traditional chart selected rows=%d", len(selected))
     sheet = wb.worksheets.add("Chart_Traditional")
     table = [["Method", "Macro F1", "Balanced Accuracy", "Coverage %", "Abstain-aware Accuracy"]]
-    for r in selected: table.append([r[idx["method"]], _float(r[idx["macro_f1"]]), _float(r[idx["balanced_accuracy"]]), (_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0, _float(r[idx["overall_accuracy_with_abstain_error"]])])
-    write_table(sheet, table, max_width=24); _add_chart(sheet, f"A1:D{len(table)}", "Traditional methods on locked test", ("G2", "P24"), "bar")
+    for r in selected:
+        table.append([r[idx["method"]], _float(r[idx["macro_f1"]]), _float(r[idx["balanced_accuracy"]]), (_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0, _float(r[idx["overall_accuracy_with_abstain_error"]])])
+    write_table(sheet, table, max_width=24)
+    _add_chart(sheet, f"A1:D{len(table)}", "Traditional methods on locked test", ("G2", "P24"), "bar")
+    logger.info("Traditional chart completed")
 
 
 def _build_combination_chart(wb, benchmark_dir):
-    rows = read_csv_file(benchmark_dir / "traditional_combinations_benchmark.csv"); data, idx = _lookup(rows)
-    if not data or not {"methods", "granularity", "split", "macro_f1"}.issubset(idx): return
+    logger.info("Building traditional combinations chart")
+    rows = read_csv_file(benchmark_dir / "traditional_combinations_benchmark.csv")
+    data, idx = _lookup(rows)
+    if not data or not {"methods", "granularity", "split", "macro_f1"}.issubset(idx):
+        logger.warning("traditional_combinations_benchmark.csv missing required columns; skipping chart")
+        return
+    logger.debug("combinations chart data rows=%d", len(data))
     selected = [r for r in data if r[idx["granularity"]] == "fine" and r[idx["split"]] == "locked_test" and str(r[idx.get("selected_on_development", -1)]).lower() == "true"]
-    if not selected: selected = sorted([r for r in data if r[idx["granularity"]] == "fine" and r[idx["split"]] == "locked_test"], key=lambda r: _float(r[idx["macro_f1"]], -1), reverse=True)[:10]
+    if not selected:
+        selected = sorted([r for r in data if r[idx["granularity"]] == "fine" and r[idx["split"]] == "locked_test"], key=lambda r: _float(r[idx["macro_f1"]], -1), reverse=True)[:10]
+        logger.debug("falling back to top 10 by macro_f1")
+    logger.debug("combinations chart selected rows=%d", len(selected))
     sheet = wb.worksheets.add("Chart_Combinations")
     table = [["Combination", "Method Count", "Macro F1", "Coverage %", "Abstain-aware Accuracy"]]
-    for r in selected: table.append([r[idx["methods"]], int(float(r[idx["method_count"]])), _float(r[idx["macro_f1"]]), (_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0, _float(r[idx["overall_accuracy_with_abstain_error"]])])
-    write_table(sheet, table, max_width=42); _add_chart(sheet, f"A1:D{len(table)}", "Best traditional combinations", ("F2", "P28"), "bar")
+    for r in selected:
+        table.append([r[idx["methods"]], int(float(r[idx["method_count"]])), _float(r[idx["macro_f1"]]), (_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0, _float(r[idx["overall_accuracy_with_abstain_error"]])])
+    write_table(sheet, table, max_width=42)
+    _add_chart(sheet, f"A1:D{len(table)}", "Best traditional combinations", ("F2", "P28"), "bar")
+    logger.info("Combinations chart completed")
 
 
 def _build_model_transfer_chart(wb, benchmark_dir):
+    logger.info("Building model transfer chart")
     source_files = [("Weak+Student", "weak_transfer_fault_benchmark.csv", "selected_on_dev"), ("Supervised reference", "supervised_fault_benchmark.csv", "selected_on_dev"), ("Hybrid", "weak_traditional_hybrid_benchmark.csv", "selected_on_dev")]
     records = []
     for approach, filename, flag in source_files:
-        rows = read_csv_file(benchmark_dir / filename); data, idx = _lookup(rows)
-        if not data or "granularity" not in idx or "split" not in idx or "macro_f1" not in idx: continue
+        rows = read_csv_file(benchmark_dir / filename)
+        data, idx = _lookup(rows)
+        if not data or "granularity" not in idx or "split" not in idx or "macro_f1" not in idx:
+            logger.warning("%s missing required columns; skipping", filename)
+            continue
+        logger.debug("processing %s: %d rows", approach, len(data))
         for r in data:
             if r[idx["granularity"]] == "fine" and r[idx["split"]] == "locked_test" and (flag not in idx or str(r[idx[flag]]).lower() == "true"):
                 records.append([approach, r[idx.get("model", idx.get("hybrid_policy", 0))], r[idx.get("feature_mode", 0)], _float(r[idx["macro_f1"]]), (_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0, _float(r[idx["overall_accuracy_with_abstain_error"]])])
-    if not records: return
-    sheet = wb.worksheets.add("Chart_Model_Transfer"); table = [["Approach", "Model/Policy", "Feature Mode", "TEST Macro F1", "Coverage %", "Abstain-aware Accuracy"]] + records
-    write_table(sheet, table, max_width=28); _add_chart(sheet, f"A1:E{len(table)}", "ML / weak-transfer / hybrid comparison", ("H2", "Q28"), "bar")
+    if not records:
+        logger.warning("No records for model transfer chart; skipping")
+        return
+    logger.debug("model transfer records=%d", len(records))
+    sheet = wb.worksheets.add("Chart_Model_Transfer")
+    table = [["Approach", "Model/Policy", "Feature Mode", "TEST Macro F1", "Coverage %", "Abstain-aware Accuracy"]] + records
+    write_table(sheet, table, max_width=28)
+    _add_chart(sheet, f"A1:E{len(table)}", "ML / weak-transfer / hybrid comparison", ("H2", "Q28"), "bar")
+    logger.info("Model transfer chart completed")
 
 
 def _build_ppm_chart(wb, benchmark_dir):
-    rows = read_csv_file(benchmark_dir / "traditional_ppm_coverage.csv"); data, idx = _lookup(rows)
-    if not data or not {"method", "gas", "coverage", "min_ppm", "max_ppm"}.issubset(idx): return
-    gases = ["h2", "ch4", "c2h6", "c2h4", "c2h2"]; pivot = {}
+    logger.info("Building PPM coverage chart")
+    rows = read_csv_file(benchmark_dir / "traditional_ppm_coverage.csv")
+    data, idx = _lookup(rows)
+    if not data or not {"method", "gas", "coverage", "min_ppm", "max_ppm"}.issubset(idx):
+        logger.warning("traditional_ppm_coverage.csv missing required columns; skipping chart")
+        return
+    gases = ["h2", "ch4", "c2h6", "c2h4", "c2h2"]
+    pivot = {}
     for r in data:
-        method = r[idx["method"]]; gas = r[idx["gas"]]
+        method = r[idx["method"]]
+        gas = r[idx["gas"]]
         pivot.setdefault(method, {})[gas] = [(_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0, _float(r[idx["min_ppm"]]), _float(r[idx["max_ppm"]])]
-    sheet = wb.worksheets.add("Chart_PPM_Coverage"); table = [["Method"] + [f"{g}_Coverage_%" for g in gases]]
-    for method in sorted(pivot): table.append([method] + [pivot[method].get(g, [0])[0] for g in gases])
-    write_table(sheet, table, max_width=20); _add_chart(sheet, f"A1:F{len(table)}", "Traditional empirical coverage by gas", ("H2", "P24"), "bar")
-    range_sheet = wb.worksheets.add("Chart_PPM_Range"); range_table = [["Method", "Gas", "Min ppm", "P05 ppm", "Median ppm", "P95 ppm", "Max ppm", "Observed Range ppm"]]
+    logger.debug("ppm pivot methods=%d", len(pivot))
+    sheet = wb.worksheets.add("Chart_PPM_Coverage")
+    table = [["Method"] + [f"{g}_Coverage_%" for g in gases]]
+    for method in sorted(pivot):
+        table.append([method] + [pivot[method].get(g, [0])[0] for g in gases])
+    write_table(sheet, table, max_width=20)
+    _add_chart(sheet, f"A1:F{len(table)}", "Traditional empirical coverage by gas", ("H2", "P24"), "bar")
+    range_sheet = wb.worksheets.add("Chart_PPM_Range")
+    range_table = [["Method", "Gas", "Min ppm", "P05 ppm", "Median ppm", "P95 ppm", "Max ppm", "Observed Range ppm"]]
     for method in sorted(pivot):
         for gas in gases:
             vals = pivot[method].get(gas)
-            if vals: range_table.append([method, gas, vals[1], None, None, None, vals[2], vals[2] - vals[1] if vals[1] is not None and vals[2] is not None else None])
+            if vals:
+                range_table.append([method, gas, vals[1], None, None, None, vals[2], vals[2] - vals[1] if vals[1] is not None and vals[2] is not None else None])
     write_table(range_sheet, range_table, max_width=22)
+    logger.info("PPM coverage chart completed")
 
 
 def _build_class_coverage_chart(wb, benchmark_dir):
-    rows = read_csv_file(benchmark_dir / "traditional_fault_class_coverage.csv"); data, idx = _lookup(rows)
-    if not data or not {"method", "fault_class", "class_coverage_percent"}.issubset(idx): return
-    classes = sorted({r[idx["fault_class"]] for r in data}); methods = sorted({r[idx["method"]] for r in data}); pivot = {(r[idx["method"]], r[idx["fault_class"]]): _float(r[idx["class_coverage_percent"]], 0.0) or 0.0 for r in data}
-    sheet = wb.worksheets.add("Chart_Class_Coverage"); table = [["Method"] + classes]
-    for method in methods: table.append([method] + [pivot.get((method, cls), 0.0) for cls in classes])
-    write_table(sheet, table, max_width=20); _add_chart(sheet, f"A1:{_col_name(len(classes)+1)}{len(table)}", "Traditional LF coverage by fault class (%)", ("A20", "J40"), "bar")
+    logger.info("Building class coverage chart")
+    rows = read_csv_file(benchmark_dir / "traditional_fault_class_coverage.csv")
+    data, idx = _lookup(rows)
+    if not data or not {"method", "fault_class", "class_coverage_percent"}.issubset(idx):
+        logger.warning("traditional_fault_class_coverage.csv missing required columns; skipping chart")
+        return
+    classes = sorted({r[idx["fault_class"]] for r in data})
+    methods = sorted({r[idx["method"]] for r in data})
+    pivot = {(r[idx["method"]], r[idx["fault_class"]]): _float(r[idx["class_coverage_percent"]], 0.0) or 0.0 for r in data}
+    logger.debug("class coverage: classes=%d methods=%d", len(classes), len(methods))
+    sheet = wb.worksheets.add("Chart_Class_Coverage")
+    table = [["Method"] + classes]
+    for method in methods:
+        table.append([method] + [pivot.get((method, cls), 0.0) for cls in classes])
+    write_table(sheet, table, max_width=20)
+    _add_chart(sheet, f"A1:{_col_name(len(classes)+1)}{len(table)}", "Traditional LF coverage by fault class (%)", ("A20", "J40"), "bar")
+    logger.info("Class coverage chart completed")
 
 
 def _build_ranking_chart(wb, report_dir):
-    rows = read_csv_file(report_dir / "transformer_ranking.csv"); data, idx = _lookup(rows)
-    if not data or not {"transformer_id", "rank", "transformer_overall_severity_level"}.issubset(idx): return
-    top = data[:20]; sheet = wb.worksheets.add("Chart_Transformer_Ranking"); table = [["Transformer", "Fleet Rank", "Current IEEE Status"]]
-    for r in top: table.append([r[idx["transformer_id"]], int(float(r[idx["rank"]])), int(float(r[idx["transformer_overall_severity_level"]]))])
-    write_table(sheet, table, max_width=28); _add_chart(sheet, f"A1:C{len(table)}", "Top 20 transformer fleet priority", ("E2", "M28"), "bar")
+    logger.info("Building transformer ranking chart")
+    rows = read_csv_file(report_dir / "transformer_ranking.csv")
+    data, idx = _lookup(rows)
+    if not data or not {"transformer_id", "rank", "transformer_overall_severity_level"}.issubset(idx):
+        logger.warning("transformer_ranking.csv missing required columns; skipping chart")
+        return
+    top = data[:20]
+    logger.debug("ranking top rows=%d", len(top))
+    sheet = wb.worksheets.add("Chart_Transformer_Ranking")
+    table = [["Transformer", "Fleet Rank", "Current IEEE Status"]]
+    for r in top:
+        table.append([r[idx["transformer_id"]], int(float(r[idx["rank"]])), int(float(r[idx["transformer_overall_severity_level"]]))])
+    write_table(sheet, table, max_width=28)
+    _add_chart(sheet, f"A1:C{len(table)}", "Top 20 transformer fleet priority", ("E2", "M28"), "bar")
+    logger.info("Transformer ranking chart completed")
 
 
 def _build_validation_sheets(wb, report_dir, processed_dir):
+    logger.info("Building validation sheets")
     severity_file = processed_dir / "dga_unlabeled_processed.parquet"
     severity = wb.worksheets.add("Severity_Validation")
-    write_table(severity, [["Metric", "Value / Interpretation"], ["Independent severity ground truth", "NO"], ["Severity classification accuracy", "NOT COMPUTED — no independent severity labels are supplied."], ["What is externally evaluated", "Fault-type prediction only, against labeled benchmark datasets."], ["Operational severity", "IEEE C57.104-2019 rule-derived Status 1/2/3 with explicit evidence fields."], ["Overall transformer score", "Current condition level; history is retained as explicit evidence and tie-break context, not as an arbitrary weighted sum."]], max_width=88)
+    write_table(severity, [
+        ["Metric", "Value / Interpretation"],
+        ["Independent severity ground truth", "NO"],
+        ["Severity classification accuracy", "NOT COMPUTED — no independent severity labels are supplied."],
+        ["What is externally evaluated", "Fault-type prediction only, against labeled benchmark datasets."],
+        ["Operational severity", "IEEE C57.104-2019 rule-derived Status 1/2/3 with explicit evidence fields."],
+        ["Overall transformer score", "Current condition level; history is retained as explicit evidence and tie-break context, not as an arbitrary weighted sum."],
+    ], max_width=88)
     methodology = wb.worksheets.add("Methodology")
-    write_table(methodology, [["Item", "Definition"], ["Traditional diagnostics", "Key Gas, IEC-style ratio, Rogers, Doernenburg, Duval Triangle and Duval Pentagon outputs are treated as noisy labeling functions/evidence generators."], ["Weak supervision", "Snorkel LabelModel or EM fallback estimates latent labels from the LF matrix without external ground truth."], ["Student training", "Discriminative students are fitted only on operational weak labels."], ["External evaluation", "External labeled benchmark is never used to train operational student models."], ["Fine-label mismatch", "DGA dataset labels are harmonized to the IEC fault taxonomy; T1_T2 is evaluated both strictly and with set-valued ambiguity tolerance."], ["Class imbalance", "Macro F1 and balanced accuracy are reported; model fitting uses class balancing where supported."], ["Transformer imbalance", "Each transformer is aggregated to exactly one fleet row; single-record transformers are retained and marked as such."], ["Temporal information", "Current status plus standard rate-of-change/delta evidence and historical maximum/recurrence/trend fields are retained without arbitrary historical weights."], ["Ranking", "Lexicographic evidence ordering; no hand-assigned severity weights, no fault-criticality severity weight, no invented Status 4."], ["PPM coverage", "Observed empirical benchmark coverage/range only; it is not interpreted as a physical validity domain beyond the benchmark sample."], ["Hybrid", "Student + traditional agreement gate; disagreement abstains, so no numeric fusion weight is introduced."]], max_width=100)
+    write_table(methodology, [
+        ["Item", "Definition"],
+        ["Traditional diagnostics", "Key Gas, IEC-style ratio, Rogers, Doernenburg, Duval Triangle and Duval Pentagon outputs are treated as noisy labeling functions/evidence generators."],
+        ["Weak supervision", "Snorkel LabelModel or EM fallback estimates latent labels from the LF matrix without external ground truth."],
+        ["Student training", "Discriminative students are fitted only on operational weak labels."],
+        ["External evaluation", "External labeled benchmark is never used to train operational student models."],
+        ["Fine-label mismatch", "DGA dataset labels are harmonized to the IEC fault taxonomy; T1_T2 is evaluated both strictly and with set-valued ambiguity tolerance."],
+        ["Class imbalance", "Macro F1 and balanced accuracy are reported; model fitting uses class balancing where supported."],
+        ["Transformer imbalance", "Each transformer is aggregated to exactly one fleet row; single-record transformers are retained and marked as such."],
+        ["Temporal information", "Current status plus standard rate-of-change/delta evidence and historical maximum/recurrence/trend fields are retained without arbitrary historical weights."],
+        ["Ranking", "Lexicographic evidence ordering; no hand-assigned severity weights, no fault-criticality severity weight, no invented Status 4."],
+        ["PPM coverage", "Observed empirical benchmark coverage/range only; it is not interpreted as a physical validity domain beyond the benchmark sample."],
+        ["Hybrid", "Student + traditional agreement gate; disagreement abstains, so no numeric fusion weight is introduced."],
+    ], max_width=100)
     if severity_file.exists():
+        logger.info("Severity parquet exists: %s", severity_file)
         try:
-            df = pd.read_parquet(severity_file); fields = ["transformer_id", "sample_day", "ieee_dga_status", "ieee_dga_status_label", "ieee_dga_status_reason", "ieee_max_standardized_exceedance", "ieee_max_status3_standardized_exceedance", "ieee_standard_trigger_count", "ieee_confirmation_required", "ieee_delta_available", "ieee_rate_available", "ieee_rate_span_months", "ieee_table2_exceeding_gases", "ieee_table4_exceeding_gases"]; fields = [x for x in fields if x in df.columns]
-            sh = wb.worksheets.add("Severity_Records"); rows = [fields] + [list(r) for r in df[fields].tail(1000).itertuples(index=False, name=None)]; write_table(sh, rows, max_width=34)
-        except Exception: pass
+            df = pd.read_parquet(severity_file)
+            logger.debug("severity dataframe shape=%s", df.shape)
+            fields = ["transformer_id", "sample_day", "ieee_dga_status", "ieee_dga_status_label", "ieee_dga_status_reason", "ieee_max_standardized_exceedance", "ieee_max_status3_standardized_exceedance", "ieee_standard_trigger_count", "ieee_confirmation_required", "ieee_delta_available", "ieee_rate_available", "ieee_rate_span_months", "ieee_table2_exceeding_gases", "ieee_table4_exceeding_gases"]
+            fields = [x for x in fields if x in df.columns]
+            sh = wb.worksheets.add("Severity_Records")
+            rows = [fields] + [list(r) for r in df[fields].tail(1000).itertuples(index=False, name=None)]
+            write_table(sh, rows, max_width=34)
+            logger.debug("Severity_Records rows written=%d", len(rows))
+        except Exception as exc:
+            logger.exception("Failed to process severity parquet: %s", exc)
+    else:
+        logger.info("Severity parquet not found: %s", severity_file)
+    logger.info("Validation sheets completed")
 
 
 def build_excel_report(report_dir, processed_dir, output_path):
-    report_dir = Path(report_dir); processed_dir = Path(processed_dir); output_path = Path(output_path); benchmark_dir = report_dir / "benchmark"
-    wb = Workbook.create(); _build_summary_sheet(wb, report_dir, processed_dir); _build_protocol_sheet(wb, benchmark_dir)
+    report_dir = Path(report_dir)
+    processed_dir = Path(processed_dir)
+    output_path = Path(output_path)
+    benchmark_dir = report_dir / "benchmark"
+    logger.info(
+        "build_excel_report: report_dir=%s processed_dir=%s output_path=%s",
+        report_dir, processed_dir, output_path,
+    )
+    wb = Workbook.create()
+    _build_summary_sheet(wb, report_dir, processed_dir)
+    _build_protocol_sheet(wb, benchmark_dir)
     for sheet_name, filename in REPORT_SHEETS:
         rows = read_csv_file(benchmark_dir / filename)
         if rows:
-            sheet = wb.worksheets.add(sheet_name); write_table(sheet, rows, max_width=42)
+            logger.info("Adding sheet '%s' from %s (rows=%d)", sheet_name, filename, len(rows))
+            sheet = wb.worksheets.add(sheet_name)
+            write_table(sheet, rows, max_width=42)
+        else:
+            logger.debug("Skipping sheet '%s' because %s is empty/missing", sheet_name, filename)
     ranking_rows = read_csv_file(report_dir / "transformer_ranking.csv")
     if ranking_rows:
-        sheet = wb.worksheets.add("Transformer_Ranking"); write_table(sheet, ranking_rows, max_width=42)
-    _build_validation_sheets(wb, report_dir, processed_dir); _build_traditional_chart(wb, benchmark_dir); _build_combination_chart(wb, benchmark_dir); _build_model_transfer_chart(wb, benchmark_dir); _build_ppm_chart(wb, benchmark_dir); _build_class_coverage_chart(wb, benchmark_dir); _build_ranking_chart(wb, report_dir)
-    output_path.parent.mkdir(parents=True, exist_ok=True); SpreadsheetFile.export_xlsx(wb).save(output_path); return output_path
+        logger.info("Adding Transformer_Ranking sheet (rows=%d)", len(ranking_rows))
+        sheet = wb.worksheets.add("Transformer_Ranking")
+        write_table(sheet, ranking_rows, max_width=42)
+    _build_validation_sheets(wb, report_dir, processed_dir)
+    _build_traditional_chart(wb, benchmark_dir)
+    _build_combination_chart(wb, benchmark_dir)
+    _build_model_transfer_chart(wb, benchmark_dir)
+    _build_ppm_chart(wb, benchmark_dir)
+    _build_class_coverage_chart(wb, benchmark_dir)
+    _build_ranking_chart(wb, report_dir)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Exporting Excel to %s", output_path)
+    SpreadsheetFile.export_xlsx(wb).save(output_path)
+    logger.info("Excel report saved successfully")
+    return output_path
