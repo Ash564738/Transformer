@@ -14,7 +14,7 @@ class DiagnosticConfig:
       * IEEE C57.104-2019 remains the primary DGA status engine.
       * No hand-assigned diagnostic or severity weights are used.
       * CRITICAL is an operational extreme-DGA extension, NOT IEEE Status 4.
-      * Transformer ordering is lexicographic over explicit evidence fields.
+      * Transformer ranking uses an ordinal current-status score with a bounded historical component.
       * Fault criticality is qualitative context only and never overrides IEEE status.
     """
 
@@ -197,7 +197,7 @@ class DiagnosticConfig:
     CRITICAL_RULE: str = "NOT_USED"
     CRITICAL_REFERENCE: str = (
         "No additional severity class is created. IEEE Status 1/2/3 remain the condition classes; "
-        "fleet priority is an explicit lexicographic evidence ranking."
+        "fleet priority uses an ordinal current-status score plus bounded historical evidence."
     )
 
     MAINTENANCE_PRIORITY_LABELS: ClassVar[Dict[int, str]] = {
@@ -208,11 +208,8 @@ class DiagnosticConfig:
     }
 
     RANKING_POLICY: ClassVar[Tuple[str, ...]] = (
-        "current_status",
+        "transformer_overall_severity_score = current_status + historical_mean_status/(MAX_STATUS+1)",
         "current_status3_standardized_exceedance",
-        "current_table2_exceedance_count",
-        "current_table4_exceedance_count",
-        "current_table3_exceedance_count",
         "current_standard_trigger_count",
         "historical_max_status_before_current",
         "historical_max_standardized_exceedance",

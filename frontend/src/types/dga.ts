@@ -11,12 +11,15 @@ export type RiskStatus =
   | "High"
   | "Insufficient data";
 
-/** Backend maintenance queue is separate from IEEE status. */
 export type MaintenancePriority =
   | "HIGH_RISK"
   | "WATCH"
   | "NORMAL"
-  | "DATA_REVIEW";
+  | "DATA_REVIEW"
+  | "STATUS_3"
+  | "STATUS_2"
+  | "STATUS_1"
+  | string;
 
 export type FaultCriticalityClass =
   | "NO_FAULT"
@@ -43,9 +46,12 @@ export interface Prediction {
   status?: RiskStatus;
   severity: RiskStatus | string;
   maintenance_priority?: MaintenancePriority | string;
+  maintenance_rank?: number;
   critical_front?: boolean;
   maintenance_priority_reason?: string;
   critical_evidence_ratio?: number | null;
+  continuous_evidence_ratio?: number | null;
+  continuous_evidence_basis?: string;
   fault_type: string;
   fault_group?: string;
   fault_criticality_class?: FaultCriticalityClass;
@@ -96,6 +102,7 @@ export interface DgaRow {
   ieee_dga_status_reason?: string;
   ieee_recommended_action?: string;
   ieee_confirmation_required?: boolean;
+
   ieee_max_standardized_exceedance?: number;
   ieee_max_status3_standardized_exceedance?: number;
   ieee_standard_trigger_count?: number;
@@ -103,6 +110,17 @@ export interface DgaRow {
   ieee_table2_max_exceedance_ratio?: number;
   ieee_table3_max_exceedance_ratio?: number;
   ieee_table4_max_exceedance_ratio?: number;
+  ieee_table1_concentration_ratio_all?: number;
+  ieee_table2_concentration_ratio_all?: number;
+  ieee_table3_delta_ratio_all?: number;
+  ieee_table4_rate_ratio_all?: number;
+  ieee_continuous_evidence_ratio?: number;
+  ieee_continuous_evidence_basis?: string;
+  ieee_continuous_evidence_label?: string;
+  ieee_continuous_evidence_is_score?: boolean;
+  ieee_continuous_evidence_is_probability?: boolean;
+  ieee_continuous_evidence_reference?: string;
+
   ieee_table1_exceeding_gases?: string[];
   ieee_table2_exceeding_gases?: string[];
   ieee_table3_exceeding_gases?: string[];
@@ -175,19 +193,23 @@ export interface RankingBreakdown {
   fleet_priority_percent?: number | null;
   maintenance_priority?: MaintenancePriority | string;
   maintenance_rank?: number;
-  current_status3_standardized_exceedance?: number | null;
   current_standardized_exceedance?: number | null;
+  current_status3_standardized_exceedance?: number | null;
   current_delta_exceedance?: number;
   current_standard_trigger_count?: number;
+  current_continuous_evidence_ratio?: number | null;
+  current_continuous_evidence_basis?: string;
+  historical_max_continuous_evidence_ratio?: number | null;
+  historical_max_standardized_exceedance?: number | null;
   pareto_dominance_count?: number;
   pareto_front?: boolean;
   history_max_status_before_current?: number;
-  historical_max_standardized_exceedance?: number | null;
   history_abnormal_record_ratio?: number | null;
   history_critical_record_ratio?: number | null;
   history_fault_recurrence_rate?: number | null;
   history_worsening_transition_ratio?: number | null;
   trend_slope?: number | null;
+  evidence_trend_slope?: number | null;
 }
 
 export interface TransformerSummary {
@@ -215,6 +237,7 @@ export interface TransformerSummary {
   critical_evidence_table?: string | null;
   critical_evidence_gas?: string | null;
   critical_evidence_ratio?: number | null;
+  critical_evidence_scope?: string;
 
   fault_type: string;
   fault_group?: string;
@@ -229,6 +252,9 @@ export interface TransformerSummary {
 
   current_standardized_exceedance?: number | null;
   current_status3_standardized_exceedance?: number | null;
+  current_continuous_evidence_ratio?: number | null;
+  current_continuous_evidence_basis?: string;
+  historical_max_continuous_evidence_ratio?: number | null;
   current_delta_exceedance?: number;
   current_standard_trigger_count?: number;
   historical_max_standardized_exceedance?: number | null;
@@ -241,10 +267,6 @@ export interface TransformerSummary {
   pareto_front?: boolean;
   maintenance_priority_rank_percentile?: number | null;
 
-  /**
-   * Backend explicitly defines priority_score as a fleet-rank percentile,
-   * not a health/severity score and not a weighted sum.
-   */
   priority_score_type?: string;
   ranking_policy?: string;
   ranking_is_weighted?: boolean;
@@ -269,6 +291,12 @@ export interface TimeseriesPoint {
   severity: NativeSeverityLabel | string;
   maintenance_priority?: MaintenancePriority | string;
   recommended_action?: string;
+  continuous_evidence_ratio?: number | null;
+  continuous_evidence_basis?: string;
+  table2_concentration_ratio?: number | null;
+  table3_delta_ratio?: number | null;
+  table4_rate_ratio?: number | null;
+  confirmation_required?: boolean;
 }
 
 export interface DatasetSummary {
@@ -278,20 +306,19 @@ export interface DatasetSummary {
   severity_status_2?: number;
   severity_status_3?: number;
   severity_insufficient_data?: number;
-
-  /** Backend maintenance queue: Status 3 / Status 2 / Status 1 / insufficient. */
   high_risk_transformer_count?: number;
-  maintenance_priority_counts?: Partial<Record<MaintenancePriority, number>> &
-    Record<string, number>;
-
+  watch_transformer_count?: number;
+  normal_transformer_count?: number;
+  maintenance_priority_counts?: Partial<Record<MaintenancePriority, number>> & Record<string, number>;
   critical_transformer_count?: number;
   critical_queue_top20?: Array<Record<string, unknown>>;
+  maintenance_queue_top20?: Array<Record<string, unknown>>;
+  first_priority_transformer_id?: string | null;
+  first_priority_rank?: number | null;
   critical_rule?: string;
   critical_reference?: string;
-
   fault_criticality_context_counts?: Record<string, number>;
   fault_criticality_source?: string;
-
   traditional_abstain_rows?: number;
   student_fallback_rows?: number;
   student_traditional_physical_conflicts?: number;

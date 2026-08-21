@@ -221,7 +221,10 @@ def report_experiments():
             fields = [
                 "transformer_id", "sample_day", "ieee_dga_status", "ieee_dga_status_label",
                 "ieee_dga_status_reason", "ieee_max_standardized_exceedance",
-                "ieee_max_status3_standardized_exceedance", "ieee_standard_trigger_count",
+                "ieee_max_status3_standardized_exceedance", "ieee_table1_concentration_ratio_all",
+                "ieee_table2_concentration_ratio_all", "ieee_table3_delta_ratio_all",
+                "ieee_table4_rate_ratio_all", "ieee_continuous_evidence_ratio",
+                "ieee_continuous_evidence_basis", "ieee_standard_trigger_count",
                 "ieee_confirmation_required", "ieee_delta_available", "ieee_rate_available",
                 "ieee_rate_span_months"
             ]

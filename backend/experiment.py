@@ -20,6 +20,7 @@ REPORT_SHEETS = [
     ("Traditional_Pairwise", "traditional_pairwise_agreement.csv"),
     ("Method_Summary", "traditional_method_summary.csv"),
     ("Supervised_Reference", "supervised_fault_benchmark.csv"),
+    ("Weak_Label_Transfer", "weak_label_model_transfer_fault_benchmark.csv"),
     ("Weak_Transfer", "weak_transfer_fault_benchmark.csv"),
     ("Weak_Traditional_Hybrid", "weak_traditional_hybrid_benchmark.csv"),
     ("Split_Manifest", "benchmark_split_manifest.csv"),
@@ -29,13 +30,10 @@ REPORT_SHEETS = [
 
 def read_csv_file(path):
     path = Path(path)
-    logger.debug("read_csv_file: path=%s exists=%s", path, path.exists())
     if not path.exists():
-        logger.debug("read_csv_file: returning None for missing file")
         return None
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.reader(handle))
-    logger.debug("read_csv_file: rows=%d", len(rows))
     return rows
 
 
@@ -44,7 +42,6 @@ def _col_name(number):
     while number:
         number, remainder = divmod(number - 1, 26)
         output = chr(65 + remainder) + output
-    logger.debug("_col_name: input=%s output=%s", number, output)
     return output
 
 
@@ -101,12 +98,7 @@ def _excel_safe(value):
 
 
 def write_table(sheet, rows, start_row=1, start_col=1, max_width=36):
-    logger.debug(
-        "write_table: start_row=%s start_col=%s max_width=%s rows=%d",
-        start_row, start_col, max_width, len(rows),
-    )
     if not rows:
-        logger.debug("write_table: no rows, skipping")
         return
 
     ncol = max(len(row) for row in rows)
@@ -137,15 +129,9 @@ def write_table(sheet, rows, start_row=1, start_col=1, max_width=36):
             f"{_col_name(column)}{start_row}:{_col_name(column)}{end_row}"
         ).format.column_width = max_width
 
-    logger.debug("write_table: wrote range %s", ref)
-
 
 def _add_chart(sheet, source_ref, title, position, chart_type="bar"):
-    logger.debug(
-        "_add_chart: source=%s title=%s position=%s type=%s",
-        source_ref, title, position, chart_type,
-    )
-    chart = sheet.charts.add(chart_type, sheet.get_range(source_ref), title=title)
+    chart = sheet.charts.add(chart_type, sheet.get_range(source_ref))
     chart.title_text = title
     chart.set_position(*position)
     return chart
@@ -157,22 +143,19 @@ def _float(value, default=None):
         result = x if math.isfinite(x) else default
     except (TypeError, ValueError):
         result = default
-    logger.debug("_float: value=%r default=%r result=%r", value, default, result)
     return result
 
 
 def _lookup(rows):
-    logger.debug("_lookup: rows=%d", len(rows))
     if not rows:
         return [], {}
     header = rows[0]
     index = {name: i for i, name in enumerate(header)}
-    logger.debug("_lookup: header=%s", header)
     return rows[1:], index
 
 
 def _build_summary_sheet(wb, report_dir, processed_dir):
-    logger.info("Building Summary sheet")
+    logger.debug("Building Summary sheet")
     sheet = wb.worksheets.add("Dashboard")
     sheet.get_range("A1:H1").merge()
     sheet.get_range("A1").values = [["DGA RESEARCH REPORT — UNLABELED OPERATIONAL DATA"]]
@@ -187,14 +170,15 @@ def _build_summary_sheet(wb, report_dir, processed_dir):
         ["Student transfer", "Models trained on operational weak labels are applied unchanged to the external labeled benchmark."],
         ["Hybrid evaluation", "Agreement-only hybrid keeps a prediction only when student and unweighted traditional consensus agree exactly; disagreement becomes ABSTAIN. No numeric fusion weight."],
         ["Severity", "IEEE C57.104-2019 rule-derived Status 1/2/3. No invented Status 4 and no arbitrary weighted severity sum."],
-        ["Fleet ranking", "One transformer row per asset. Current IEEE status is the primary condition level; standardized current evidence and history are lexicographic tie-break evidence, not weighted into a health score."],
+        ["Operational severity accuracy", "Not claimed: the operational dataset has no independently verified fault/severity ground truth. External labeled datasets validate fault taxonomy/diagnostic transfer, not operational severity accuracy."],
+        ["Transformer imbalance", "Weak-student training uses inverse transformer-record-count weighting when the estimator exposes sample_weight, so each transformer has equal total training weight rather than each record having equal influence."],
+        ["Fleet ranking", "One transformer row per asset. Overall score = current IEEE Status + historical mean Status/(MAX_STATUS+1); the historical term is bounded below 1, so current status remains dominant. No hand-assigned health weights are used."],
     ]
     write_table(sheet, rows, start_row=3, max_width=100)
-    logger.info("Summary sheet completed")
 
 
 def _build_protocol_sheet(wb, benchmark_dir):
-    logger.info("Building Protocol sheet")
+    logger.debug("Building Protocol sheet")
     sheet = wb.worksheets.add("Evaluation_Protocol")
     rows = [
         ["Item", "Protocol"],
@@ -212,55 +196,46 @@ def _build_protocol_sheet(wb, benchmark_dir):
         ["Class coverage", "LF activation rate within each labeled fault class."],
     ]
     write_table(sheet, rows, start_row=2, max_width=96)
-    logger.info("Protocol sheet completed")
 
 
 def _build_traditional_chart(wb, benchmark_dir):
-    logger.info("Building traditional methods chart")
+    logger.debug("Building traditional methods chart")
     rows = read_csv_file(benchmark_dir / "traditional_individual_benchmark.csv")
     data, idx = _lookup(rows)
     if not data or not {"method", "granularity", "split", "macro_f1", "coverage"}.issubset(idx):
         logger.warning("traditional_individual_benchmark.csv missing required columns; skipping chart")
         return
-    logger.debug("traditional chart data rows=%d", len(data))
     selected = [r for r in data if r[idx["granularity"]] == "fine" and r[idx["split"]] == "locked_test" and str(r[idx.get("selected_on_development", -1)]).lower() == "true"]
     if not selected:
         selected = [r for r in data if r[idx["granularity"]] == "fine" and r[idx["split"]] == "locked_test"]
-        logger.debug("using all fine locked_test rows (selected_on_development absent or no true rows)")
-    logger.debug("traditional chart selected rows=%d", len(selected))
     sheet = wb.worksheets.add("Chart_Traditional")
     table = [["Method", "Macro F1", "Balanced Accuracy", "Coverage %", "Abstain-aware Accuracy"]]
     for r in selected:
-        table.append([r[idx["method"]], _float(r[idx["macro_f1"]]), _float(r[idx["balanced_accuracy"]]), (_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0, _float(r[idx["overall_accuracy_with_abstain_error"]])])
+        table.append([r[idx["method"]], _float(r[idx["macro_f1"]]), _float(r[idx["balanced_accuracy"]]) if "balanced_accuracy" in idx else None, (_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0, _float(r[idx["overall_accuracy_with_abstain_error"]]) if "overall_accuracy_with_abstain_error" in idx else None])
     write_table(sheet, table, max_width=24)
     _add_chart(sheet, f"A1:D{len(table)}", "Traditional methods on locked test", ("G2", "P24"), "bar")
-    logger.info("Traditional chart completed")
 
 
 def _build_combination_chart(wb, benchmark_dir):
-    logger.info("Building traditional combinations chart")
+    logger.debug("Building traditional combinations chart")
     rows = read_csv_file(benchmark_dir / "traditional_combinations_benchmark.csv")
     data, idx = _lookup(rows)
     if not data or not {"methods", "granularity", "split", "macro_f1"}.issubset(idx):
         logger.warning("traditional_combinations_benchmark.csv missing required columns; skipping chart")
         return
-    logger.debug("combinations chart data rows=%d", len(data))
     selected = [r for r in data if r[idx["granularity"]] == "fine" and r[idx["split"]] == "locked_test" and str(r[idx.get("selected_on_development", -1)]).lower() == "true"]
     if not selected:
         selected = sorted([r for r in data if r[idx["granularity"]] == "fine" and r[idx["split"]] == "locked_test"], key=lambda r: _float(r[idx["macro_f1"]], -1), reverse=True)[:10]
-        logger.debug("falling back to top 10 by macro_f1")
-    logger.debug("combinations chart selected rows=%d", len(selected))
     sheet = wb.worksheets.add("Chart_Combinations")
     table = [["Combination", "Method Count", "Macro F1", "Coverage %", "Abstain-aware Accuracy"]]
     for r in selected:
-        table.append([r[idx["methods"]], int(float(r[idx["method_count"]])), _float(r[idx["macro_f1"]]), (_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0, _float(r[idx["overall_accuracy_with_abstain_error"]])])
+        table.append([r[idx["methods"]], int(float(r[idx["method_count"]])) if "method_count" in idx else None, _float(r[idx["macro_f1"]]), (_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0 if "coverage" in idx else None, _float(r[idx["overall_accuracy_with_abstain_error"]]) if "overall_accuracy_with_abstain_error" in idx else None])
     write_table(sheet, table, max_width=42)
     _add_chart(sheet, f"A1:D{len(table)}", "Best traditional combinations", ("F2", "P28"), "bar")
-    logger.info("Combinations chart completed")
 
 
 def _build_model_transfer_chart(wb, benchmark_dir):
-    logger.info("Building model transfer chart")
+    logger.debug("Building model transfer chart")
     source_files = [("Weak+Student", "weak_transfer_fault_benchmark.csv", "selected_on_dev"), ("Supervised reference", "supervised_fault_benchmark.csv", "selected_on_dev"), ("Hybrid", "weak_traditional_hybrid_benchmark.csv", "selected_on_dev")]
     records = []
     for approach, filename, flag in source_files:
@@ -269,23 +244,20 @@ def _build_model_transfer_chart(wb, benchmark_dir):
         if not data or "granularity" not in idx or "split" not in idx or "macro_f1" not in idx:
             logger.warning("%s missing required columns; skipping", filename)
             continue
-        logger.debug("processing %s: %d rows", approach, len(data))
         for r in data:
             if r[idx["granularity"]] == "fine" and r[idx["split"]] == "locked_test" and (flag not in idx or str(r[idx[flag]]).lower() == "true"):
-                records.append([approach, r[idx.get("model", idx.get("hybrid_policy", 0))], r[idx.get("feature_mode", 0)], _float(r[idx["macro_f1"]]), (_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0, _float(r[idx["overall_accuracy_with_abstain_error"]])])
+                records.append([approach, r[idx.get("model", idx.get("student_model", idx.get("hybrid_policy", 0)))], r[idx.get("feature_mode", 0)] if "feature_mode" in idx else "", _float(r[idx["macro_f1"]]), (_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0 if "coverage" in idx else None, _float(r[idx["overall_accuracy_with_abstain_error"]]) if "overall_accuracy_with_abstain_error" in idx else None])
     if not records:
         logger.warning("No records for model transfer chart; skipping")
         return
-    logger.debug("model transfer records=%d", len(records))
     sheet = wb.worksheets.add("Chart_Model_Transfer")
     table = [["Approach", "Model/Policy", "Feature Mode", "TEST Macro F1", "Coverage %", "Abstain-aware Accuracy"]] + records
     write_table(sheet, table, max_width=28)
     _add_chart(sheet, f"A1:E{len(table)}", "ML / weak-transfer / hybrid comparison", ("H2", "Q28"), "bar")
-    logger.info("Model transfer chart completed")
 
 
 def _build_ppm_chart(wb, benchmark_dir):
-    logger.info("Building PPM coverage chart")
+    logger.debug("Building PPM coverage chart")
     rows = read_csv_file(benchmark_dir / "traditional_ppm_coverage.csv")
     data, idx = _lookup(rows)
     if not data or not {"method", "gas", "coverage", "min_ppm", "max_ppm"}.issubset(idx):
@@ -296,8 +268,7 @@ def _build_ppm_chart(wb, benchmark_dir):
     for r in data:
         method = r[idx["method"]]
         gas = r[idx["gas"]]
-        pivot.setdefault(method, {})[gas] = [(_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0, _float(r[idx["min_ppm"]]), _float(r[idx["max_ppm"]])]
-    logger.debug("ppm pivot methods=%d", len(pivot))
+        pivot.setdefault(method, {})[gas] = [(_float(r[idx["coverage"]], 0.0) or 0.0) * 100.0, _float(r[idx["min_ppm"]]), _float(r[idx.get("p05_ppm", "min_ppm")]) if "p05_ppm" in idx else None, _float(r[idx.get("median_ppm", "min_ppm")]) if "median_ppm" in idx else None, _float(r[idx.get("p95_ppm", "max_ppm")]) if "p95_ppm" in idx else None, _float(r[idx["max_ppm"]]) ]
     sheet = wb.worksheets.add("Chart_PPM_Coverage")
     table = [["Method"] + [f"{g}_Coverage_%" for g in gases]]
     for method in sorted(pivot):
@@ -310,13 +281,12 @@ def _build_ppm_chart(wb, benchmark_dir):
         for gas in gases:
             vals = pivot[method].get(gas)
             if vals:
-                range_table.append([method, gas, vals[1], None, None, None, vals[2], vals[2] - vals[1] if vals[1] is not None and vals[2] is not None else None])
+                range_table.append([method, gas, vals[1], vals[2], vals[3], vals[4], vals[5], vals[5] - vals[1] if vals[1] is not None and vals[5] is not None else None])
     write_table(range_sheet, range_table, max_width=22)
-    logger.info("PPM coverage chart completed")
 
 
 def _build_class_coverage_chart(wb, benchmark_dir):
-    logger.info("Building class coverage chart")
+    logger.debug("Building class coverage chart")
     rows = read_csv_file(benchmark_dir / "traditional_fault_class_coverage.csv")
     data, idx = _lookup(rows)
     if not data or not {"method", "fault_class", "class_coverage_percent"}.issubset(idx):
@@ -325,36 +295,32 @@ def _build_class_coverage_chart(wb, benchmark_dir):
     classes = sorted({r[idx["fault_class"]] for r in data})
     methods = sorted({r[idx["method"]] for r in data})
     pivot = {(r[idx["method"]], r[idx["fault_class"]]): _float(r[idx["class_coverage_percent"]], 0.0) or 0.0 for r in data}
-    logger.debug("class coverage: classes=%d methods=%d", len(classes), len(methods))
     sheet = wb.worksheets.add("Chart_Class_Coverage")
     table = [["Method"] + classes]
     for method in methods:
         table.append([method] + [pivot.get((method, cls), 0.0) for cls in classes])
     write_table(sheet, table, max_width=20)
     _add_chart(sheet, f"A1:{_col_name(len(classes)+1)}{len(table)}", "Traditional LF coverage by fault class (%)", ("A20", "J40"), "bar")
-    logger.info("Class coverage chart completed")
 
 
 def _build_ranking_chart(wb, report_dir):
-    logger.info("Building transformer ranking chart")
+    logger.debug("Building transformer ranking chart")
     rows = read_csv_file(report_dir / "transformer_ranking.csv")
     data, idx = _lookup(rows)
     if not data or not {"transformer_id", "rank", "transformer_overall_severity_level"}.issubset(idx):
         logger.warning("transformer_ranking.csv missing required columns; skipping chart")
         return
     top = data[:20]
-    logger.debug("ranking top rows=%d", len(top))
     sheet = wb.worksheets.add("Chart_Transformer_Ranking")
     table = [["Transformer", "Fleet Rank", "Current IEEE Status"]]
     for r in top:
         table.append([r[idx["transformer_id"]], int(float(r[idx["rank"]])), int(float(r[idx["transformer_overall_severity_level"]]))])
     write_table(sheet, table, max_width=28)
     _add_chart(sheet, f"A1:C{len(table)}", "Top 20 transformer fleet priority", ("E2", "M28"), "bar")
-    logger.info("Transformer ranking chart completed")
 
 
 def _build_validation_sheets(wb, report_dir, processed_dir):
-    logger.info("Building validation sheets")
+    logger.debug("Building validation sheets")
     severity_file = processed_dir / "dga_unlabeled_processed.parquet"
     severity = wb.worksheets.add("Severity_Validation")
     write_table(severity, [
@@ -375,27 +341,36 @@ def _build_validation_sheets(wb, report_dir, processed_dir):
         ["Fine-label mismatch", "DGA dataset labels are harmonized to the IEC fault taxonomy; T1_T2 is evaluated both strictly and with set-valued ambiguity tolerance."],
         ["Class imbalance", "Macro F1 and balanced accuracy are reported; model fitting uses class balancing where supported."],
         ["Transformer imbalance", "Each transformer is aggregated to exactly one fleet row; single-record transformers are retained and marked as such."],
-        ["Temporal information", "Current status plus standard rate-of-change/delta evidence and historical maximum/recurrence/trend fields are retained without arbitrary historical weights."],
-        ["Ranking", "Lexicographic evidence ordering; no hand-assigned severity weights, no fault-criticality severity weight, no invented Status 4."],
+        ["Temporal information", "Current status, standard delta/rate evidence, historical mean/max/recurrence and trend are retained. The score uses the bounded historical mean only to preserve history without allowing it to overturn current ordinal status."],
+        ["Ranking", "Current IEEE Status is dominant; overall score adds a bounded historical mean term below 1. Current DGA evidence and recurrence are separate audit/tie-break fields; no hand-assigned health weights."],
         ["PPM coverage", "Observed empirical benchmark coverage/range only; it is not interpreted as a physical validity domain beyond the benchmark sample."],
         ["Hybrid", "Student + traditional agreement gate; disagreement abstains, so no numeric fusion weight is introduced."],
     ], max_width=100)
     if severity_file.exists():
-        logger.info("Severity parquet exists: %s", severity_file)
         try:
             df = pd.read_parquet(severity_file)
-            logger.debug("severity dataframe shape=%s", df.shape)
             fields = ["transformer_id", "sample_day", "ieee_dga_status", "ieee_dga_status_label", "ieee_dga_status_reason", "ieee_max_standardized_exceedance", "ieee_max_status3_standardized_exceedance", "ieee_standard_trigger_count", "ieee_confirmation_required", "ieee_delta_available", "ieee_rate_available", "ieee_rate_span_months", "ieee_table2_exceeding_gases", "ieee_table4_exceeding_gases"]
             fields = [x for x in fields if x in df.columns]
             sh = wb.worksheets.add("Severity_Records")
             rows = [fields] + [list(r) for r in df[fields].tail(1000).itertuples(index=False, name=None)]
             write_table(sh, rows, max_width=34)
-            logger.debug("Severity_Records rows written=%d", len(rows))
         except Exception as exc:
             logger.exception("Failed to process severity parquet: %s", exc)
-    else:
-        logger.info("Severity parquet not found: %s", severity_file)
-    logger.info("Validation sheets completed")
+
+
+def _build_sources_sheet(wb):
+    sheet = wb.worksheets.add("Research_Sources")
+    rows = [
+        ["Source", "Relevance", "URL"],
+        ["IEC 60599:2022", "DGA interpretation standard for mineral-oil transformers", "https://webstore.iec.ch/en/publication/66491"],
+        ["Guo & Guo (2022), Energy Reports", "Health Index combines operating history and test data into one comparative condition indicator", "https://doi.org/10.1016/j.egyr.2022.07.041"],
+        ["Azmi et al. (2017), Renewable and Sustainable Energy Reviews", "Review of transformer Health Index formulations and asset comparison", "https://doi.org/10.1016/j.rser.2017.03.094"],
+        ["Ali et al. (2023), Electric Power Systems Research", "Comparison/review of Key Gas, Duval, IEC, Rogers and Doernenburg conventional DGA methods", "https://doi.org/10.1016/j.epsr.2022.109064"],
+        ["Acikgoz et al. (2025), Elektronika ir Elektrotechnika", "Review of classical vs AI DGA diagnosis and dataset imbalance", "https://doi.org/10.5755/j02.eie.39824"],
+        ["Bohatyrewicz & Banaszak (2022), Energies", "Transformer population study of changes in Health Index values over time", "https://doi.org/10.3390/en15166078"],
+    ]
+    write_table(sheet, rows, max_width=100)
+    sheet.get_range("C2:C20").format.wrap_text = True
 
 
 def build_excel_report(report_dir, processed_dir, output_path):
@@ -403,7 +378,7 @@ def build_excel_report(report_dir, processed_dir, output_path):
     processed_dir = Path(processed_dir)
     output_path = Path(output_path)
     benchmark_dir = report_dir / "benchmark"
-    logger.info(
+    logger.debug(
         "build_excel_report: report_dir=%s processed_dir=%s output_path=%s",
         report_dir, processed_dir, output_path,
     )
@@ -413,17 +388,14 @@ def build_excel_report(report_dir, processed_dir, output_path):
     for sheet_name, filename in REPORT_SHEETS:
         rows = read_csv_file(benchmark_dir / filename)
         if rows:
-            logger.info("Adding sheet '%s' from %s (rows=%d)", sheet_name, filename, len(rows))
             sheet = wb.worksheets.add(sheet_name)
             write_table(sheet, rows, max_width=42)
-        else:
-            logger.debug("Skipping sheet '%s' because %s is empty/missing", sheet_name, filename)
     ranking_rows = read_csv_file(report_dir / "transformer_ranking.csv")
     if ranking_rows:
-        logger.info("Adding Transformer_Ranking sheet (rows=%d)", len(ranking_rows))
         sheet = wb.worksheets.add("Transformer_Ranking")
         write_table(sheet, ranking_rows, max_width=42)
     _build_validation_sheets(wb, report_dir, processed_dir)
+    _build_sources_sheet(wb)
     _build_traditional_chart(wb, benchmark_dir)
     _build_combination_chart(wb, benchmark_dir)
     _build_model_transfer_chart(wb, benchmark_dir)
@@ -431,7 +403,7 @@ def build_excel_report(report_dir, processed_dir, output_path):
     _build_class_coverage_chart(wb, benchmark_dir)
     _build_ranking_chart(wb, report_dir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("Exporting Excel to %s", output_path)
+    logger.debug("Exporting Excel to %s", output_path)
     SpreadsheetFile.export_xlsx(wb).save(output_path)
-    logger.info("Excel report saved successfully")
+    logger.debug("Excel report saved successfully")
     return output_path

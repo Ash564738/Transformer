@@ -2,22 +2,52 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import type { DgaPayload } from "@/types/dga";
-import { formatDate } from "@/lib/utils";
+import { formatDate, formatNumber } from "@/lib/utils";
 
-const LINE_COLORS = ["#c62828", "#a8571c", "#a16a07", "#316f64", "#7db0a6", "#6b4f9a", "#276678", "#8b5e34", "#5f7a61", "#ad3f63"];
+const LINE_COLORS = [
+  "#c62828",
+  "#a8571c",
+  "#a16a07",
+  "#316f64",
+  "#7db0a6",
+  "#6b4f9a",
+  "#276678",
+  "#8b5e34",
+  "#5f7a61",
+  "#ad3f63",
+];
 
-type ChartValue = number | string | null;
-type TrendRow = { day: string; [transformerId: string]: ChartValue };
+type ChartMetric = "status" | "evidence";
+type ChartValue = number | null;
+type TrendRow = { day: string; [transformerId: string]: ChartValue | string };
 
 export function TopTrendChart({ payload }: { payload: DgaPayload }) {
   const [topN, setTopN] = useState(5);
+  const [metric, setMetric] = useState<ChartMetric>("evidence");
 
-  const topIds = useMemo(() => [...payload.transformer_summary]
-    .sort((a, b) => (a.maintenance_rank ?? a.rank) - (b.maintenance_rank ?? b.rank))
-    .slice(0, topN)
-    .map((summary) => summary.transformer_id), [payload.transformer_summary, topN]);
+  const topIds = useMemo(
+    () =>
+      [...payload.transformer_summary]
+        .sort(
+          (a, b) =>
+            (a.maintenance_rank ?? a.rank) -
+            (b.maintenance_rank ?? b.rank)
+        )
+        .slice(0, topN)
+        .map((summary) => summary.transformer_id),
+    [payload.transformer_summary, topN]
+  );
 
   const { data, pointCounts } = useMemo(() => {
     const dayMap = new Map<string, TrendRow>();
@@ -27,56 +57,158 @@ export function TopTrendChart({ payload }: { payload: DgaPayload }) {
       for (const point of series) {
         const day = String(point["Sample Day"] ?? "").trim();
         if (!day) continue;
+
         if (!dayMap.has(day)) dayMap.set(day, { day });
-        const status = Number(point.ieee_status);
-        dayMap.get(day)![transformerId] = Number.isFinite(status) && status >= 1 && status <= 3 ? status : null;
+
+        const raw =
+          metric === "status"
+            ? point.ieee_status
+            : point.continuous_evidence_ratio;
+
+        const numeric = Number(raw);
+        dayMap.get(day)![transformerId] = Number.isFinite(numeric)
+          ? numeric
+          : null;
       }
     }
 
-    const chartData = Array.from(dayMap.values()).sort((a, b) => new Date(a.day).getTime() - new Date(b.day).getTime());
-    const counts = topIds.map((id) => ({ id, count: chartData.filter((row) => Number.isFinite(Number(row[id]))).length }));
+    const chartData = Array.from(dayMap.values()).sort(
+      (a, b) =>
+        new Date(String(a.day)).getTime() -
+        new Date(String(b.day)).getTime()
+    );
+
+    const counts = topIds.map((id) => ({
+      id,
+      count: chartData.filter((row) => Number.isFinite(Number(row[id]))).length,
+    }));
+
     return { data: chartData, pointCounts: counts };
-  }, [payload.transformer_timeseries, topIds]);
+  }, [metric, payload.transformer_timeseries, topIds]);
 
   if (data.length === 0) {
-    return <p className="py-10 text-center text-sm text-teal-400">No trend data available.</p>;
+    return (
+      <p className="py-10 text-center text-sm text-teal-400">
+        No trend data available.
+      </p>
+    );
   }
 
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-1 text-[11px] text-teal-400">
-          <div>Y-axis: IEEE DGA Status only. Maintenance rank is not plotted as severity.</div>
-          <div>Lines connect available samples across date gaps; gaps between sampling dates do not imply missing status.</div>
+          {metric === "status" ? (
+            <div>
+              Y-axis: discrete IEEE DGA Status. Equal S3 points can still have
+              materially different gas evidence.
+            </div>
+          ) : (
+            <div>
+              Y-axis: per-sample DGA evidence ratio. This is threshold evidence,
+              not a weighted severity or health score.
+            </div>
+          )}
+          <div>
+            Lines connect available samples across date gaps; the gap itself does
+            not imply a missing status.
+          </div>
         </div>
 
-        <label className="flex items-center gap-2 text-xs font-semibold text-teal-600">
-          Show top
-          <select value={topN} onChange={(event) => setTopN(Number(event.target.value))} className="h-8 rounded-md border border-teal-200 bg-white px-2 text-xs text-teal-800">
-            {[3, 5, 8, 10, 15, 20].map((value) => <option key={value} value={value}>{value}</option>)}
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-semibold text-teal-600">
+            Metric
+          </label>
+          <select
+            value={metric}
+            onChange={(event) => setMetric(event.target.value as ChartMetric)}
+            className="h-8 rounded-md border border-teal-200 bg-white px-2 text-xs text-teal-800"
+          >
+            <option value="evidence">DGA evidence ratio</option>
+            <option value="status">IEEE Status</option>
           </select>
-        </label>
+
+          <label className="text-xs font-semibold text-teal-600">
+            Top
+          </label>
+          <select
+            value={topN}
+            onChange={(event) => setTopN(Number(event.target.value))}
+            className="h-8 rounded-md border border-teal-200 bg-white px-2 text-xs text-teal-800"
+          >
+            {[3, 5, 8, 10, 15, 20].map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <ResponsiveContainer width="100%" height={320}>
-        <LineChart data={data} margin={{ top: 8, right: 20, left: 0, bottom: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e8e5d9" vertical={false} />
-          <XAxis dataKey="day" tickFormatter={(value) => formatDate(String(value))} tick={{ fontSize: 11, fill: "#4f8f83" }} axisLine={{ stroke: "#d9d5c4" }} tickLine={false} minTickGap={24} />
-          <YAxis domain={[1, 3]} ticks={[1, 2, 3]} tickFormatter={(value) => `S${Number(value)}`} tick={{ fontSize: 12, fill: "#4f8f83" }} axisLine={false} tickLine={false} allowDecimals={false} />
+        <LineChart
+          data={data}
+          margin={{ top: 8, right: 20, left: 0, bottom: 8 }}
+        >
+          <CartesianGrid
+            strokeDasharray="3 3"
+            stroke="#e8e5d9"
+            vertical={false}
+          />
+          <XAxis
+            dataKey="day"
+            tickFormatter={(value) => formatDate(String(value))}
+            tick={{ fontSize: 11, fill: "#4f8f83" }}
+            axisLine={{ stroke: "#d9d5c4" }}
+            tickLine={false}
+            minTickGap={24}
+          />
+          <YAxis
+            domain={metric === "status" ? [1, 3] : [0, "auto"]}
+            ticks={metric === "status" ? [1, 2, 3] : undefined}
+            tickFormatter={(value) =>
+              metric === "status"
+                ? `S${Number(value)}`
+                : `${formatNumber(Number(value), 1)}×`
+            }
+            tick={{ fontSize: 12, fill: "#4f8f83" }}
+            axisLine={false}
+            tickLine={false}
+            allowDecimals={metric !== "status"}
+          />
           <Tooltip
             labelFormatter={(value) => formatDate(String(value))}
             formatter={(value, name) => {
               const numeric = Number(value);
-              return [Number.isFinite(numeric) ? `S${numeric}` : "—", String(name ?? "Transformer")];
+              if (!Number.isFinite(numeric)) return ["—", String(name ?? "Transformer")];
+              return [
+                metric === "status" ? `S${numeric}` : `${formatNumber(numeric, 2)}×`,
+                String(name ?? "Transformer"),
+              ];
             }}
-            contentStyle={{ borderRadius: 10, borderColor: "#d9d5c4", fontSize: 12 }}
+            contentStyle={{
+              borderRadius: 10,
+              borderColor: "#d9d5c4",
+              fontSize: 12,
+            }}
           />
           <Legend wrapperStyle={{ fontSize: 11 }} />
 
           {topIds.map((id, index) => {
             const sampleCount = pointCounts[index]?.count ?? 0;
             return (
-              <Line key={id} type="monotone" dataKey={id} name={`${id}${sampleCount === 1 ? " · 1 sample" : ""}`} stroke={LINE_COLORS[index % LINE_COLORS.length]} strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
+              <Line
+                key={id}
+                type={metric === "status" ? "monotone" : "monotone"}
+                dataKey={id}
+                name={`${id}${sampleCount === 1 ? " · 1 sample" : ""}`}
+                stroke={LINE_COLORS[index % LINE_COLORS.length]}
+                strokeWidth={2.25}
+                dot={{ r: 3 }}
+                activeDot={{ r: 5 }}
+                connectNulls
+                isAnimationActive={false}
+              />
             );
           })}
         </LineChart>

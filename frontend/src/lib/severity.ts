@@ -29,25 +29,11 @@ export const STATUS_ORDER: RiskStatus[] = [
   "Insufficient data",
 ];
 
-export const MAINTENANCE_PRIORITY_ORDER: MaintenancePriority[] = [
-  "HIGH_RISK",
-  "WATCH",
-  "NORMAL",
-  "DATA_REVIEW",
-];
-
 export const STATUS_HEX: Record<RiskStatus, string> = {
   Normal: "#1f7a4d",
   Watch: "#a16a07",
   High: "#9a4a1f",
   "Insufficient data": "#718096",
-};
-
-export const MAINTENANCE_PRIORITY_HEX: Record<MaintenancePriority, string> = {
-  HIGH_RISK: "#9a4a1f",
-  WATCH: "#a16a07",
-  NORMAL: "#1f7a4d",
-  DATA_REVIEW: "#718096",
 };
 
 export const STATUS_STYLES: Record<RiskStatus, StatusStyle> = {
@@ -90,7 +76,7 @@ export const STATUS_STYLES: Record<RiskStatus, StatusStyle> = {
 };
 
 export const MAINTENANCE_PRIORITY_STYLES: Record<
-  MaintenancePriority,
+  "HIGH_RISK" | "WATCH" | "NORMAL" | "DATA_REVIEW",
   MaintenancePriorityStyle
 > = {
   HIGH_RISK: {
@@ -113,13 +99,6 @@ export const MAINTENANCE_PRIORITY_STYLES: Record<
     bg: "bg-slate-50",
     border: "border-slate-300",
   },
-};
-
-export const STATUS_ICON_LABEL: Record<RiskStatus, string> = {
-  Normal: "✓",
-  Watch: "◉",
-  High: "▲",
-  "Insufficient data": "—",
 };
 
 export function ieeeStatusToRiskStatus(
@@ -154,65 +133,71 @@ export function nativeToStatus(label: NativeSeverityLabel): RiskStatus {
   }
 }
 
-/** IEEE status is the condition axis; maintenance priority is a separate queue. */
 export function statusFromSummary(summary: TransformerSummary): RiskStatus {
   return ieeeStatusToRiskStatus(summary.ieee_status);
 }
 
 /**
- * Legacy compatibility only. The current backend does not emit CRITICAL.
- * Old CRITICAL payloads are mapped to HIGH_RISK so the UI remains readable.
+ * Legacy compatibility only. Maintenance priority is not used as the IEEE
+ * condition axis. STATUS_1/2/3 are accepted because the current backend emits
+ * condition classes in the maintenance_priority field for compatibility.
  */
 export function normalizeMaintenancePriority(
   priority: MaintenancePriority | string | null | undefined
-): MaintenancePriority {
+): "HIGH_RISK" | "WATCH" | "NORMAL" | "DATA_REVIEW" {
   switch (String(priority ?? "").toUpperCase()) {
     case "CRITICAL":
     case "HIGH_RISK":
+    case "STATUS_3":
       return "HIGH_RISK";
     case "WATCH":
+    case "STATUS_2":
       return "WATCH";
     case "NORMAL":
+    case "STATUS_1":
       return "NORMAL";
     default:
       return "DATA_REVIEW";
   }
 }
 
-export function maintenancePriorityFromSummary(
-  summary: TransformerSummary
-): MaintenancePriority {
-  return normalizeMaintenancePriority(summary.maintenance_priority);
-}
-
-export function isHighRiskSummary(summary: TransformerSummary): boolean {
-  return maintenancePriorityFromSummary(summary) === "HIGH_RISK";
-}
-
-/** @deprecated Use isHighRiskSummary. */
-export function isCriticalSummary(summary: TransformerSummary): boolean {
-  return isHighRiskSummary(summary);
-}
+export const STATUS_ICON_LABEL: Record<RiskStatus, string> = {
+  Normal: "✓",
+  Watch: "◉",
+  High: "▲",
+  "Insufficient data": "—",
+};
 
 export function maintenancePriorityLabel(
   priority: MaintenancePriority | string | null | undefined
 ): string {
-  switch (normalizeMaintenancePriority(priority)) {
+  switch (String(priority ?? "").toUpperCase()) {
     case "HIGH_RISK":
-      return "High Risk";
+    case "STATUS_3":
+      return "Status 3";
     case "WATCH":
-      return "Watch";
+    case "STATUS_2":
+      return "Status 2";
     case "NORMAL":
-      return "Normal";
+    case "STATUS_1":
+      return "Status 1";
     default:
       return "Data Review";
   }
 }
 
-export function maintenancePriorityColor(
-  priority: MaintenancePriority | string | null | undefined
-): string {
-  return MAINTENANCE_PRIORITY_HEX[normalizeMaintenancePriority(priority)];
+export function maintenancePriorityFromSummary(
+  summary: TransformerSummary
+) {
+  return normalizeMaintenancePriority(summary.maintenance_priority);
+}
+
+export function isHighRiskSummary(summary: TransformerSummary): boolean {
+  return statusFromSummary(summary) === "High";
+}
+
+export function isCriticalSummary(summary: TransformerSummary): boolean {
+  return isHighRiskSummary(summary);
 }
 
 export function statusFromValues(
@@ -220,7 +205,11 @@ export function statusFromValues(
   label?: NativeSeverityLabel | string
 ): RiskStatus {
   if (ieeeStatus != null) return ieeeStatusToRiskStatus(ieeeStatus);
-  if (label === "STATUS_1" || label === "STATUS_2" || label === "STATUS_3") {
+  if (
+    label === "STATUS_1" ||
+    label === "STATUS_2" ||
+    label === "STATUS_3"
+  ) {
     return nativeToStatus(label);
   }
   return "Insufficient data";

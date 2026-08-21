@@ -2,23 +2,10 @@
 "use client";
 
 import { motion } from "framer-motion";
+import type { RiskStatus, TransformerSummary } from "@/types/dga";
+import { STATUS_ORDER, STATUS_STYLES, statusFromSummary } from "@/lib/severity";
 
-import type {
-  RiskStatus,
-  TransformerSummary,
-} from "@/types/dga";
-
-import {
-  STATUS_ORDER,
-  STATUS_STYLES,
-  statusFromSummary,
-} from "@/lib/severity";
-
-export function StatCards({
-  summaries,
-}: {
-  summaries: TransformerSummary[];
-}) {
+export function StatCards({ summaries }: { summaries: TransformerSummary[] }) {
   const counts: Record<RiskStatus, number> = {
     Normal: 0,
     Watch: 0,
@@ -38,34 +25,22 @@ export function StatCards({
         return (
           <motion.div
             key={status}
-            initial={{
-              opacity: 0,
-              y: 8,
-            }}
-            animate={{
-              opacity: 1,
-              y: 0,
-            }}
-            transition={{
-              delay: index * 0.05,
-            }}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: index * 0.05 }}
             className={`card-surface border-t-4 ${style.topBorder} px-5 py-4`}
           >
             <div className="text-sm font-semibold text-teal-500">
-              {status === "High"
-                ? "High Risk"
-                : status}
+              {status === "High" ? "Status 3" : status}
             </div>
 
-            <div
-              className={`mt-1 text-3xl font-extrabold ${style.text}`}
-            >
+            <div className={`mt-1 text-3xl font-extrabold ${style.text}`}>
               {counts[status]}
             </div>
 
             <div className="mt-1 text-[10px] leading-4 text-slate-500">
               {status === "High"
-                ? "IEEE Status 3; current maintenance queue is HIGH_RISK."
+                ? "IEEE Status 3; fleet maintenance order is separate."
                 : status === "Watch"
                   ? "IEEE Status 2."
                   : status === "Normal"
