@@ -5,7 +5,7 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 from config import config as cfg
-
+from dga import (doernenburg, duval_pentagon, duval_triangle, iec60599, keygas, rogers)
 logger = logging.getLogger(__name__)
 ABSTAIN = "ABSTAIN"
 
@@ -149,12 +149,6 @@ def aggregate_votes_with_row(row, votes, selected_methods):
 
 def _apply_traditional_methods(df):
     logger.debug("_apply_traditional_methods: input shape=%s", df.shape)
-    import doernenburg
-    import duval_pentagon
-    import duval_triangle
-    import iec60599
-    import keygas
-    import rogers
     out = df.copy()
     out = keygas.apply_key_gas(out)
     out = iec60599.apply_iec(out)
