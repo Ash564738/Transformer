@@ -28,31 +28,109 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.json.ensure_ascii = False
 
-DEFAULT_ALLOWED_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
-VERCEL_ORIGIN_PATTERN = re.compile(r"^https://transformer(?:-[a-z0-9-]+)?\.vercel\.app$")
-configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
-if configured_origins:
-    CORS_ORIGINS = [origin.strip().rstrip("/") for origin in configured_origins.split(",") if origin.strip()]
-else:
-    CORS_ORIGINS = DEFAULT_ALLOWED_ORIGINS + [VERCEL_ORIGIN_PATTERN]
+DEFAULT_ALLOWED_ORIGINS = {
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+}
 
-CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}}, methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type", "Authorization"], expose_headers=["Content-Type"], supports_credentials=False, max_age=86400)
-logger.info("CORS configured | origins=%s", CORS_ORIGINS)
+# Accept every Vercel deployment of this application, including preview
+# deployments such as:
+# https://transformer-jir4dnxpq-ash564738s-projects.vercel.app
+# https://transformer-g1p0gtblr-ash564738s-projects.vercel.app
+#
+# Keep this regex intentionally simple and correctly escaped.
+VERCEL_ORIGIN_PATTERN = re.compile(
+    r"^https://(?:[a-z0-9-]+\.)?vercel\.app$",
+    re.IGNORECASE,
+)
+
+configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+
+if configured_origins:
+    CONFIGURED_ORIGINS = {
+        origin.strip().rstrip("/")
+        for origin in configured_origins.split(",")
+        if origin.strip()
+    }
+else:
+    CONFIGURED_ORIGINS = set()
+
+logger.info(
+    "CORS configured | explicit_origins=%s | vercel_pattern=%s",
+    sorted(CONFIGURED_ORIGINS),
+    VERCEL_ORIGIN_PATTERN.pattern,
+)
+
+
+def _is_allowed_origin(origin: str | None) -> bool:
+    if not origin:
+        return False
+
+    normalized = origin.strip().rstrip("/")
+
+    if normalized in DEFAULT_ALLOWED_ORIGINS:
+        return True
+
+    if normalized in CONFIGURED_ORIGINS:
+        return True
+
+    return bool(VERCEL_ORIGIN_PATTERN.fullmatch(normalized))
+
+
+@app.after_request
+def add_cors_headers(response):
+    """
+    Add CORS headers to every response, including errors and OPTIONS.
+
+    This intentionally does not rely on Flask-CORS origin matching because
+    preview Vercel deployments use changing subdomains.
+    """
+    origin = request.headers.get("Origin")
+
+    if _is_allowed_origin(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+
+        if request.method == "OPTIONS":
+            requested_headers = request.headers.get(
+                "Access-Control-Request-Headers",
+                "",
+            )
+
+            response.headers[
+                "Access-Control-Allow-Methods"
+            ] = "GET, POST, OPTIONS"
+
+            response.headers[
+                "Access-Control-Allow-Headers"
+            ] = (
+                requested_headers
+                or "Content-Type, Authorization"
+            )
+
+            response.headers[
+                "Access-Control-Max-Age"
+            ] = "86400"
+
+    return response
+
+
+# Flask-CORS is retained for compatibility with the rest of the application,
+# while the explicit after_request handler above guarantees the exact origin
+# header on dynamic Vercel preview deployments.
+CORS(
+    app,
+    resources={r"/*": {"origins": "*"}},
+    methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    expose_headers=["Content-Type"],
+    supports_credentials=False,
+    send_wildcard=False,
+    max_age=86400,
+)
+
 
 auth.init_db()
-
-@app.route("/predict", methods=["OPTIONS"])
-@app.route("/predict/status/<job_id>", methods=["OPTIONS"])
-@app.route("/chat", methods=["OPTIONS"])
-@app.route("/auth/login", methods=["OPTIONS"])
-@app.route("/auth/me", methods=["OPTIONS"])
-@app.route("/auth/logout", methods=["OPTIONS"])
-@app.route("/dataset/reset", methods=["OPTIONS"])
-@app.route("/report/student-vs-traditional", methods=["OPTIONS"])
-@app.route("/report/experiments", methods=["OPTIONS"])
-@app.route("/report/experiments/refresh", methods=["OPTIONS"])
-def handle_options(**kwargs):
-    return "", 204
 
 @app.errorhandler(400)
 def handle_400(error):

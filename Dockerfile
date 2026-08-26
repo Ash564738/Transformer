@@ -7,7 +7,6 @@ ENV PIP_NO_CACHE_DIR=1
 ENV MALLOC_ARENA_MAX=2
 ENV PORT=10000
 
-# Keep scientific libraries from spawning excessive threads on Render's CPU.
 ENV OMP_NUM_THREADS=1
 ENV OPENBLAS_NUM_THREADS=1
 ENV MKL_NUM_THREADS=1

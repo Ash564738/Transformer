@@ -20,110 +20,7 @@ const PREDICTION_START_TIMEOUT_MS = 60_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PREDICTION_POLL_INTERVAL_MS = 2_000;
 const PREDICTION_MAX_WAIT_MS = 30 * 60 * 1000;
-
-async function pollPredictionStatus(
-  jobId: string
-): Promise<DgaPayload> {
-  const deadline =
-    Date.now() + PREDICTION_MAX_WAIT_MS;
-
-  let consecutiveNetworkFailures = 0;
-
-  while (Date.now() < deadline) {
-    await new Promise<void>((resolve) => {
-      window.setTimeout(
-        resolve,
-        PREDICTION_POLL_INTERVAL_MS
-      );
-    });
-
-    try {
-      const response = await fetchWithTimeout(
-        `${BACKEND_PREFIX}/predict/status/${encodeURIComponent(
-          jobId
-        )}`,
-        {
-          method: "GET",
-          headers: authHeaders(),
-          cache: "no-store",
-        },
-        DEFAULT_REQUEST_TIMEOUT_MS
-      );
-
-      const raw =
-        await response.json().catch(() => null);
-
-      if (!response.ok) {
-        const message =
-          raw &&
-          typeof raw === "object" &&
-          typeof raw.error === "string"
-            ? raw.error
-            : `Prediction status request failed (${response.status}).`;
-
-        throw new ApiError(message);
-      }
-
-      consecutiveNetworkFailures = 0;
-
-      if (
-        !raw ||
-        typeof raw !== "object" ||
-        Array.isArray(raw)
-      ) {
-        continue;
-      }
-
-      const body = raw as {
-        status?: string;
-        result?: DgaPayload;
-        error?: string;
-      };
-
-      if (body.status === "completed") {
-        if (!body.result) {
-          throw new ApiError(
-            "Prediction completed but returned no result."
-          );
-        }
-
-        return body.result;
-      }
-
-      if (body.status === "failed") {
-        throw new ApiError(
-          body.error ||
-            "Prediction worker failed."
-        );
-      }
-
-      continue;
-    } catch (error) {
-      if (error instanceof ApiError) {
-        consecutiveNetworkFailures += 1;
-
-        if (consecutiveNetworkFailures >= 5) {
-          throw error;
-        }
-
-        continue;
-      }
-
-      consecutiveNetworkFailures += 1;
-
-      if (consecutiveNetworkFailures >= 5) {
-        throw new ApiError(
-          `Unable to reach prediction status endpoint after ${consecutiveNetworkFailures} attempts.`
-        );
-      }
-    }
-  }
-
-  throw new ApiError(
-    "Prediction exceeded the 30-minute client wait limit."
-  );
-}
-
+const PREDICTION_NETWORK_RETRY_LIMIT = 8;
 
 export class ApiError extends Error {
   constructor(message: string) {
@@ -373,8 +270,8 @@ async function handlePredictResponse(
     const message =
       body &&
       typeof body === "object" &&
-      typeof body.error === "string"
-        ? body.error
+      typeof (body as { error?: unknown }).error === "string"
+        ? (body as { error: string }).error
         : `Prediction request failed (${res.status}).`;
 
     throw new ApiError(message);
@@ -399,7 +296,8 @@ type PredictionJobStatus =
   | "queued"
   | "running"
   | "completed"
-  | "failed";
+  | "failed"
+  | "not_found";
 
 interface PredictionStatusResponse {
   job_id: string;
@@ -410,10 +308,6 @@ interface PredictionStatusResponse {
   running_seconds?: number;
 }
 
-interface ErrorResponse {
-  error?: string;
-}
-
 function isRecord(
   value: unknown
 ): value is Record<string, unknown> {
@@ -421,19 +315,6 @@ function isRecord(
     value !== null &&
     typeof value === "object" &&
     !Array.isArray(value)
-  );
-}
-
-function isErrorResponse(
-  value: unknown
-): value is ErrorResponse {
-  return (
-    isRecord(value) &&
-    (
-      value.error === undefined ||
-      typeof value.error === "string"
-    ) &&
-    !("status" in value)
   );
 }
 
@@ -452,8 +333,134 @@ function isPredictionStatusResponse(
       status === "queued" ||
       status === "running" ||
       status === "completed" ||
-      status === "failed"
+      status === "failed" ||
+      status === "not_found"
     )
+  );
+}
+
+async function pollPredictionStatus(
+  jobId: string
+): Promise<DgaPayload> {
+  const deadline =
+    Date.now() + PREDICTION_MAX_WAIT_MS;
+
+  let consecutiveNetworkFailures = 0;
+  let consecutiveNotFound = 0;
+
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(
+        resolve,
+        PREDICTION_POLL_INTERVAL_MS
+      );
+    });
+
+    try {
+      const response = await fetchWithTimeout(
+        `${BACKEND_PREFIX}/predict/status/${encodeURIComponent(jobId)}`,
+        {
+          method: "GET",
+          headers: authHeaders(),
+          cache: "no-store",
+          mode: "cors",
+        },
+        DEFAULT_REQUEST_TIMEOUT_MS
+      );
+
+      const raw =
+        await response.json().catch(() => null);
+
+      if (
+        !raw ||
+        !isPredictionStatusResponse(raw)
+      ) {
+        consecutiveNetworkFailures += 1;
+
+        if (
+          consecutiveNetworkFailures >=
+          PREDICTION_NETWORK_RETRY_LIMIT
+        ) {
+          throw new ApiError(
+            `Backend returned an invalid prediction status response. URL: ${BACKEND_PREFIX}/predict/status/${jobId}`
+          );
+        }
+
+        continue;
+      }
+
+      consecutiveNetworkFailures = 0;
+
+      if (raw.status === "completed") {
+        if (!raw.result) {
+          throw new ApiError(
+            "Prediction completed but returned no result."
+          );
+        }
+
+        return raw.result;
+      }
+
+      if (raw.status === "failed") {
+        throw new ApiError(
+          raw.error ||
+            "Prediction worker failed."
+        );
+      }
+
+      if (raw.status === "not_found") {
+        consecutiveNotFound += 1;
+
+        // A transient restart/proxy race should not immediately kill a
+        // prediction that has already been accepted by the backend.
+        if (consecutiveNotFound < 10) {
+          continue;
+        }
+
+        throw new ApiError(
+          raw.error ||
+            "Prediction job not found or expired."
+        );
+      }
+
+      consecutiveNotFound = 0;
+    } catch (error) {
+      if (error instanceof ApiError) {
+        const message = error.message.toLowerCase();
+
+        if (
+          message.includes("not found or expired")
+        ) {
+          throw error;
+        }
+
+        consecutiveNetworkFailures += 1;
+
+        if (
+          consecutiveNetworkFailures >=
+          PREDICTION_NETWORK_RETRY_LIMIT
+        ) {
+          throw error;
+        }
+
+        continue;
+      }
+
+      consecutiveNetworkFailures += 1;
+
+      if (
+        consecutiveNetworkFailures >=
+        PREDICTION_NETWORK_RETRY_LIMIT
+      ) {
+        throw new ApiError(
+          `Unable to reach prediction status endpoint after ${consecutiveNetworkFailures} attempts. URL: ${BACKEND_PREFIX}/predict/status/${jobId}`
+        );
+      }
+    }
+  }
+
+  throw new ApiError(
+    "Prediction exceeded the 30-minute client wait limit."
   );
 }
 
@@ -478,21 +485,22 @@ async function startPrediction(
     !raw ||
     typeof raw !== "object" ||
     Array.isArray(raw) ||
-    typeof raw.job_id !== "string"
+    typeof (raw as PredictionStartResponse).job_id !== "string"
   ) {
     throw new ApiError(
       "Backend returned an invalid prediction job response."
     );
   }
 
-  return pollPredictionStatus(raw.job_id);
+  return pollPredictionStatus(
+    (raw as PredictionStartResponse).job_id
+  );
 }
 
 export async function runPredictionFromFile(
   file: File
 ): Promise<DgaPayload> {
   const form = new FormData();
-
   form.append("file", file);
 
   return startPrediction({
@@ -500,6 +508,7 @@ export async function runPredictionFromFile(
     headers: authHeaders(),
     body: form,
     cache: "no-store",
+    mode: "cors",
   });
 }
 
@@ -516,6 +525,7 @@ export async function runPredictionFromJson(
       data: rows,
     }),
     cache: "no-store",
+    mode: "cors",
   });
 }
 
@@ -543,6 +553,7 @@ export async function askChatBackend(
         history,
       }),
       cache: "no-store",
+      mode: "cors",
     }
   );
 
