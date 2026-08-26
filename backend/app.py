@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import time
@@ -9,6 +10,7 @@ from pathlib import Path
 from threading import Lock
 
 import matplotlib
+
 matplotlib.use("Agg")
 import numpy as np
 import pandas as pd
@@ -27,12 +29,15 @@ from text2sql_chat import answer_question
 logger = logging.getLogger(__name__)
 
 _PREDICTION_LOCK = Lock()
+_PREDICTION_CACHE: dict[str, tuple[float, dict]] = {}
+_CACHE_TTL = max(30, int(os.getenv("DGA_PREDICTION_CACHE_TTL", "600")))
+_MAX_UPLOAD_MB = max(1, int(os.getenv("DGA_MAX_UPLOAD_MB", "10")))
 
 app = Flask(__name__)
 app.json.ensure_ascii = False
-
-# Bật CORS cho tất cả origin, mọi route
-CORS(app, resources={r"/*": {"origins": "*"}})
+app.config["MAX_CONTENT_LENGTH"] = _MAX_UPLOAD_MB * 1024 * 1024
+_CORS_ORIGINS = os.getenv("DGA_CORS_ORIGINS", "*").strip() or "*"
+CORS(app, resources={r"/*": {"origins": "*" if _CORS_ORIGINS == "*" else [x.strip() for x in _CORS_ORIGINS.split(",") if x.strip()]}})
 
 # Các route và logic khác giữ nguyên, nhưng bỏ các hàm _apply_cors, before_request, after_request
 
@@ -153,91 +158,69 @@ def auth_logout():
         auth.logout(token)
     return jsonify(ok=True)
 
+def _prediction_cache_key(df: pd.DataFrame) -> str:
+    try:
+        data = df.to_csv(index=False).encode("utf-8", errors="replace")
+    except Exception:
+        data = repr(df).encode("utf-8", errors="replace")
+    return hashlib.sha256(data).hexdigest()
+
+def _prediction_cache_get(key: str):
+    item = _PREDICTION_CACHE.get(key)
+    if not item:
+        return None
+    created, payload = item
+    if time.time() - created > _CACHE_TTL:
+        _PREDICTION_CACHE.pop(key, None)
+        return None
+    return payload
+
+def _prediction_cache_set(key: str, payload: dict) -> None:
+    _PREDICTION_CACHE[key] = (time.time(), payload)
+    while len(_PREDICTION_CACHE) > 2:
+        oldest = min(_PREDICTION_CACHE.items(), key=lambda item: item[1][0])[0]
+        if oldest == key:
+            break
+        _PREDICTION_CACHE.pop(oldest, None)
+
 @app.route("/predict", methods=["POST"])
 @auth.require_auth
 def predict():
-    """Run the production inference synchronously and return the result.
-
-    The previous implementation created an in-process background job and
-    stored its state in SQLite on Render's ephemeral filesystem. A Render
-    restart could therefore kill the worker and delete the job database,
-    producing the recurring "job not found or expired" failure.
-
-    This endpoint deliberately has no job_id and no polling protocol.
-    """
-    if not _PREDICTION_LOCK.acquire(blocking=False):
-        return jsonify(
-            error="A prediction is already running. Please wait for it to finish."
-        ), 409
-
-    started = time.perf_counter()
-
     try:
-        logger.info(
-            "PREDICTION REQUEST RECEIVED | origin=%s | content_type=%s",
-            request.headers.get("Origin"),
-            request.content_type,
-        )
-
-        data = parse_request_data()
-
-        logger.info(
-            "Uploaded dataset | rows=%d | columns=%d",
-            len(data),
-            len(data.columns),
-        )
-
-        if data.empty:
-            return jsonify(error="No data provided."), 400
-
-        result = process_dataframe(data)
-        elapsed = time.perf_counter() - started
-
-        logger.info(
-            "PREDICTION REQUEST COMPLETED | rows=%d | elapsed=%.3fs",
-            len(data),
-            elapsed,
-        )
-
-        return jsonify(_sanitize_for_json(result)), 200
-
+        input_df = parse_request_data()
     except ValueError as exc:
-        logger.exception("Prediction validation error")
-        return jsonify(
-            error=str(exc),
-            pipeline_status="failed",
-        ), 400
+        return jsonify(error=str(exc)), 400
+    if input_df.empty:
+        return jsonify(error="Prediction input is empty."), 400
 
-    except FileNotFoundError as exc:
-        logger.exception("Prediction model artifact missing")
-        return jsonify(
-            error=str(exc),
-            pipeline_status="model_missing",
-        ), 503
+    key = _prediction_cache_key(input_df)
+    cached = _prediction_cache_get(key)
+    if cached is not None:
+        cached = dict(cached)
+        cached.setdefault("pipeline", {})["cache_hit"] = True
+        return jsonify(_sanitize_for_json(cached)), 200
 
+    if not _PREDICTION_LOCK.acquire(blocking=False):
+        return jsonify(error="A prediction is already running. Please retry shortly.", retryable=True), 409
+    try:
+        started = time.perf_counter()
+        from inference_service import process_dataframe
+        payload = process_dataframe(input_df)
+        payload.setdefault("pipeline", {})["cache_hit"] = False
+        payload["pipeline"]["api_elapsed_seconds"] = round(time.perf_counter() - started, 4)
+        _prediction_cache_set(key, payload)
+        return jsonify(_sanitize_for_json(payload)), 200
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     except Exception as exc:
-        logger.exception("Prediction request failed")
-        return jsonify(
-            error=str(exc),
-            pipeline_status="failed",
-        ), 500
+        logger.exception("Prediction failed")
+        return jsonify(error=f"Prediction failed: {exc}"), 500
     finally:
         _PREDICTION_LOCK.release()
 
-
 @app.route("/predict/status/<job_id>", methods=["GET"])
-def deprecated_prediction_status(job_id: str):
-    """Compatibility endpoint for stale browser tabs.
-
-    Job/polling mode has intentionally been removed. Returning 410 makes the
-    migration explicit instead of pretending a vanished job is an application
-    failure.
-    """
-    return jsonify(
-        job_id=job_id,
-        status="deprecated",
-        error="Prediction job polling has been removed. Start a new prediction with POST /predict.",
-    ), 410
+def predict_status(job_id):
+    return jsonify(error="Async jobs are disabled. POST /predict returns the completed payload directly."), 410
 
 
 @app.route("/dataset/reset", methods=["POST"])

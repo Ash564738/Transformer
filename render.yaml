@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: transformer-kgen
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: DGA_FAST_MODE
+        value: "1"
+      - key: DGA_MAX_ROWS
+        value: "2200"
+      - key: DGA_MAX_ROWS_PER_TRANSFORMER
+        value: "18"
+      - key: DGA_SAVE_DATABASE
+        value: "1"
+      - key: DGA_PERSIST_OUTPUTS
+        value: "0"
+      - key: DGA_WRITE_CLEAN_ARTIFACTS
+        value: "0"
+      - key: DGA_MAX_UPLOAD_MB
+        value: "10"
+      - key: DGA_PREDICTION_CACHE_TTL
+        value: "600"
+      - key: DGA_CORS_ORIGINS
+        sync: false
+      - key: DGA_AUTH_SECRET
+        generateValue: true
+      - key: DGA_ADMIN_EMAIL
+        sync: false
+      - key: DGA_ADMIN_PASSWORD
+        sync: false
+      - key: DGA_ADMIN_NAME
+        value: "DGA Administrator"
+      - key: DGA_SESSION_HOURS
+        value: "24"

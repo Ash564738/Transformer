@@ -1,6 +1,6 @@
 # clean_dataset.py
 from __future__ import annotations
-import json, logging, re
+import json, logging, os, re
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 import numpy as np
@@ -263,16 +263,23 @@ def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR, 
     df = df[existing + extras].copy()
     missing_summary = report_missing(df)
     summary = {"input_file": input_description, "sheet_name": sheet_name, "original_shape": list(original_shape), "clean_shape": list(df.shape), "original_columns": original_columns, "dropped_noise_columns": [], "clean_columns": df.columns.tolist(), "duplicate_rows_removed": int(duplicate_rows_removed), "n_unique_transformers": int(df["transformer_id"].nunique(dropna=True)), "date_min": None if df["sample_day"].dropna().empty else str(df["sample_day"].min()), "date_max": None if df["sample_day"].dropna().empty else str(df["sample_day"].max()), "rows_missing_transformer_id": int(df["transformer_id"].isna().sum()), "rows_missing_sample_day": int(df["sample_day"].isna().sum()), "rows_missing_year_energized": int(df["year_energized"].isna().sum()), "rows_missing_temp": int(df["temp"].isna().sum()), "rows_missing_water": int(df["water"].isna().sum()), "rows_with_tested_before_sample_swapped": int(n_swapped), "synthetic_ser_count": int(df["ser_is_synthetic"].sum()), "core_gases": CORE_GASES, "header_rows_removed": int(header_rows_removed), "notes": {"water_negative_values_rejected": True, "temp_water_not_imputed": True, "year_energized_not_globally_imputed": True, "tdcg_recalculated_from_six_combustible_gases": True, "raw_tdcg_preserved": True, "synthetic_ser_not_used_as_transformer_id": True, "deduplicate_exact_rows_only": True, "auto_header_detection": True, "supports_dataframe_input": True}}
-    output_dir.mkdir(parents=True, exist_ok=True)
-    clean_parquet = output_dir / "dga_unlabeled.parquet"
-    clean_csv = output_dir / "dga_unlabeled.csv"
-    missing_csv = output_dir / "missing_summary.csv"
-    summary_json = output_dir / "clean_summary.json"
-    df.to_parquet(clean_parquet, index=False)
-    df.to_csv(clean_csv, index=False, encoding="utf-8-sig")
-    missing_summary.to_csv(missing_csv, index=False, encoding="utf-8-sig")
-    with open(summary_json, "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
+    # Production API does not need artifact files on every request. Writing Parquet/CSV
+    # here was pure overhead and also made pyarrow a hard runtime dependency.
+    write_artifacts = os.getenv("DGA_WRITE_CLEAN_ARTIFACTS", "0").strip().lower() not in {"0", "false", "no", "off"}
+    if write_artifacts:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        clean_parquet = output_dir / "dga_unlabeled.parquet"
+        clean_csv = output_dir / "dga_unlabeled.csv"
+        missing_csv = output_dir / "missing_summary.csv"
+        summary_json = output_dir / "clean_summary.json"
+        try:
+            df.to_parquet(clean_parquet, index=False)
+        except Exception:
+            logger.exception("Parquet artifact write failed; continuing with CSV artifacts.")
+        df.to_csv(clean_csv, index=False, encoding="utf-8-sig")
+        missing_summary.to_csv(missing_csv, index=False, encoding="utf-8-sig")
+        with open(summary_json, "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
     logger.info("Cleaning complete: %d rows, %d columns, %d transformers.", len(df), len(df.columns), df["transformer_id"].nunique())
     return df, summary
 if __name__ == "__main__":

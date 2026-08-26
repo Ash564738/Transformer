@@ -8,24 +8,23 @@
 #   [training]  : Huấn luyện model (LightGBM, XGBoost, CatBoost, Temporal)
 #   [optional]  : Snorkel (weak supervision), SHAP (giải thích model)
 
-flask
+Flask
 flask-cors
 gunicorn
-
 joblib
 numpy
 pandas
-pyarrow
 openpyxl
 python-dotenv
 attrs
-
 scikit-learn
 scipy
-attrs
-
 matplotlib
+itsdangerous
+pyarrow
 catboost
 snorkel
 lightgbm
 xgboost
+redis
+celery

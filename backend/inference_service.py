@@ -642,126 +642,151 @@ def create_payload(df, ranking_df, comparison_df=None):
         },
     }
 
+def _limit_fast_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Bound inference while retaining every transformer and its newest samples."""
+    max_rows = max(300, int(os.getenv("DGA_MAX_ROWS", "2200")))
+    max_per_transformer = max(3, int(os.getenv("DGA_MAX_ROWS_PER_TRANSFORMER", "12")))
+    min_per_transformer = 3
+    work = df.copy()
+    if "sample_day" in work.columns:
+        work["sample_day"] = pd.to_datetime(work["sample_day"], errors="coerce")
+    before = len(work)
+    if "transformer_id" not in work.columns:
+        work = work.tail(max_rows)
+    else:
+        ordered = work.sort_values(["transformer_id", "sample_day"], kind="mergesort")
+        recent = ordered.groupby("transformer_id", group_keys=False, dropna=False).tail(max_per_transformer)
+        if len(recent) <= max_rows:
+            work = recent
+        else:
+            # Guarantee every transformer at least the newest 3 samples, then fill the
+            # remaining budget with the most recent older samples fleet-wide.
+            base = ordered.groupby("transformer_id", group_keys=False, dropna=False).tail(min_per_transformer)
+            remaining = max(0, max_rows - len(base))
+            extra = recent.drop(index=base.index, errors="ignore").sort_values("sample_day", ascending=False, kind="mergesort").head(remaining)
+            work = pd.concat([base, extra], axis=0)
+        work = work.sort_values(["transformer_id", "sample_day"], kind="mergesort")
+    work = work.reset_index(drop=True)
+    return work, {
+        "input_rows_before_limit": int(before),
+        "input_rows_after_limit": int(len(work)),
+        "max_rows": int(max_rows),
+        "max_rows_per_transformer": int(max_per_transformer),
+        "min_rows_per_transformer": int(min_per_transformer),
+        "transformers_retained": int(work["transformer_id"].nunique()) if "transformer_id" in work.columns else 0,
+        "rows_reduced": int(before - len(work)),
+    }
+
+
+def _apply_fast_mode_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Populate payload fields that are normally supplied by optional ML stages."""
+    out = df.copy()
+    out["final_fault"] = out.get("consensus_fault", pd.Series("ABSTAIN", index=out.index)).map(normalize_fault).fillna("ABSTAIN")
+    out["final_fault_group"] = out.get("consensus_fault_group", pd.Series("ABSTAIN", index=out.index)).map(unify_fault).fillna("ABSTAIN")
+    out["final_fault_source"] = "traditional_consensus_fast"
+    out["final_fault_conflict"] = out.get("diagnostic_conflict", False)
+    out["final_fault_same_coarse_different_fine"] = False
+    out["final_fault_conflict_level"] = np.where(out["final_fault_conflict"].astype(bool), "TRADITIONAL_DIAGNOSTIC_CONFLICT", "TRADITIONAL_CONSENSUS")
+    out["fault_criticality_class"] = out["final_fault"].map(classify_fault_criticality)
+    out["fault_criticality_source"] = fault_criticality_source()
+    out["student_used_as_fallback"] = False
+    out["anomaly_percentile"] = np.nan
+    out["anomaly_is_severity_input"] = False
+    out["anomaly_interpretation"] = "Disabled in fast production mode."
+    for col in ("weak_fine_fault", "weak_coarse_fault", "student_fault_label"):
+        out[col] = "ABSTAIN"
+    for col in ("weak_fine_posterior_max", "weak_fine_entropy", "weak_coarse_posterior_max", "weak_coarse_entropy", "student_fault_confidence"):
+        out[col] = np.nan
+    out["weak_fine_is_ABSTAIN"] = True
+    out["weak_coarse_is_ABSTAIN"] = True
+    out["student_model_name"] = "DISABLED_FAST_MODE"
+    out["student_training_type"] = "DISABLED"
+    out["student_feature_set"] = ""
+    return out
+
+
 def process_dataframe(uploaded_df: pd.DataFrame):
+    """Fast production path: clean -> features -> traditional DGA -> IEEE severity -> ranking."""
+    if uploaded_df is None or uploaded_df.empty:
+        raise ValueError("Uploaded dataframe is empty.")
     overall_started = time.perf_counter()
     timings: dict[str, float] = {}
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    logger.info("\n%s\n# PRODUCTION DGA INFERENCE START\n# uploaded rows=%d\n# uploaded columns=%d\n%s", "#" * 110, len(uploaded_df), len(uploaded_df.columns), "#" * 110)
-    try:
-        if uploaded_df is None:
-            raise ValueError("Uploaded dataframe is None.")
-        if uploaded_df.empty:
-            raise ValueError("Uploaded dataframe is empty.")
-        input_df = uploaded_df.copy()
-        logger.info("Input dataframe ready | rows=%d | columns=%d", len(input_df), len(input_df.columns))
-        logger.info("[PIPELINE] Cleaning dataset directly from dataframe")
-        clean_started = time.perf_counter()
-        df_clean, clean_summary = clean_dataset(dataframe=input_df, output_dir=PROCESSED_DIR)
-        clean_elapsed = time.perf_counter() - clean_started
-        timings["clean_dataset"] = round(clean_elapsed, 4)
-        logger.info("[TIMER] END clean_dataset | %.4f seconds", clean_elapsed)
-        if clean_elapsed >= SLOW_STAGE_SECONDS:
-            logger.warning("[TIMER] SLOW STAGE clean_dataset | %.4f seconds", clean_elapsed)
-        if df_clean.empty:
-            raise ValueError("Cleaning produced an empty dataset.")
-        logger.info("Cleaning complete | rows=%d | transformers=%d | columns=%d", len(df_clean), df_clean["transformer_id"].nunique() if "transformer_id" in df_clean.columns else 0, len(df_clean.columns))
-        df_features = _timed_call("feature_engineering", timings, build_training_features_from_clean, df_clean)
-        if df_features.empty:
-            raise ValueError("Feature engineering produced an empty dataset.")
-        logger.info("Feature engineering complete | rows=%d | columns=%d", len(df_features), len(df_features.columns))
-        df_labeled = _timed_call("traditional_consensus", timings, apply_consensus, df_features)
-        if "consensus_fault" in df_labeled.columns:
-            logger.info("Traditional consensus distribution | %s", df_labeled["consensus_fault"].value_counts(dropna=False).to_dict())
-        df_labeled, weak_metadata = _timed_call("pretrained_weak_models", timings, _apply_pretrained_weak_models, df_labeled)
-        artifact = _timed_call("load_student_model", timings, _load_student_model)
-        df_labeled = _timed_call("student_prediction", timings, _apply_student, df_labeled, artifact)
-        df_labeled = _timed_call("evidence_fusion", timings, _combine_consensus_and_student, df_labeled)
-        comparison_df = _timed_call("student_comparison", timings, _build_student_comparison, df_labeled)
-        anomaly_scores = _timed_call("anomaly_prediction", timings, _predict_anomaly, df_labeled)
-        df_labeled["anomaly_percentile"] = anomaly_scores
-        df_labeled["anomaly_is_severity_input"] = False
-        df_labeled["anomaly_interpretation"] = "Relative anomaly position only; not IEEE severity or maintenance rank input."
-        if len(anomaly_scores):
-            logger.info("Anomaly detection complete | min=%.2f | median=%.2f | max=%.2f", float(np.nanmin(anomaly_scores)), float(np.nanmedian(anomaly_scores)), float(np.nanmax(anomaly_scores)))
-        df_labeled = _timed_call("ieee_severity", timings, apply_severity, df_labeled, nei_reference=None)
-        df_labeled["severity_inference_stage"] = "STANDARD_RULE_ENGINE"
-        df_labeled["severity_manual_weights"] = False
-        df_labeled["severity_weighted_sum_used"] = False
-        df_labeled["severity_anomaly_used"] = False
-        df_labeled["severity_nei_used"] = False
-        logger.info("IEEE severity distribution | %s", df_labeled["ieee_dga_status"].value_counts(dropna=False).sort_index().to_dict())
-        ranking_df = _timed_call("transformer_ranking", timings, build_transformer_ranking, df_labeled)
-        if ENABLE_RANKING_DIAGNOSTICS and not ranking_df.empty:
-            _timed_call("ranking_diagnostics", timings, log_ranking_diagnostics, ranking_df, top_n=20)
-        if PERSIST_OUTPUTS:
-            if not comparison_df.empty:
-                _timed_call("save_student_comparison", timings, _save_csv, comparison_df, STUDENT_COMPARISON_PATH)
-            if not ranking_df.empty:
-                _timed_call("save_ranking_parquet", timings, _save_parquet, ranking_df, RANKING_PATH)
-                _timed_call("save_ranking_csv", timings, _save_csv, ranking_df, REPORT_DIR / "transformer_ranking.csv")
-            _timed_call("save_unlabeled_parquet", timings, _save_parquet, df_labeled, UNLABELED_PATH)
+    fast_mode = os.getenv("DGA_FAST_MODE", "1").strip().lower() not in {"0", "false", "no", "off"}
+    persist_outputs = os.getenv("DGA_PERSIST_OUTPUTS", "0").strip().lower() not in {"0", "false", "no", "off"}
+    save_database = os.getenv("DGA_SAVE_DATABASE", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+    cleaned_result = _timed_call("clean_dataset", timings, clean_dataset, dataframe=uploaded_df.copy(), output_dir=PROCESSED_DIR)
+    df_clean, clean_summary = cleaned_result
+    if df_clean.empty:
+        raise ValueError("Cleaning produced an empty dataset.")
+
+    limit_meta = {"input_rows_before_limit": len(df_clean), "input_rows_after_limit": len(df_clean), "rows_reduced": 0}
+    if fast_mode:
+        df_clean, limit_meta = _limit_fast_rows(df_clean)
+
+    df_features = _timed_call("feature_engineering", timings, build_training_features_from_clean, df_clean)
+    if df_features.empty:
+        raise ValueError("Feature engineering produced an empty dataset.")
+
+    df_labeled = _timed_call("traditional_consensus", timings, apply_consensus, df_features)
+    df_labeled = _timed_call("ieee_severity", timings, apply_severity, df_labeled, nei_reference=None)
+    df_labeled["severity_inference_stage"] = "STANDARD_RULE_ENGINE"
+    df_labeled["severity_manual_weights"] = False
+    df_labeled["severity_weighted_sum_used"] = False
+    df_labeled["severity_anomaly_used"] = False
+    df_labeled["severity_nei_used"] = False
+    df_labeled = _apply_fast_mode_columns(df_labeled)
+    ranking_df = _timed_call("transformer_ranking", timings, build_transformer_ranking, df_labeled)
+    comparison_df = pd.DataFrame()
+    payload = _timed_call("create_payload", timings, create_payload, df_labeled, ranking_df, comparison_df)
+
+    payload["pipeline"] = {
+        "status": "completed",
+        "mode": "fast_production_inference" if fast_mode else "production_inference",
+        "runtime_training": False,
+        "runtime_research_benchmark": False,
+        "runtime_excel_generation": False,
+        "ml_models_enabled": False,
+        "persist_outputs": persist_outputs,
+        "save_database": save_database,
+        "rows": int(len(df_labeled)),
+        "transformers": int(df_labeled["transformer_id"].nunique()),
+        "elapsed_seconds": 0.0,
+        "timings": timings,
+        "input_limit": limit_meta,
+        "clean_summary": {
+            "original_rows": clean_summary.get("original_shape", [0])[0],
+            "clean_rows": clean_summary.get("clean_shape", [0])[0],
+            "transformers": clean_summary.get("n_unique_transformers", 0),
+        },
+        "models": {"weak_coarse": "disabled_fast_mode", "weak_fine": "disabled_fast_mode", "student": "disabled_fast_mode", "anomaly": "disabled_fast_mode"},
+        "research_benchmark": {"status": "precomputed_offline", "executed_during_request": False},
+        "excel": {"status": "precomputed_offline", "executed_during_request": False},
+    }
+
+    if persist_outputs:
+        try:
+            _timed_call("save_ranking_parquet", timings, _save_parquet, ranking_df, RANKING_PATH)
             _timed_call("save_processed_parquet", timings, _save_parquet, df_labeled, PROCESSED_OUTPUT_PATH)
-        payload = _timed_call("create_payload", timings, create_payload, df_labeled, ranking_df, comparison_df)
-        elapsed = time.perf_counter() - overall_started
-        timing_by_cost = dict(sorted(timings.items(), key=lambda item: item[1], reverse=True))
-        payload["pipeline"] = {
-            "status": "completed",
-            "mode": "production_inference",
-            "runtime_training": False,
-            "runtime_research_benchmark": False,
-            "runtime_excel_generation": False,
-            "model_cache_enabled": MODEL_CACHE_ENABLED,
-            "persist_outputs": PERSIST_OUTPUTS,
-            "save_database": SAVE_DATABASE,
-            "rows": int(len(df_labeled)),
-            "transformers": int(df_labeled["transformer_id"].nunique()),
-            "elapsed_seconds": float(elapsed),
-            "timings": timings,
-            "timings_by_cost": timing_by_cost,
-            "slowest_stage": next(iter(timing_by_cost), None),
-            "slowest_stage_seconds": next(iter(timing_by_cost.values()), None),
-            "weak_backend": weak_metadata.get("backend"),
-            "models": {
-                "weak_coarse": "pretrained",
-                "weak_fine": "pretrained",
-                "student": artifact.get("model_name", "UNKNOWN"),
-                "anomaly": "pretrained",
-            },
-            "research_benchmark": {"status": "precomputed_offline", "executed_during_request": False},
-            "excel": {"status": "precomputed_offline", "executed_during_request": False},
-        }
-        if PERSIST_OUTPUTS:
-            _timed_call("save_inference_metadata", timings, _write_inference_metadata, df_labeled, artifact, weak_metadata, elapsed, timings)
-        if SAVE_DATABASE:
-            try:
-                def _save_database():
-                    from data_store import save_payload_to_db
-                    save_payload_to_db(payload)
-                _timed_call("save_database", timings, _save_database)
-            except Exception:
-                logger.exception("Failed to save inference payload to database")
-        final_elapsed = time.perf_counter() - overall_started
-        timing_by_cost = dict(sorted(timings.items(), key=lambda item: item[1], reverse=True))
-        payload["pipeline"]["elapsed_seconds"] = float(final_elapsed)
-        payload["pipeline"]["timings"] = timings
-        payload["pipeline"]["timings_by_cost"] = timing_by_cost
-        payload["pipeline"]["slowest_stage"] = next(iter(timing_by_cost), None)
-        payload["pipeline"]["slowest_stage_seconds"] = next(iter(timing_by_cost.values()), None)
-        logger.info("=" * 110)
-        logger.info("PRODUCTION DGA INFERENCE COMPLETED")
-        logger.info("Rows           : %d", len(df_labeled))
-        logger.info("Transformers   : %d", df_labeled["transformer_id"].nunique())
-        logger.info("Elapsed seconds: %.3f", final_elapsed)
-        logger.info("Slowest stage  : %s | %.3f seconds", payload["pipeline"].get("slowest_stage"), payload["pipeline"].get("slowest_stage_seconds") or 0.0)
-        for name, seconds in timing_by_cost.items():
-            logger.info("[TIMING] %-32s %.4f seconds", name, seconds)
-        logger.info("Research       : SKIPPED DURING REQUEST")
-        logger.info("Excel report   : SKIPPED DURING REQUEST")
-        logger.info("=" * 110)
-        return payload
-    except Exception:
-        logger.exception("FATAL ERROR IN PRODUCTION DGA INFERENCE")
-        raise
+            _timed_call("save_inference_metadata", timings, _write_inference_metadata, df_labeled, {"model_name": "DISABLED_FAST_MODE"}, {"backend": "traditional_consensus"}, time.perf_counter() - overall_started, timings)
+        except Exception:
+            logger.exception("Optional output persistence failed; returning inference payload anyway.")
+
+    if save_database:
+        try:
+            from data_store import save_payload_to_db
+            _timed_call("save_database", timings, save_payload_to_db, payload)
+        except Exception:
+            logger.exception("Database save failed; returning inference payload anyway.")
+
+    final_elapsed = time.perf_counter() - overall_started
+    timing_by_cost = dict(sorted(timings.items(), key=lambda item: item[1], reverse=True))
+    payload["pipeline"]["elapsed_seconds"] = float(final_elapsed)
+    payload["pipeline"]["timings"] = timings
+    payload["pipeline"]["timings_by_cost"] = timing_by_cost
+    payload["pipeline"]["slowest_stage"] = next(iter(timing_by_cost), None)
+    payload["pipeline"]["slowest_stage_seconds"] = next(iter(timing_by_cost.values()), None)
+    return payload
 
 __all__ = ["process_dataframe", "create_payload", "clear_model_cache"]
