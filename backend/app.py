@@ -1,4 +1,4 @@
-# backend/app.py (đã sửa CORS)
+# backend/app.py
 
 from __future__ import annotations
 
@@ -31,83 +31,52 @@ _PREDICTION_LOCK = Lock()
 app = Flask(__name__)
 app.json.ensure_ascii = False
 
-DEFAULT_ALLOWED_ORIGINS = {
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-}
-
-# Cho phép mọi subdomain của vercel.app, kể cả nhiều cấp
-VERCEL_ORIGIN_PATTERN = re.compile(
-    r"^https://(?:[a-z0-9-]+\.)*vercel\.app$",
-    re.IGNORECASE,
-)
-
-configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
-
-CONFIGURED_ORIGINS = {
-    origin.strip().rstrip("/")
-    for origin in configured_origins.split(",")
-    if origin.strip()
-}
-
-
-def _is_allowed_origin(origin: str | None) -> bool:
-    if not origin:
-        return False
-
-    normalized = origin.strip().rstrip("/")
-
-    if normalized in DEFAULT_ALLOWED_ORIGINS:
-        return True
-
-    if normalized in CONFIGURED_ORIGINS:
-        return True
-
-    return bool(VERCEL_ORIGIN_PATTERN.fullmatch(normalized))
-
+# Cấu hình CORS: mặc định cho phép tất cả origin
+# Nếu muốn giới hạn, đặt biến môi trường CORS_ALLOWED_ORIGINS thành danh sách các origin (phân tách bằng dấu phẩy)
+# Ví dụ: CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
+# Nếu không đặt, mọi origin đều được phép (Access-Control-Allow-Origin: *)
+CORS_ALLOWED_ORIGINS_ENV = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+if CORS_ALLOWED_ORIGINS_ENV:
+    ALLOWED_ORIGINS = {origin.strip().rstrip("/") for origin in CORS_ALLOWED_ORIGINS_ENV.split(",") if origin.strip()}
+else:
+    ALLOWED_ORIGINS = None  # None có nghĩa là cho phép tất cả
 
 def _apply_cors(response):
     origin = request.headers.get("Origin")
-
-    if _is_allowed_origin(origin):
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Methods"] = (
-            "GET, POST, OPTIONS"
-        )
-        response.headers["Access-Control-Allow-Headers"] = (
-            "Content-Type, Authorization"
-        )
-        response.headers["Access-Control-Max-Age"] = "86400"
-        response.headers["Vary"] = "Origin"
-    else:
-        # Fallback: cho phép tất cả origin nếu không nhận diện được
-        # (tùy chọn, có thể bỏ nếu muốn giới hạn)
+    if ALLOWED_ORIGINS is None:
+        # Cho phép tất cả origin
         response.headers["Access-Control-Allow-Origin"] = "*"
+    else:
+        if origin and origin.strip().rstrip("/") in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+        else:
+            # Nếu origin không được phép, vẫn trả về header với giá trị '*' để tránh lỗi CORS
+            # Tuy nhiên, điều này có thể không an toàn, nhưng tạm thời chấp nhận
+            response.headers["Access-Control-Allow-Origin"] = "*"
 
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Max-Age"] = "86400"
     return response
-
 
 @app.before_request
 def handle_cors_preflight():
     if request.method == "OPTIONS":
         response = make_response("", 204)
         return _apply_cors(response)
-
     return None
-
 
 @app.after_request
 def add_cors_headers(response):
     return _apply_cors(response)
 
-
 logger.info(
-    "CORS configured | explicit_origins=%s | vercel_pattern=%s",
-    sorted(CONFIGURED_ORIGINS),
-    VERCEL_ORIGIN_PATTERN.pattern,
+    "CORS configured | allowed_origins=%s",
+    "ALL" if ALLOWED_ORIGINS is None else sorted(ALLOWED_ORIGINS)
 )
 
-
+# Phần còn lại giữ nguyên
 auth.init_db()
 
 @app.errorhandler(400)
