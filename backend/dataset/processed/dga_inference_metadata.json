@@ -1,0 +1,55 @@
+{
+  "pipeline_type": "operational_unlabeled_inference",
+  "n_rows": 4561,
+  "n_transformers": 627,
+  "diagnostic_methods": [
+    "keygas_fault",
+    "iec_fault",
+    "rogers_fault",
+    "doernenburg_fault",
+    "duval_triangle_fault",
+    "duval_pentagon_p1_fault",
+    "duval_pentagon_p2_fault"
+  ],
+  "diagnostic_consensus": "unweighted_majority_with_abstain",
+  "diagnostic_method_weights": null,
+  "severity_standard": "IEEE C57.104-2019",
+  "severity_is_weighted": false,
+  "severity_uses_manual_weights": false,
+  "severity_uses_nei": false,
+  "severity_uses_anomaly": false,
+  "severity_type": "IEEE_ORDINAL_STATUS",
+  "ranking_policy": [
+    "transformer_overall_severity_score = current_status + historical_mean_status/(MAX_STATUS+1)",
+    "current_status3_standardized_exceedance",
+    "current_standard_trigger_count",
+    "historical_max_status_before_current",
+    "historical_max_standardized_exceedance",
+    "same_fault_recurrence_fraction",
+    "worsening_transition_ratio"
+  ],
+  "ranking_is_weighted": false,
+  "ranking_is_health_score": false,
+  "ranking_uses_manual_weights": false,
+  "ranking_uses_fault_criticality_as_severity": false,
+  "ranking_score_type": "UNWEIGHTED_LEXICOGRAPHIC_EVIDENCE_ORDER",
+  "maintenance_priority_extension": "NONE; IEEE_STATUS_1_2_3_ONLY",
+  "critical_rule": "NOT_USED",
+  "critical_reference": "No additional severity class is created. IEEE Status 1/2/3 remain the condition classes; fleet priority uses an ordinal current-status score plus bounded historical evidence.",
+  "fault_criticality_source": "Qualitative fault-context layer informed by the standard fault taxonomy and transformer diagnostic literature; not a numeric severity weight and not used to override IEEE DGA status.",
+  "student_model_name": "extra_trees",
+  "student_training_type": "weak_supervision_runtime_fallback",
+  "student_features": [
+    "h2",
+    "ch4",
+    "c2h6",
+    "c2h4",
+    "c2h2"
+  ],
+  "weak_supervision_backend": {
+    "coarse": "snorkel",
+    "fine": "snorkel"
+  },
+  "weak_supervision_granularity": "coarse+fine",
+  "processing_seconds": 1054.5592272281647
+}
