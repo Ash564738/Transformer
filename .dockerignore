@@ -1,5 +1,7 @@
+# .dockerignore
 .git
-.gitignore
+.github
+
 .venv
 __pycache__
 *.pyc
@@ -9,7 +11,8 @@ __pycache__
 .vscode
 .idea
 
-frontend
+frontend/node_modules
+frontend/.next
 node_modules
 .next
 
@@ -18,13 +21,4 @@ node_modules
 
 backend/logs
 backend/catboost_info
-
-# Models are intentionally excluded.
-backend/models
-
-# Runtime databases can be excluded if you want a clean deployment.
-# Remove this line if the initial SQLite databases must be inside the image.
-# backend/database
-
-# Temporary/generated files
 backend/dataset/processed
