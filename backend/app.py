@@ -1,4 +1,4 @@
-# backend/app.py
+# backend/app.py (đã sửa CORS)
 
 from __future__ import annotations
 
@@ -36,8 +36,9 @@ DEFAULT_ALLOWED_ORIGINS = {
     "http://127.0.0.1:3000",
 }
 
+# Cho phép mọi subdomain của vercel.app, kể cả nhiều cấp
 VERCEL_ORIGIN_PATTERN = re.compile(
-    r"^https://(?:[a-z0-9-]+\.)?vercel\.app$",
+    r"^https://(?:[a-z0-9-]+\.)*vercel\.app$",
     re.IGNORECASE,
 )
 
@@ -78,6 +79,10 @@ def _apply_cors(response):
         )
         response.headers["Access-Control-Max-Age"] = "86400"
         response.headers["Vary"] = "Origin"
+    else:
+        # Fallback: cho phép tất cả origin nếu không nhận diện được
+        # (tùy chọn, có thể bỏ nếu muốn giới hạn)
+        response.headers["Access-Control-Allow-Origin"] = "*"
 
     return response
 
