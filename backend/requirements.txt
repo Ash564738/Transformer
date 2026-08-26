@@ -21,7 +21,8 @@ python-dotenv
 
 scikit-learn
 scipy
-
 attrs
 
 matplotlib
+catboost
+snorkel
