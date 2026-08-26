@@ -14,7 +14,7 @@ class DiagnosticConfig:
       * IEEE C57.104-2019 remains the primary DGA status engine.
       * No hand-assigned diagnostic or severity weights are used.
       * CRITICAL is an operational extreme-DGA extension, NOT IEEE Status 4.
-      * Transformer ranking uses an ordinal current-status score with a bounded historical component.
+      * Transformer ranking uses an unweighted lexicographic evidence order: current IEEE status dominates; history breaks ties.
       * Fault criticality is qualitative context only and never overrides IEEE status.
     """
 
@@ -208,16 +208,17 @@ class DiagnosticConfig:
     }
 
     RANKING_POLICY: ClassVar[Tuple[str, ...]] = (
-        "transformer_overall_severity_score = current_status + historical_mean_status/(MAX_STATUS+1)",
-        "current_status3_standardized_exceedance",
-        "current_standard_trigger_count",
-        "historical_max_status_before_current",
-        "historical_max_standardized_exceedance",
-        "same_fault_recurrence_fraction",
-        "worsening_transition_ratio",
+        "current IEEE DGA status (Status 3 > Status 2 > Status 1)",
+        "current standardized exceedance against applicable IEEE threshold evidence",
+        "number of independent current IEEE trigger tables",
+        "current Table-2 concentration exceedance count",
+        "current Table-4 rate exceedance count",
+        "current Table-3 delta exceedance count",
+        "historical maximum IEEE status before the current sample",
+        "historical maximum standardized IEEE exceedance before the current sample",
     )
     RANKING_TIE_POLICY: str = (
-        "Identical evidence vectors receive the same rank; missing history never lowers current priority."
+        "Identical evidence vectors receive the same rank; missing history never lowers current priority. No hand-assigned numeric weights are used."
     )
 
     WEAK_ABSTAIN_LABEL: int = -1

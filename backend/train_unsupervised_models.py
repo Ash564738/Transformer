@@ -47,6 +47,7 @@ UNLABELED_PATH = DATASET_DIR / "processed" / "dga_unlabeled.parquet"
 FAULT_MODEL_COARSE_PATH = MODEL_DIR / "fault_classifiers_coarse.joblib"
 FAULT_MODEL_FINE_PATH = MODEL_DIR / "fault_classifiers_fine.joblib"
 TRAINING_METADATA_PATH = MODEL_DIR / "training_metadata.json"
+PRODUCTION_SELECTION_PATH = MODEL_DIR / "production_fault_selection.joblib"
 BENCHMARK_DIR = REPORT_DIR / "benchmark"
 MODEL_FEATURES = list(cfg.COMMON_BENCHMARK_GASES)
 
@@ -772,21 +773,128 @@ def write_confusion_matrices(weak_transfer, supervised, labeled, seed):
         if sub.empty: continue
         best = sub.sort_values(["macro_f1", "balanced_accuracy", "accuracy"], ascending=False).iloc[0]; model = build_models(seed)[best["model"]]; Xdf = build_feature_frame(data, mode, "fine"); train_mask = np.ones(len(data), dtype=bool); train_mask[test] = False; model.fit(Xdf.iloc[train_mask], y[train_mask]); pred = np.asarray(model.predict(Xdf.iloc[test])).reshape(-1); cm = confusion_matrix(y[test], pred, labels=list(range(len(cfg.BENCHMARK_FINE_CLASSES)))); out = pd.DataFrame(cm, index=cfg.BENCHMARK_FINE_CLASSES, columns=cfg.BENCHMARK_FINE_CLASSES); out.to_csv(BENCHMARK_DIR / f"confusion_supervised_{mode}.csv", encoding="utf-8-sig")
 
+
+def _select_production_fault_pipeline(traditional_result: pd.DataFrame, weak_transfer: pd.DataFrame, weak_students: dict, seed: int):
+    """Select one production fault pipeline using DEVELOPMENT only, then freeze it.
+
+    The locked test is never consulted for deployment selection. This keeps the
+    paper evaluation honest while allowing the web app to load exactly one
+    already-trained artifact.
+    """
+    candidates = []
+
+    if traditional_result is not None and not traditional_result.empty:
+        sub = traditional_result[(traditional_result["granularity"] == "fine") & (traditional_result["split"] == "development")]
+        if not sub.empty:
+            best = sub.sort_values(["macro_f1", "balanced_accuracy", "coverage"], ascending=False, na_position="last").iloc[0]
+            candidates.append({
+                "source": "traditional",
+                "methods": str(best["methods"]).split("+") if pd.notna(best.get("methods")) else [],
+                "macro_f1_dev": float(best["macro_f1"]),
+                "balanced_accuracy_dev": float(best["balanced_accuracy"]),
+                "coverage_dev": float(best.get("coverage", np.nan)),
+                "model_name": None,
+                "feature_mode": None,
+            })
+
+    if weak_transfer is not None and not weak_transfer.empty:
+        sub = weak_transfer[(weak_transfer["granularity"] == "fine") & (weak_transfer["split"] == "development")]
+        if not sub.empty:
+            best = sub.sort_values(["macro_f1", "balanced_accuracy", "coverage"], ascending=False, na_position="last").iloc[0]
+            model_key = f"{best['feature_mode']}__{best['model']}"
+            artifact = weak_students.get("fine", {}).get(model_key)
+            if artifact is not None:
+                candidates.append({
+                    "source": "student",
+                    "methods": [],
+                    "macro_f1_dev": float(best["macro_f1"]),
+                    "balanced_accuracy_dev": float(best["balanced_accuracy"]),
+                    "coverage_dev": float(best.get("coverage", np.nan)),
+                    "model_name": str(best["model"]),
+                    "feature_mode": str(best["feature_mode"]),
+                    "artifact": artifact,
+                })
+
+    if not candidates:
+        selection = {"source": "traditional", "methods": [], "selection_metric": "macro_f1", "selection_split": "development", "selection_note": "No trained student candidate was available."}
+        joblib.dump(selection, PRODUCTION_SELECTION_PATH)
+        return selection
+
+    # Development-only selection. This is not a hand-tuned numerical fusion.
+    chosen = sorted(candidates, key=lambda x: (x["macro_f1_dev"], x["balanced_accuracy_dev"], x["coverage_dev"] if np.isfinite(x["coverage_dev"]) else -1.0), reverse=True)[0]
+    selection = {
+        "source": chosen["source"],
+        "methods": chosen.get("methods", []),
+        "model_name": chosen.get("model_name"),
+        "feature_mode": chosen.get("feature_mode"),
+        "selection_metric": "macro_f1",
+        "selection_split": "development",
+        "macro_f1_dev": chosen["macro_f1_dev"],
+        "balanced_accuracy_dev": chosen["balanced_accuracy_dev"],
+        "coverage_dev": chosen["coverage_dev"],
+        "random_state": int(seed),
+        "runtime_training": False,
+        "selection_candidates": [
+            {k: v for k, v in item.items() if k != "artifact"}
+            for item in candidates
+        ],
+    }
+    if chosen["source"] == "student":
+        # Keep selection metadata separate from the estimator so the joblib does
+        # not serialize the same model object twice. Render needs this one file.
+        joblib.dump({"selection": selection, "student_artifact": chosen["artifact"]}, PRODUCTION_SELECTION_PATH)
+    else:
+        joblib.dump(selection, PRODUCTION_SELECTION_PATH)
+    return selection
+
 def main(args=None):
-    parser = argparse.ArgumentParser(); parser.add_argument("--mode", choices=["benchmark", "unlabeled", "transfer", "all"], default="all"); parser.add_argument("--use-snorkel", action="store_true"); parser.add_argument("--seed", type=int, default=cfg.RANDOM_STATE); parsed = parser.parse_args(args)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["benchmark", "unlabeled", "transfer", "all"], default="all")
+    parser.add_argument("--use-snorkel", action="store_true")
+    parser.add_argument("--seed", type=int, default=cfg.RANDOM_STATE)
+    parsed = parser.parse_args(args)
     logger.debug("main: mode=%s seed=%d", parsed.mode, parsed.seed)
-    set_global_seed(parsed.seed); unlabeled_result = None
+    set_global_seed(parsed.seed)
+
+    unlabeled_result = None
+    benchmark = None
+    weak_transfer = pd.DataFrame()
+
     if parsed.mode in {"unlabeled", "transfer", "all"}:
         unlabeled_result = run_unlabeled_pipeline(parsed.seed, parsed.use_snorkel)
-    benchmark = None
+
     if parsed.mode in {"benchmark", "all"}:
-        benchmark = run_labeled_benchmark(parsed.seed); print("\n=== Traditional individual ==="); print(benchmark["individual"].sort_values(["granularity", "macro_f1"], ascending=[True, False]).to_string(index=False)); print("\n=== Best traditional combinations on locked test ==="); print(benchmark["combinations"].query("split == 'locked_test'").sort_values(["granularity", "macro_f1"], ascending=[True, False]).groupby("granularity").head(10).to_string(index=False)); print("\n=== Supervised reference ==="); print(benchmark["supervised"].query("split == 'locked_test'").sort_values("macro_f1", ascending=False).head(20).to_string(index=False))
+        benchmark = run_labeled_benchmark(parsed.seed)
+        print("\n=== Traditional individual ===")
+        print(benchmark["individual"].sort_values(["granularity", "macro_f1"], ascending=[True, False]).to_string(index=False))
+        print("\n=== Best traditional combinations on locked test ===")
+        print(benchmark["combinations"].query("split == 'locked_test'").sort_values(["granularity", "macro_f1"], ascending=[True, False]).groupby("granularity").head(10).to_string(index=False))
+        print("\n=== Supervised reference ===")
+        print(benchmark["supervised"].query("split == 'locked_test'").sort_values("macro_f1", ascending=False).head(20).to_string(index=False))
+
     if parsed.mode in {"transfer", "all"}:
-        if unlabeled_result is None: unlabeled_result = run_unlabeled_pipeline(parsed.seed, parsed.use_snorkel)
-        labeled = apply_consensus(load_labeled_csv_data()); weak_transfer = benchmark_weak_transfer(labeled, unlabeled_result[2], parsed.seed); print("\n=== Weak-supervision transfer ==="); print(weak_transfer.query("split == 'locked_test'").sort_values(["granularity", "macro_f1"], ascending=[True, False]).head(30).to_string(index=False))
+        if unlabeled_result is None:
+            unlabeled_result = run_unlabeled_pipeline(parsed.seed, parsed.use_snorkel)
+        labeled = apply_consensus(load_labeled_csv_data())
+        weak_transfer = benchmark_weak_transfer(labeled, unlabeled_result[2], parsed.seed)
+        benchmark_weak_traditional_hybrids(labeled, unlabeled_result[2], parsed.seed)
+        print("\n=== Weak-supervision transfer ===")
+        if not weak_transfer.empty:
+            print(weak_transfer.query("split == 'locked_test'").sort_values(["granularity", "macro_f1"], ascending=[True, False]).head(30).to_string(index=False))
+
+        # If the benchmark part was not requested, compute the traditional
+        # development results here because production selection requires a
+        # development-only comparison between traditional and student pipelines.
+        if benchmark is None:
+            traditional = benchmark_traditional_combinations(labeled, None)
+        else:
+            traditional = benchmark["combinations"]
+        _select_production_fault_pipeline(traditional, weak_transfer, unlabeled_result[2], parsed.seed)
+
     try:
         from experiment import build_excel_report
-        build_excel_report(REPORT_DIR, DATASET_DIR / "processed", REPORT_DIR / "dga_research_report.xlsx"); logger.debug("Excel report saved to %s", REPORT_DIR / "dga_research_report.xlsx")
+        build_excel_report(REPORT_DIR, DATASET_DIR / "processed", REPORT_DIR / "dga_research_report.xlsx")
+        logger.debug("Excel report saved to %s", REPORT_DIR / "dga_research_report.xlsx")
     except Exception:
         logger.exception("Excel report generation failed")
 

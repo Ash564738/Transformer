@@ -183,52 +183,20 @@ def _history_fault_stats(group):
 def _evidence_key(row):
     """Unweighted lexicographic maintenance-order key.
 
-    The ordering is deliberately hierarchical:
-    1) current IEEE ordinal status;
-    2) current standardized exceedance;
-    3) number of independent IEEE trigger tables;
-    4) current Table-2 exceedance count;
-    5) current Table-4 rate exceedance count;
-    6) current Table-3 delta exceedance count;
-    7) historical maximum status;
-    8) historical maximum standardized exceedance;
-    9) current-fault recurrence;
-    10) worsening-transition ratio.
-
-    This is not a weighted score. No arbitrary coefficients are introduced.
-    A transformer with a higher current IEEE status always precedes one with a
-    lower current status. Historical evidence is used only after current status
-    has been fixed.
+    The hierarchy uses only current/historical evidence derived from the IEEE
+    screening engine. The key is deliberately not converted to an artificial
+    weighted health score.
     """
     status = int(_to_float(row.get("transformer_overall_severity_level", 0)) or 0)
     current_exceedance = _to_float(row.get("current_standardized_exceedance", 1.0))
     current_exceedance = current_exceedance if np.isfinite(current_exceedance) else 1.0
-
     triggers = int(_to_float(row.get("current_standard_trigger_count", 0)) or 0)
     table2 = int(_to_float(row.get("table2_exceed_count", 0)) or 0)
     table4 = int(_to_float(row.get("table4_exceed_count", 0)) or 0)
     table3 = int(_to_float(row.get("table3_exceed_count", 0)) or 0)
-
-    historical_max_status = int(
-        _to_float(row.get("history_max_status_before_current", 0)) or 0
-    )
-    historical_exceedance = _to_float(
-        row.get("historical_max_standardized_exceedance", 1.0)
-    )
-    historical_exceedance = (
-        historical_exceedance if np.isfinite(historical_exceedance) else 1.0
-    )
-
-    recurrence = _to_float(
-        row.get("history_current_fault_recurrence_fraction", 0.0)
-    )
-    recurrence = recurrence if np.isfinite(recurrence) else 0.0
-
-    worsening = _to_float(
-        row.get("history_worsening_transition_ratio", 0.0)
-    )
-    worsening = worsening if np.isfinite(worsening) else 0.0
-
+    historical_max_status = int(_to_float(row.get("history_max_status_before_current", 0)) or 0)
+    historical_exceedance = _to_float(row.get("historical_max_standardized_exceedance", 1.0))
+    historical_exceedance = historical_exceedance if np.isfinite(historical_exceedance) else 1.0
     return (
         status,
         current_exceedance,
@@ -238,10 +206,7 @@ def _evidence_key(row):
         table3,
         historical_max_status,
         historical_exceedance,
-        recurrence,
-        worsening,
     )
-
 
 def _priority_label(status):
     # This field names the IEEE condition class, not an invented maintenance
@@ -586,8 +551,7 @@ def build_transformer_ranking(df):
         "current IEEE status; current standardized exceedance; "
         "independent IEEE trigger-table count; current Table-2 count; "
         "current Table-4 count; current Table-3 count; historical maximum "
-        "status; historical maximum standardized exceedance; current-fault "
-        "recurrence; worsening-transition ratio"
+        "status; historical maximum standardized exceedance"
     )
     ranking["ranking_is_weighted"] = False
     ranking["ranking_is_health_score"] = False

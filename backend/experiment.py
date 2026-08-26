@@ -165,14 +165,14 @@ def _build_summary_sheet(wb, report_dir, processed_dir):
         ["External benchmark", "IEC TC10 (121) + DGA dataset (201), evaluated as an independent labeled benchmark."],
         ["Split protocol", "Train / Development / Locked Test. Development selects methods/models; locked test is never used for selection."],
         ["Primary metric", "Macro F1; accuracy, balanced accuracy, macro precision/recall, weighted F1, coverage and abstain-aware accuracy are also reported."],
-        ["Label harmonization", "Spark→D1, Arc→D2, Low/Middle-temperature→T1_T2. T1_T2 is excluded from strict fine scoring but accepted as either T1 or T2 in ambiguity-tolerant scoring."],
+        ["Label harmonization", "Spark→D1, Arc→D2, Low/Middle-temperature→T1_T2. Native benchmark labels are also preserved by source; strict fine scoring only uses the common taxonomy and ambiguity-tolerant scoring accepts T1/T2 alternatives."],
         ["Weak supervision", "Snorkel LabelModel when available; EM fallback otherwise. No ground-truth labels from the external benchmark are used for operational weak-label training."],
         ["Student transfer", "Models trained on operational weak labels are applied unchanged to the external labeled benchmark."],
         ["Hybrid evaluation", "Agreement-only hybrid keeps a prediction only when student and unweighted traditional consensus agree exactly; disagreement becomes ABSTAIN. No numeric fusion weight."],
         ["Severity", "IEEE C57.104-2019 rule-derived Status 1/2/3. No invented Status 4 and no arbitrary weighted severity sum."],
         ["Operational severity accuracy", "Not claimed: the operational dataset has no independently verified fault/severity ground truth. External labeled datasets validate fault taxonomy/diagnostic transfer, not operational severity accuracy."],
         ["Transformer imbalance", "Weak-student training uses inverse transformer-record-count weighting when the estimator exposes sample_weight, so each transformer has equal total training weight rather than each record having equal influence."],
-        ["Fleet ranking", "One transformer row per asset. Overall score = current IEEE Status + historical mean Status/(MAX_STATUS+1); the historical term is bounded below 1, so current status remains dominant. No hand-assigned health weights are used."],
+        ["Fleet ranking", "One transformer row per asset. Current IEEE Status is the first lexicographic rank key; standardized current evidence and historical maximum IEEE evidence follow. No arbitrary numeric severity/ranking weights are used."],
     ]
     write_table(sheet, rows, start_row=3, max_width=100)
 
@@ -341,8 +341,8 @@ def _build_validation_sheets(wb, report_dir, processed_dir):
         ["Fine-label mismatch", "DGA dataset labels are harmonized to the IEC fault taxonomy; T1_T2 is evaluated both strictly and with set-valued ambiguity tolerance."],
         ["Class imbalance", "Macro F1 and balanced accuracy are reported; model fitting uses class balancing where supported."],
         ["Transformer imbalance", "Each transformer is aggregated to exactly one fleet row; single-record transformers are retained and marked as such."],
-        ["Temporal information", "Current status, standard delta/rate evidence, historical mean/max/recurrence and trend are retained. The score uses the bounded historical mean only to preserve history without allowing it to overturn current ordinal status."],
-        ["Ranking", "Current IEEE Status is dominant; overall score adds a bounded historical mean term below 1. Current DGA evidence and recurrence are separate audit/tie-break fields; no hand-assigned health weights."],
+        ["Temporal information", "Current status and IEEE delta/rate evidence are evaluated per sample; historical maximum status/exceedance are retained for fleet ordering, while recurrence/trend descriptors remain audit fields rather than hand-weighted severity inputs."],
+        ["Ranking", "Current IEEE Status is dominant. The remaining ordering keys are standard-derived current threshold evidence and historical maximum standard-derived evidence. No hand-assigned health weights are used."],
         ["PPM coverage", "Observed empirical benchmark coverage/range only; it is not interpreted as a physical validity domain beyond the benchmark sample."],
         ["Hybrid", "Student + traditional agreement gate; disagreement abstains, so no numeric fusion weight is introduced."],
     ], max_width=100)

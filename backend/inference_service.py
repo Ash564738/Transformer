@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json, logging, os, shutil, tempfile, time
+import joblib
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
@@ -21,12 +22,13 @@ REPORT_DIR.mkdir(parents=True, exist_ok=True)
 PROCESSED_DIR = DATASET_DIR / "processed"
 
 MODEL_CACHE_ENABLED = os.getenv("DGA_MODEL_CACHE", "1").strip().lower() not in {"0", "false", "no", "off"}
-PERSIST_OUTPUTS = os.getenv("DGA_PERSIST_OUTPUTS", "1").strip().lower() not in {"0", "false", "no", "off"}
-SAVE_DATABASE = os.getenv("DGA_SAVE_DATABASE", "1").strip().lower() not in {"0", "false", "no", "off"}
+PERSIST_OUTPUTS = os.getenv("DGA_PERSIST_OUTPUTS", "0").strip().lower() not in {"0", "false", "no", "off"}
+SAVE_DATABASE = os.getenv("DGA_SAVE_DATABASE", "0").strip().lower() not in {"0", "false", "no", "off"}
 ENABLE_RANKING_DIAGNOSTICS = os.getenv("DGA_RANKING_DIAGNOSTICS", "0").strip().lower() not in {"0", "false", "no", "off"}
 SLOW_STAGE_SECONDS = float(os.getenv("DGA_SLOW_STAGE_SECONDS", "10"))
 
 STUDENT_MODEL_PATH = MODEL_DIR / "fault_classifier.joblib"
+PRODUCTION_MODEL_PATH = MODEL_DIR / "production_fault_selection.joblib"
 ANOMALY_MODEL_PATH = MODEL_DIR / "anomaly_ensemble.joblib"
 WEAK_COARSE_MODEL_PATH = MODEL_DIR / "weak_label_model_coarse.joblib"
 WEAK_FINE_MODEL_PATH = MODEL_DIR / "weak_label_model_fine.joblib"
@@ -641,92 +643,130 @@ def create_payload(df, ranking_df, comparison_df=None):
     }
 
 def _limit_fast_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    """Bound inference while retaining every transformer and its newest samples."""
-    max_rows = max(300, int(os.getenv("DGA_MAX_ROWS", "2200")))
-    max_per_transformer = max(3, int(os.getenv("DGA_MAX_ROWS_PER_TRANSFORMER", "12")))
-    min_per_transformer = 3
+    """Optional row cap; disabled by default because ranking requires history.
+
+    Set DGA_MAX_ROWS > 0 only for emergency resource constraints. A production
+    deployment should normally process the complete uploaded time series.
+    """
+    before = len(df)
+    max_rows = int(os.getenv("DGA_MAX_ROWS", "0"))
+    if max_rows <= 0 or len(df) <= max_rows:
+        return df.reset_index(drop=True), {
+            "input_rows_before_limit": int(before),
+            "input_rows_after_limit": int(len(df)),
+            "max_rows": 0,
+            "rows_reduced": 0,
+            "history_truncated": False,
+        }
+
     work = df.copy()
-    if "sample_day" in work.columns:
-        work["sample_day"] = pd.to_datetime(work["sample_day"], errors="coerce")
-    before = len(work)
-    if "transformer_id" not in work.columns:
-        work = work.tail(max_rows)
+    work["sample_day"] = pd.to_datetime(work["sample_day"], errors="coerce")
+    ordered = work.sort_values(["transformer_id", "sample_day"], kind="mergesort")
+    # Never silently remove transformers. When a cap is explicitly requested,
+    # retain the newest record for each transformer, then fill remaining slots
+    # with the most recent observations fleet-wide.
+    latest = ordered.groupby("transformer_id", group_keys=False, dropna=False).tail(1)
+    if len(latest) >= max_rows:
+        work = latest.sort_values("sample_day", ascending=False, kind="mergesort").head(max_rows)
     else:
-        ordered = work.sort_values(["transformer_id", "sample_day"], kind="mergesort")
-        recent = ordered.groupby("transformer_id", group_keys=False, dropna=False).tail(max_per_transformer)
-        if len(recent) <= max_rows:
-            work = recent
-        else:
-            # Guarantee every transformer at least the newest 3 samples, then fill the
-            # remaining budget with the most recent older samples fleet-wide.
-            base = ordered.groupby("transformer_id", group_keys=False, dropna=False).tail(min_per_transformer)
-            remaining = max(0, max_rows - len(base))
-            extra = recent.drop(index=base.index, errors="ignore").sort_values("sample_day", ascending=False, kind="mergesort").head(remaining)
-            work = pd.concat([base, extra], axis=0)
-        work = work.sort_values(["transformer_id", "sample_day"], kind="mergesort")
-    work = work.reset_index(drop=True)
+        remaining = max_rows - len(latest)
+        extras = ordered.drop(index=latest.index, errors="ignore").sort_values("sample_day", ascending=False, kind="mergesort").head(remaining)
+        work = pd.concat([latest, extras], axis=0)
+    work = work.sort_values(["transformer_id", "sample_day"], kind="mergesort").reset_index(drop=True)
     return work, {
         "input_rows_before_limit": int(before),
         "input_rows_after_limit": int(len(work)),
         "max_rows": int(max_rows),
-        "max_rows_per_transformer": int(max_per_transformer),
-        "min_rows_per_transformer": int(min_per_transformer),
-        "transformers_retained": int(work["transformer_id"].nunique()) if "transformer_id" in work.columns else 0,
         "rows_reduced": int(before - len(work)),
+        "history_truncated": True,
     }
 
-
-def _apply_fast_mode_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Populate payload fields that are normally supplied by optional ML stages."""
+def _apply_production_fault_selection(df: pd.DataFrame, selection: dict) -> pd.DataFrame:
+    """Apply the offline-selected production fault pipeline without training."""
     out = df.copy()
-    out["final_fault"] = out.get("consensus_fault", pd.Series("ABSTAIN", index=out.index)).map(normalize_fault).fillna("ABSTAIN")
-    out["final_fault_group"] = out.get("consensus_fault_group", pd.Series("ABSTAIN", index=out.index)).map(unify_fault).fillna("ABSTAIN")
-    out["final_fault_source"] = "traditional_consensus_fast"
-    out["final_fault_conflict"] = out.get("diagnostic_conflict", False)
-    out["final_fault_same_coarse_different_fine"] = False
-    out["final_fault_conflict_level"] = np.where(out["final_fault_conflict"].astype(bool), "TRADITIONAL_DIAGNOSTIC_CONFLICT", "TRADITIONAL_CONSENSUS")
+    source = str(selection.get("source", "traditional")).strip().lower()
+    if source == "student":
+        artifact = selection.get("student_artifact") or selection.get("_student_artifact")
+        if artifact is None and _validate_student_artifact(selection):
+            artifact = selection
+        if not _validate_student_artifact(artifact):
+            raise ValueError(f"Invalid selected production student artifact: {PRODUCTION_MODEL_PATH}")
+        out = _apply_student(out, artifact)
+        pred = _normalize_series(out["student_fault_label"])
+        traditional = _normalize_series(out.get("consensus_fault", pd.Series("ABSTAIN", index=out.index)))
+        # The offline experiment selected this model on the development split.
+        # No confidence threshold or hand-tuned fusion weight is applied online.
+        final = pred.where(pred != "ABSTAIN", traditional)
+        out["final_fault"] = final
+        out["final_fault_group"] = final.map(unify_fault).fillna("ABSTAIN")
+        out["final_fault_source"] = "offline_selected_student"
+        out["student_used_as_fallback"] = pred.eq("ABSTAIN") & traditional.ne("ABSTAIN")
+        out["final_fault_conflict"] = traditional.ne("ABSTAIN") & pred.ne("ABSTAIN") & traditional.map(unify_fault).ne(pred.map(unify_fault))
+        out["final_fault_same_coarse_different_fine"] = traditional.ne("ABSTAIN") & pred.ne("ABSTAIN") & traditional.map(unify_fault).eq(pred.map(unify_fault)) & traditional.ne(pred)
+        out["final_fault_conflict_level"] = np.select(
+            [out["final_fault_conflict"], out["final_fault_same_coarse_different_fine"], pred.ne("ABSTAIN"), traditional.ne("ABSTAIN")],
+            ["PHYSICAL_GROUP_CONFLICT", "SAME_GROUP_FINE_DISAGREEMENT", "OFFLINE_SELECTED_STUDENT", "TRADITIONAL_FALLBACK"],
+            default="ABSTAIN",
+        )
+        out["final_fault_is_weak_supervision"] = False
+        out["fault_criticality_class"] = final.map(classify_fault_criticality)
+        out["fault_criticality_source"] = fault_criticality_source()
+        return out
+
+    methods = tuple(str(x) for x in selection.get("methods", []))
+    if methods:
+        from consensus import apply_consensus_from_existing_diagnostics
+        chosen = apply_consensus_from_existing_diagnostics(out, methods)
+        out["final_fault"] = _normalize_series(chosen["consensus_fault"])
+        out["final_fault_group"] = chosen["consensus_fault_group"].map(unify_fault).fillna("ABSTAIN")
+        out["final_fault_source"] = "offline_selected_traditional_combination"
+        out["final_fault_conflict"] = False
+        out["final_fault_same_coarse_different_fine"] = False
+        out["final_fault_conflict_level"] = "OFFLINE_SELECTED_TRADITIONAL"
+    else:
+        out["final_fault"] = _normalize_series(out.get("consensus_fault", pd.Series("ABSTAIN", index=out.index)))
+        out["final_fault_group"] = out["final_fault"].map(unify_fault).fillna("ABSTAIN")
+        out["final_fault_source"] = "traditional_consensus_default"
+        out["final_fault_conflict"] = False
+        out["final_fault_same_coarse_different_fine"] = False
+        out["final_fault_conflict_level"] = "TRADITIONAL_CONSENSUS"
+    out["student_used_as_fallback"] = False
+    out["final_fault_is_weak_supervision"] = False
     out["fault_criticality_class"] = out["final_fault"].map(classify_fault_criticality)
     out["fault_criticality_source"] = fault_criticality_source()
-    out["student_used_as_fallback"] = False
-    out["anomaly_percentile"] = np.nan
-    out["anomaly_is_severity_input"] = False
-    out["anomaly_interpretation"] = "Disabled in fast production mode."
-    for col in ("weak_fine_fault", "weak_coarse_fault", "student_fault_label"):
-        out[col] = "ABSTAIN"
-    for col in ("weak_fine_posterior_max", "weak_fine_entropy", "weak_coarse_posterior_max", "weak_coarse_entropy", "student_fault_confidence"):
-        out[col] = np.nan
-    out["weak_fine_is_ABSTAIN"] = True
-    out["weak_coarse_is_ABSTAIN"] = True
-    out["student_model_name"] = "DISABLED_FAST_MODE"
-    out["student_training_type"] = "DISABLED"
+    out["student_fault_label"] = "ABSTAIN"
+    out["student_fault_group"] = "ABSTAIN"
+    out["student_fault_confidence"] = np.nan
+    out["student_model_name"] = "NOT_SELECTED"
+    out["student_training_type"] = "OFFLINE_NOT_SELECTED"
     out["student_feature_set"] = ""
     return out
 
 
+def _load_production_selection() -> dict:
+    if not PRODUCTION_MODEL_PATH.exists():
+        fallback = os.getenv("DGA_PRODUCTION_SELECTION_FALLBACK", "traditional").strip().lower()
+        if fallback == "traditional":
+            logger.warning("Production selection artifact not found; using traditional consensus fallback.")
+            return {"source": "traditional", "methods": []}
+        raise FileNotFoundError(f"Missing production selection artifact: {PRODUCTION_MODEL_PATH}")
+    payload = _load_joblib_artifact(PRODUCTION_MODEL_PATH, "production selection")
+    if not isinstance(payload, dict):
+        raise ValueError(f"Production selection artifact must be a dictionary: {PRODUCTION_MODEL_PATH}")
+    # The offline training script stores both the selection metadata and the
+    # selected student estimator in one joblib so Render needs only one artifact.
+    if isinstance(payload.get("selection"), dict):
+        selection = dict(payload["selection"])
+        if payload.get("student_artifact") is not None:
+            selection["student_artifact"] = payload["student_artifact"]
+        return selection
+    return payload
+
 
 def _prepare_fast_dga_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Minimal inference feature set.
-
-    The traditional DGA methods and IEEE severity engine calculate their own
-    diagnostic ratios / thresholds. The previous fast path still executed the
-    full training feature-engineering graph (rolling windows, EWMA, many lag
-    columns), which is unnecessary for production inference and was the main
-    source of long request times on Render Free.
-    """
-    required = [
-        "transformer_id",
-        "sample_day",
-        "h2",
-        "ch4",
-        "c2h6",
-        "c2h4",
-        "c2h2",
-        "co",
-        "co2",
-    ]
+    """Minimal inference preparation using the complete uploaded history."""
+    required = ["transformer_id", "sample_day", "h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2"]
     out = df.copy()
-
     for column in required:
         if column not in out.columns:
             if column in {"transformer_id", "sample_day"}:
@@ -735,92 +775,60 @@ def _prepare_fast_dga_frame(df: pd.DataFrame) -> pd.DataFrame:
 
     out["sample_day"] = pd.to_datetime(out["sample_day"], errors="coerce")
     out = out.dropna(subset=["transformer_id", "sample_day"]).copy()
-
-    numeric_columns = [
-        "h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2",
-        "o2", "n2", "tdcg_raw", "year_energized",
-    ]
+    numeric_columns = ["h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2", "o2", "n2", "tdcg_raw", "year_energized"]
     for column in numeric_columns:
         if column in out.columns:
             out[column] = pd.to_numeric(out[column], errors="coerce")
             if column != "year_energized":
                 out.loc[out[column] < 0, column] = np.nan
 
-    # Keep the latest records per transformer. This is deliberately performed
-    # before severity/diagnostics so every transformer retains enough history.
-    out = out.sort_values(
-        ["transformer_id", "sample_day"],
-        kind="mergesort",
-    ).reset_index(drop=True)
-
-    # Static age context is cheap and used by the IEEE helper.
+    out = out.sort_values(["transformer_id", "sample_day"], kind="mergesort").reset_index(drop=True)
     if "year_energized" in out.columns:
         age = out["sample_day"].dt.year - out["year_energized"]
         out["transformer_age_years"] = age.where(age >= 0, np.nan)
     else:
         out["transformer_age_years"] = np.nan
-
     if "o2" in out.columns and "n2" in out.columns:
         denominator = out["n2"].where(out["n2"] > 0)
         out["o2_n2_ratio"] = out["o2"] / denominator
     else:
         out["o2_n2_ratio"] = np.nan
-
+    combustible = out[["h2", "ch4", "c2h6", "c2h4", "c2h2", "co"]]
     if "tdcg_raw" in out.columns:
-        combustible = out[["h2", "ch4", "c2h6", "c2h4", "c2h2", "co"]]
-        out["tdcg"] = out["tdcg_raw"].where(
-            out["tdcg_raw"].notna(),
-            combustible.sum(axis=1, min_count=1),
-        )
+        out["tdcg"] = out["tdcg_raw"].where(out["tdcg_raw"].notna(), combustible.sum(axis=1, min_count=1))
     else:
-        out["tdcg"] = out[["h2", "ch4", "c2h6", "c2h4", "c2h2", "co"]].sum(
-            axis=1,
-            min_count=1,
-        )
+        out["tdcg"] = combustible.sum(axis=1, min_count=1)
 
-    # Lightweight historical deltas used by IEEE Table 3/4 screening.
+    # Keep one previous-sample delta/rate for diagnostics; the severity module
+    # independently computes the standard-compliant 3-6 point rate window.
     group = out.groupby("transformer_id", sort=False)
     for gas in ("h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2"):
         previous = group[gas].shift(1)
         previous_date = group["sample_day"].shift(1)
-        days = (
-            out["sample_day"] - previous_date
-        ).dt.total_seconds() / 86400.0
+        days = (out["sample_day"] - previous_date).dt.total_seconds() / 86400.0
         out[f"{gas}_delta1"] = out[gas] - previous
-        out[f"{gas}_rate_per_day"] = (
-            (out[gas] - previous) / days.where(days > 0)
-        )
-
+        out[f"{gas}_rate_per_day"] = (out[gas] - previous) / days.where(days > 0)
     return out
 
+
 def process_dataframe(uploaded_df: pd.DataFrame):
-    """Fast production path: clean -> minimal features -> traditional DGA -> IEEE severity -> ranking."""
+    """Production inference only: clean -> traditional DGA -> IEEE severity -> selected offline fault pipeline -> ranking."""
     if uploaded_df is None or uploaded_df.empty:
         raise ValueError("Uploaded dataframe is empty.")
     overall_started = time.perf_counter()
     timings: dict[str, float] = {}
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    fast_mode = os.getenv("DGA_FAST_MODE", "1").strip().lower() not in {"0", "false", "no", "off"}
     persist_outputs = os.getenv("DGA_PERSIST_OUTPUTS", "0").strip().lower() not in {"0", "false", "no", "off"}
-    save_database = os.getenv("DGA_SAVE_DATABASE", "1").strip().lower() not in {"0", "false", "no", "off"}
+    save_database = os.getenv("DGA_SAVE_DATABASE", "0").strip().lower() not in {"0", "false", "no", "off"}
 
-    cleaned_result = _timed_call("clean_dataset", timings, clean_dataset, dataframe=uploaded_df.copy(), output_dir=PROCESSED_DIR)
-    df_clean, clean_summary = cleaned_result
+    df_clean, clean_summary = _timed_call("clean_dataset", timings, clean_dataset, dataframe=uploaded_df.copy(), output_dir=PROCESSED_DIR)
     if df_clean.empty:
         raise ValueError("Cleaning produced an empty dataset.")
 
-    limit_meta = {"input_rows_before_limit": len(df_clean), "input_rows_after_limit": len(df_clean), "rows_reduced": 0}
-    if fast_mode:
-        df_clean, limit_meta = _limit_fast_rows(df_clean)
-
-    df_features = _timed_call(
-        "fast_feature_preparation",
-        timings,
-        _prepare_fast_dga_frame,
-        df_clean,
-    )
+    df_clean, limit_meta = _limit_fast_rows(df_clean)
+    df_features = _timed_call("fast_feature_preparation", timings, _prepare_fast_dga_frame, df_clean)
     if df_features.empty:
-        raise ValueError("Fast inference preparation produced an empty dataset.")
+        raise ValueError("Inference preparation produced an empty dataset.")
 
     df_labeled = _timed_call("traditional_consensus", timings, apply_consensus, df_features)
     df_labeled = _timed_call("ieee_severity", timings, apply_severity, df_labeled, nei_reference=None)
@@ -829,18 +837,20 @@ def process_dataframe(uploaded_df: pd.DataFrame):
     df_labeled["severity_weighted_sum_used"] = False
     df_labeled["severity_anomaly_used"] = False
     df_labeled["severity_nei_used"] = False
-    df_labeled = _apply_fast_mode_columns(df_labeled)
+
+    selection = _load_production_selection()
+    df_labeled = _timed_call("selected_fault_pipeline", timings, _apply_production_fault_selection, df_labeled, selection)
     ranking_df = _timed_call("transformer_ranking", timings, build_transformer_ranking, df_labeled)
-    comparison_df = pd.DataFrame()
+    comparison_df = _build_student_comparison(df_labeled) if "student_fault_label" in df_labeled.columns else pd.DataFrame()
     payload = _timed_call("create_payload", timings, create_payload, df_labeled, ranking_df, comparison_df)
 
     payload["pipeline"] = {
         "status": "completed",
-        "mode": "fast_production_inference",
+        "mode": "production_offline_selected_inference",
         "runtime_training": False,
         "runtime_research_benchmark": False,
         "runtime_excel_generation": False,
-        "ml_models_enabled": False,
+        "ml_models_enabled": selection.get("source") == "student",
         "persist_outputs": persist_outputs,
         "save_database": save_database,
         "rows": int(len(df_labeled)),
@@ -853,7 +863,7 @@ def process_dataframe(uploaded_df: pd.DataFrame):
             "clean_rows": clean_summary.get("clean_shape", [0])[0],
             "transformers": clean_summary.get("n_unique_transformers", 0),
         },
-        "models": {"weak_coarse": "disabled_fast_mode", "weak_fine": "disabled_fast_mode", "student": "disabled_fast_mode", "anomaly": "disabled_fast_mode"},
+        "production_selection": selection,
         "research_benchmark": {"status": "precomputed_offline", "executed_during_request": False},
         "excel": {"status": "precomputed_offline", "executed_during_request": False},
     }
@@ -862,7 +872,7 @@ def process_dataframe(uploaded_df: pd.DataFrame):
         try:
             _timed_call("save_ranking_parquet", timings, _save_parquet, ranking_df, RANKING_PATH)
             _timed_call("save_processed_parquet", timings, _save_parquet, df_labeled, PROCESSED_OUTPUT_PATH)
-            _timed_call("save_inference_metadata", timings, _write_inference_metadata, df_labeled, {"model_name": "DISABLED_FAST_MODE"}, {"backend": "traditional_consensus"}, time.perf_counter() - overall_started, timings)
+            _timed_call("save_inference_metadata", timings, _write_inference_metadata, df_labeled, selection, {"selection": selection}, time.perf_counter() - overall_started, timings)
         except Exception:
             logger.exception("Optional output persistence failed; returning inference payload anyway.")
 

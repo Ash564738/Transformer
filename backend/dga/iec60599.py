@@ -27,17 +27,57 @@ def _applicable(row: pd.Series) -> bool:
     return False
 
 def iec_ratio_method(row: pd.Series) -> str:
-    if not _applicable(row): return "ABSTAIN"
-    h2 = _gas(row, "h2"); ch4 = _gas(row, "ch4"); c2h2 = _gas(row, "c2h2"); c2h4 = _gas(row, "c2h4"); c2h6 = _gas(row, "c2h6")
-    values = [h2, ch4, c2h2, c2h4, c2h6]
-    if not all(np.isfinite(value) for value in values): return "ABSTAIN"
-    r1 = _safe_ratio(c2h2, c2h4); r2 = _safe_ratio(ch4, h2); r3 = _safe_ratio(c2h4, c2h6)
-    if np.isfinite(r2) and np.isfinite(r3) and r2 < 0.1 and r3 < 0.2: return "PD"
-    if np.isfinite(r1) and np.isfinite(r2) and np.isfinite(r3) and r1 > 1.0 and 0.1 <= r2 <= 0.5 and r3 > 1.0: return "D1"
-    if np.isfinite(r1) and np.isfinite(r2) and np.isfinite(r3) and 0.6 <= r1 <= 2.5 and 0.1 <= r2 <= 1.0 and r3 > 2.0: return "D2"
-    if np.isfinite(r2) and np.isfinite(r3) and r2 > 1.0 and r3 < 1.0: return "T1"
-    if np.isfinite(r1) and np.isfinite(r2) and np.isfinite(r3) and r1 < 0.1 and r2 > 1.0 and 1.0 <= r3 <= 4.0: return "T2"
-    if np.isfinite(r1) and np.isfinite(r2) and np.isfinite(r3) and r1 < 0.2 and r2 > 1.0 and r3 > 4.0: return "T3"
+    """IEC 60599:2022 three-ratio diagnostic table.
+
+    Ratios:
+      R1 = C2H2 / C2H4
+      R2 = CH4 / H2
+      R3 = C2H4 / C2H6
+
+    NS (not significant) cells are handled explicitly. A result that does not
+    fit a defined IEC zone is ABSTAIN rather than being forced into a class.
+    """
+    if not _applicable(row):
+        return "ABSTAIN"
+
+    h2 = _gas(row, "h2")
+    ch4 = _gas(row, "ch4")
+    c2h2 = _gas(row, "c2h2")
+    c2h4 = _gas(row, "c2h4")
+    c2h6 = _gas(row, "c2h6")
+    if not all(np.isfinite(value) for value in (h2, ch4, c2h2, c2h4, c2h6)):
+        return "ABSTAIN"
+
+    r1 = _safe_ratio(c2h2, c2h4)
+    r2 = _safe_ratio(ch4, h2)
+    r3 = _safe_ratio(c2h4, c2h6)
+
+    # PD: R2 < 0.1 and R3 < 0.2; R1 is NS.
+    if np.isfinite(r2) and np.isfinite(r3) and r2 < 0.1 and r3 < 0.2:
+        return "PD"
+
+    # D1: R1 > 1, 0.1 <= R2 <= 0.5, R3 > 1.
+    if np.isfinite(r1) and np.isfinite(r2) and np.isfinite(r3):
+        if r1 > 1.0 and 0.1 <= r2 <= 0.5 and r3 > 1.0:
+            return "D1"
+
+        # D2: 0.6 <= R1 <= 2.5, 0.1 <= R2 <= 1, R3 > 2.
+        if 0.6 <= r1 <= 2.5 and 0.1 <= r2 <= 1.0 and r3 > 2.0:
+            return "D2"
+
+    # T1: R2 > 1 and R3 < 1; R1 is NS.
+    if np.isfinite(r2) and np.isfinite(r3) and r2 > 1.0 and r3 < 1.0:
+        return "T1"
+
+    # T2: R1 < 0.1, R2 > 1, 1 <= R3 <= 4.
+    if np.isfinite(r1) and np.isfinite(r2) and np.isfinite(r3):
+        if r1 < 0.1 and r2 > 1.0 and 1.0 <= r3 <= 4.0:
+            return "T2"
+
+        # T3: R1 < 0.2, R2 > 1, R3 > 4.
+        if r1 < 0.2 and r2 > 1.0 and r3 > 4.0:
+            return "T3"
+
     return "ABSTAIN"
 
 def apply_iec(df: pd.DataFrame) -> pd.DataFrame:

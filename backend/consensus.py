@@ -5,7 +5,10 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 from config import config as cfg
-from dga import (doernenburg, duval_pentagon, duval_triangle, iec60599, keygas, rogers)
+try:
+    from dga import (doernenburg, duval_pentagon, duval_triangle, iec60599, keygas, rogers)
+except ModuleNotFoundError:
+    import doernenburg, duval_pentagon, duval_triangle, iec60599, keygas, rogers
 logger = logging.getLogger(__name__)
 ABSTAIN = "ABSTAIN"
 
