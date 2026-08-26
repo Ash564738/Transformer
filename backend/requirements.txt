@@ -36,3 +36,6 @@ snorkel            # Weak supervision (Snorkel LabelModel)
 
 # ── Dev / utilities ───────────────────────────────────────
 # statsmodels      # Phân tích thống kê (bỏ comment nếu cần)
+
+# ── Production server ─────────────────────────────────────
+gunicorn

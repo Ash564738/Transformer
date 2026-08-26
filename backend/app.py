@@ -328,7 +328,16 @@ def chat():
     return jsonify(answer=answer_question(question, context, history))
 
 if __name__ == "__main__":
+    import os
+
     logger.info("Starting Transformer DGA API")
     logger.info("MODEL_DIR=%s", MODEL_DIR.resolve())
     logger.info("REPORT_DIR=%s", REPORT_DIR.resolve())
-    app.run(host="0.0.0.0", port=5000, debug=False)
+
+    port = int(os.environ.get("PORT", "5000"))
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+    )
