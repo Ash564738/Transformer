@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
+import tempfile
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Lock
 
@@ -26,14 +30,20 @@ logger = logging.getLogger(__name__)
 
 _PREDICTION_LOCK = Lock()
 _PREDICTION_CACHE: dict[str, tuple[float, dict]] = {}
-_INFLIGHT: dict[str, dict] = {}
-
-_CACHE_TTL = max(30, int(os.getenv("DGA_PREDICTION_CACHE_TTL", "600")))
-_MAX_UPLOAD_MB = max(1, int(os.getenv("DGA_MAX_UPLOAD_MB", "10")))
+_PREDICTION_JOBS: dict[str, dict] = {}
+_PREDICTION_FINGERPRINT_TO_JOB: dict[str, str] = {}
+_CACHE_TTL = max(0, int(os.getenv("DGA_PREDICTION_CACHE_TTL", "0")))
+_JOB_TTL_SECONDS = max(300, int(os.getenv("DGA_PREDICTION_JOB_TTL", "7200")))
+_JOB_WORKERS = max(1, int(os.getenv("DGA_PREDICTION_WORKERS", "1")))
+_PREDICTION_EXECUTOR = ThreadPoolExecutor(max_workers=_JOB_WORKERS, thread_name_prefix="dga-predict")
 
 app = Flask(__name__)
 app.json.ensure_ascii = False
-app.config["MAX_CONTENT_LENGTH"] = _MAX_UPLOAD_MB * 1024 * 1024
+# No application-level upload-size limit. The prediction contract is to process
+# the complete user file. Render web services do support long-lived HTTP
+# requests, but prediction itself is dispatched to a background executor so
+# the upload request is not held open while pandas/NumPy performs inference.
+app.config["MAX_CONTENT_LENGTH"] = None
 
 # CORS is handled explicitly instead of relying on a static list of Vercel
 # preview URLs. Vercel creates a new *.vercel.app hostname for many preview
@@ -175,6 +185,189 @@ def parse_request_data():
         return pd.DataFrame(payload["data"])
     return pd.DataFrame(payload)
 
+
+def _cleanup_expired_prediction_jobs(now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    expired = []
+    with _PREDICTION_LOCK:
+        for job_id, job in list(_PREDICTION_JOBS.items()):
+            updated = float(job.get("updated_at", job.get("created_at", now)))
+            if now - updated > _JOB_TTL_SECONDS:
+                expired.append(job_id)
+        for job_id in expired:
+            job = _PREDICTION_JOBS.pop(job_id, None)
+            if job:
+                fingerprint = job.get("fingerprint")
+                if fingerprint and _PREDICTION_FINGERPRINT_TO_JOB.get(fingerprint) == job_id:
+                    _PREDICTION_FINGERPRINT_TO_JOB.pop(fingerprint, None)
+            _remove_job_tempfile(job)
+
+
+def _remove_job_tempfile(job: dict | None) -> None:
+    if not job:
+        return
+    path = job.get("source_path")
+    if path:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except Exception:
+            logger.exception("Failed to remove temporary prediction input: %s", path)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(8 * 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _parse_source_path(path: Path) -> pd.DataFrame:
+    suffix = path.suffix.lower()
+    try:
+        if suffix in {".xlsx", ".xls"}:
+            return pd.read_excel(path, engine="openpyxl")
+        if suffix in {".csv", ""}:
+            return pd.read_csv(path)
+        raise ValueError("Only CSV, XLSX, and XLS files are supported.")
+    except Exception as exc:
+        raise ValueError(f"Unable to parse uploaded file: {exc}") from exc
+
+
+def _create_prediction_job_from_request() -> tuple[str, str]:
+    _cleanup_expired_prediction_jobs()
+    job_id = uuid.uuid4().hex
+    created = time.time()
+
+    if request.files and "file" in request.files:
+        file_storage = request.files["file"]
+        filename = getattr(file_storage, "filename", "") or "upload.csv"
+        suffix = Path(filename).suffix.lower()
+        if suffix not in {".csv", ".xlsx", ".xls"}:
+            raise ValueError("Only CSV, XLSX, and XLS files are supported.")
+        fd, raw_path = tempfile.mkstemp(prefix="dga-predict-", suffix=suffix)
+        os.close(fd)
+        path = Path(raw_path)
+        try:
+            file_storage.save(path)
+            if path.stat().st_size == 0:
+                raise ValueError("The uploaded file is empty or invalid.")
+            fingerprint = f"file:{_sha256_file(path)}"
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+        job = {
+            "job_id": job_id,
+            "fingerprint": fingerprint,
+            "source_type": "file",
+            "source_path": str(path),
+            "status": "queued",
+            "created_at": created,
+            "updated_at": created,
+            "payload": None,
+            "error": None,
+        }
+    else:
+        payload = request.get_json(silent=True)
+        if payload is None:
+            raise ValueError("Expected CSV/XLSX upload or JSON data.")
+        try:
+            raw_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        except Exception as exc:
+            raise ValueError(f"Invalid JSON prediction payload: {exc}") from exc
+        fingerprint = f"json:{_sha256_bytes(raw_bytes)}"
+        if isinstance(payload, dict) and "data" in payload:
+            frame_payload = payload["data"]
+        else:
+            frame_payload = payload
+        job = {
+            "job_id": job_id,
+            "fingerprint": fingerprint,
+            "source_type": "dataframe",
+            "dataframe": pd.DataFrame(frame_payload),
+            "status": "queued",
+            "created_at": created,
+            "updated_at": created,
+            "payload": None,
+            "error": None,
+        }
+
+    with _PREDICTION_LOCK:
+        existing_job_id = _PREDICTION_FINGERPRINT_TO_JOB.get(fingerprint)
+        if existing_job_id and existing_job_id in _PREDICTION_JOBS:
+            existing = _PREDICTION_JOBS[existing_job_id]
+            _remove_job_tempfile(job)
+            return existing_job_id, fingerprint
+        _PREDICTION_JOBS[job_id] = job
+        _PREDICTION_FINGERPRINT_TO_JOB[fingerprint] = job_id
+    return job_id, fingerprint
+
+
+def _get_prediction_job(job_id: str) -> dict | None:
+    _cleanup_expired_prediction_jobs()
+    with _PREDICTION_LOCK:
+        job = _PREDICTION_JOBS.get(job_id)
+        if job is None:
+            return None
+        return dict(job)
+
+
+def _set_prediction_job(job_id: str, **updates) -> None:
+    with _PREDICTION_LOCK:
+        job = _PREDICTION_JOBS.get(job_id)
+        if job is None:
+            return
+        job.update(updates)
+        job["updated_at"] = time.time()
+
+
+def _run_prediction_job(job_id: str) -> None:
+    job = _get_prediction_job(job_id)
+    if job is None:
+        return
+    _set_prediction_job(job_id, status="running")
+    source_path = job.get("source_path")
+    try:
+        if job.get("source_type") == "file":
+            input_df = _parse_source_path(Path(source_path))
+        else:
+            input_df = job.get("dataframe")
+        if input_df is None or input_df.empty:
+            raise ValueError("Prediction input is empty.")
+
+        started = time.perf_counter()
+        payload = process_dataframe(input_df)
+        payload.setdefault("pipeline", {})["api_async_job"] = True
+        payload["pipeline"]["api_async_job_id"] = job_id
+        payload["pipeline"]["api_async_elapsed_seconds"] = round(time.perf_counter() - started, 4)
+        payload["pipeline"]["input_rows_are_unlimited"] = True
+        payload["pipeline"]["samples_per_transformer_are_unlimited"] = True
+        payload["pipeline"]["upload_size_limit"] = None
+
+        if _CACHE_TTL > 0:
+            _prediction_cache_set(job["fingerprint"], payload)
+
+        _set_prediction_job(job_id, status="completed", payload=payload, error=None)
+        logger.info("Prediction job completed | job=%s | rows=%d | transformers=%d", job_id, len(input_df), input_df.get("transformer_id", pd.Series(dtype=object)).nunique())
+    except Exception as exc:
+        logger.exception("Prediction job failed | job=%s", job_id)
+        _set_prediction_job(job_id, status="failed", error=str(exc), payload=None)
+    finally:
+        _remove_job_tempfile(job)
+        with _PREDICTION_LOCK:
+            job_ref = _PREDICTION_JOBS.get(job_id)
+            if job_ref is not None:
+                job_ref.pop("source_path", None)
+                job_ref.pop("dataframe", None)
+
+
 @app.route("/", methods=["GET"])
 def root():
     return jsonify(service="Transformer Degradation Ranking API", pipeline="production_inference", status="ok")
@@ -244,100 +437,108 @@ def _prediction_cache_set(key: str, payload: dict) -> None:
 @app.route("/predict", methods=["POST"])
 @auth.require_auth
 def predict():
+    """Enqueue a complete uploaded dataset for full-file production inference."""
     try:
-        input_df = parse_request_data()
+        job_id, fingerprint = _create_prediction_job_from_request()
     except ValueError as exc:
-        return jsonify(error=str(exc)), 400
-    if input_df.empty:
-        return jsonify(error="Prediction input is empty."), 400
-
-    key = _prediction_cache_key(input_df)
-    cached = _prediction_cache_get(key)
-    if cached is not None:
-        cached = dict(cached)
-        cached.setdefault("pipeline", {})["cache_hit"] = True
-        return jsonify(_sanitize_for_json(cached)), 200
-
-    # De-duplicate identical concurrent requests. The first request computes the
-    # payload; later requests for the same exact input wait for that result
-    # instead of returning a confusing 409 to the browser.
-    with _PREDICTION_LOCK:
-        inflight = _INFLIGHT.get(key)
-        if inflight is None:
-            inflight = {
-                "event": Event(),
-                "payload": None,
-                "error": None,
-            }
-            _INFLIGHT[key] = inflight
-            is_owner = True
-        else:
-            is_owner = False
-
-    if not is_owner:
-        wait_seconds = min(
-            105,
-            max(5, int(os.getenv("DGA_PREDICTION_WAIT_SECONDS", "105"))),
-        )
-        logger.info(
-            "Duplicate prediction request detected; waiting up to %ss | key=%s",
-            wait_seconds,
-            key[:12],
-        )
-        finished = inflight["event"].wait(timeout=wait_seconds)
-        if not finished:
-            return jsonify(
-                error="The current prediction is still running. Please wait a little longer.",
-                retryable=True,
-                status="running",
-            ), 202
-
-        if inflight["error"] is not None:
-            error = inflight["error"]
-            if isinstance(error, ValueError):
-                return jsonify(error=str(error)), 400
-            return jsonify(error=f"Prediction failed: {error}"), 500
-
-        payload = inflight["payload"]
-        if payload is None:
-            return jsonify(
-                error="Prediction finished without a result.",
-                retryable=True,
-            ), 503
-
-        cached_payload = dict(payload)
-        cached_payload.setdefault("pipeline", {})["cache_hit"] = True
-        cached_payload["pipeline"]["deduplicated_request"] = True
-        return jsonify(_sanitize_for_json(cached_payload)), 200
-
-    # Only one request for a given input reaches the CPU-heavy pipeline.
-    try:
-        started = time.perf_counter()
-        from inference_service import process_dataframe
-        payload = process_dataframe(input_df)
-        payload.setdefault("pipeline", {})["cache_hit"] = False
-        payload["pipeline"]["deduplicated_request"] = False
-        payload["pipeline"]["api_elapsed_seconds"] = round(
-            time.perf_counter() - started, 4
-        )
-        _prediction_cache_set(key, payload)
-        inflight["payload"] = payload
-        return jsonify(_sanitize_for_json(payload)), 200
-    except ValueError as exc:
-        inflight["error"] = exc
         return jsonify(error=str(exc)), 400
     except Exception as exc:
-        inflight["error"] = exc
-        logger.exception("Prediction failed")
-        return jsonify(error=f"Prediction failed: {exc}"), 500
-    finally:
-        inflight["event"].set()
-        with _PREDICTION_LOCK:
-            _INFLIGHT.pop(key, None)
+        logger.exception("Failed to enqueue prediction job")
+        return jsonify(error=f"Unable to start prediction: {exc}"), 500
+
+    job = _get_prediction_job(job_id)
+    if job is None:
+        return jsonify(error="Prediction job could not be created."), 500
+
+    status = job.get("status")
+    if status == "completed":
+        payload = job.get("payload")
+        return jsonify({
+            "job_id": job_id,
+            "prediction_job_id": job_id,
+            "jobId": job_id,
+            "status": "completed",
+            "result": _sanitize_for_json(payload or {}),
+        }), 200
+    if status == "running":
+        return jsonify({
+            "job_id": job_id,
+            "prediction_job_id": job_id,
+            "jobId": job_id,
+            "status": "running",
+        }), 200
+
+    cached = _prediction_cache_get(fingerprint) if _CACHE_TTL > 0 else None
+    if cached is not None:
+        _remove_job_tempfile(job)
+        _set_prediction_job(job_id, status="completed", payload=cached, error=None)
+        return jsonify({
+            "job_id": job_id,
+            "prediction_job_id": job_id,
+            "jobId": job_id,
+            "status": "completed",
+            "result": _sanitize_for_json(cached),
+        }), 200
+
+    _PREDICTION_EXECUTOR.submit(_run_prediction_job, job_id)
+    response = jsonify({
+        "job_id": job_id,
+        "prediction_job_id": job_id,
+        "jobId": job_id,
+        "status": "queued",
+        "message": "Prediction job accepted. The complete uploaded dataset will be processed.",
+        "rows_are_unlimited": True,
+        "samples_per_transformer_are_unlimited": True,
+        "upload_size_limit": None,
+    })
+    response.status_code = 202
+    response.headers["X-Prediction-Job-Id"] = job_id
+    return response
+
 
 @app.route("/predict/status/<job_id>", methods=["GET"])
+@auth.require_auth
 def predict_status(job_id):
-    return jsonify(error="Async jobs are disabled. POST /predict returns the completed payload directly."), 410
+    job = _get_prediction_job(job_id)
+    if job is None:
+        return jsonify(error="Prediction job not found or expired."), 404
+
+    status = job.get("status")
+    if status in {"queued", "running"}:
+        response = jsonify({
+            "job_id": job_id,
+            "prediction_job_id": job_id,
+            "jobId": job_id,
+            "status": status,
+            "created_at": job.get("created_at"),
+            "updated_at": job.get("updated_at"),
+        })
+        response.headers["X-Prediction-Job-Id"] = job_id
+        return response, 200
+
+    if status == "failed":
+        response = jsonify({
+            "job_id": job_id,
+            "prediction_job_id": job_id,
+            "jobId": job_id,
+            "status": "failed",
+            "error": job.get("error") or "Prediction failed.",
+            "updated_at": job.get("updated_at"),
+        })
+        response.headers["X-Prediction-Job-Id"] = job_id
+        return response, 200
+
+    payload = job.get("payload")
+    response = jsonify({
+        "job_id": job_id,
+        "prediction_job_id": job_id,
+        "jobId": job_id,
+        "status": "completed",
+        "result": _sanitize_for_json(payload or {}),
+        "updated_at": job.get("updated_at"),
+    })
+    response.headers["X-Prediction-Job-Id"] = job_id
+    return response, 200
 
 
 @app.route("/dataset/reset", methods=["POST"])
@@ -367,6 +568,62 @@ def report_experiments():
     reports_dir = REPORT_DIR
     benchmark_dir = REPORT_DIR / "benchmark"
     processed_dir = DATASET_DIR / "processed"
+
+    # Experiment reports are immutable research artifacts. Do not serve an old
+    # CSV/Excel set merely because those files remain on disk after the model
+    # artifacts have been deleted. A new run writes this manifest.
+    manifest_path = reports_dir / "experiment_run_manifest.json"
+    experiment_manifest = {}
+    if manifest_path.exists():
+        try:
+            experiment_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.exception("Failed to read experiment manifest: %s", manifest_path)
+            experiment_manifest = {}
+
+    def _experiment_artifacts_valid():
+        if not experiment_manifest:
+            return False, "No current experiment run has been recorded."
+
+        required = experiment_manifest.get("required_artifacts", [])
+        missing = []
+        for rel in required:
+            path = Path(rel)
+            if not path.is_absolute():
+                path = Path(path)
+                # Manifest paths are stored relative to the backend root.
+                if not path.is_absolute():
+                    path = Path(__file__).resolve().parent / path
+            if not path.exists():
+                missing.append(str(path))
+        if missing:
+            return False, "Experiment results are stale because required artifacts are missing."
+        return True, ""
+
+    experiment_available, experiment_unavailable_reason = _experiment_artifacts_valid()
+    if not experiment_available:
+        return jsonify({
+            "available": False,
+            "reason": experiment_unavailable_reason,
+            "metadata": {
+                "operational_data_is_unlabeled": True,
+                "standard": cfg.STANDARD,
+                "severity_is_weighted": False,
+                "ranking_is_weighted": False,
+            },
+            "executive_summary": [],
+            "traditional_methods": [],
+            "traditional_per_class": [],
+            "traditional_combinations": [],
+            "method_coverage": [],
+            "method_gas_range": [],
+            "supervised_ml": [],
+            "weak_label_model": [],
+            "weak_ml_transfer": [],
+            "severity_records": [],
+            "transformer_ranking": [],
+            "ranking_stability": [],
+        }), 200
 
     def read_csv(filename, benchmark=True):
         candidates = [benchmark_dir / filename] if benchmark else []

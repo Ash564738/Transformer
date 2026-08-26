@@ -4,8 +4,7 @@ import type { DgaPayload } from "@/types/dga";
 const DEFAULT_PRODUCTION_BACKEND =
   "https://transformer-kgen.onrender.com";
 
-const configuredBackend =
-  process.env.NEXT_PUBLIC_BACKEND_URL?.trim();
+const configuredBackend = process.env.NEXT_PUBLIC_BACKEND_URL?.trim();
 
 const BACKEND_PREFIX = (
   configuredBackend ||
@@ -16,14 +15,23 @@ const BACKEND_PREFIX = (
 
 const AUTH_TOKEN_KEY = "dga-auth-token";
 
-const PREDICTION_REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const HEALTH_REQUEST_TIMEOUT_MS = 15_000;
 
+/*
+ * This is only the timeout for uploading the source file and receiving the
+ * initial job acknowledgement. It is NOT the prediction timeout.
+ *
+ * The actual inference runs in the backend background executor and is polled
+ * via /predict/status/<job_id>.
+ */
+const PREDICTION_UPLOAD_TIMEOUT_MS = 15 * 60_000;
+
+const PREDICTION_POLL_INTERVAL_MS = 1_000;
+const PREDICTION_POLL_SLOW_INTERVAL_MS = 2_000;
+
 const RETRYABLE_STATUS = new Set([502, 503, 504]);
 const MAX_NETWORK_RETRIES = 2;
-
-let predictionInFlight: Promise<DgaPayload> | null = null;
 
 export class ApiError extends Error {
   constructor(message: string) {
@@ -43,6 +51,28 @@ export interface ChatHistoryTurn {
   content: string;
 }
 
+interface PredictionJobResponse {
+  job_id?: string;
+  prediction_job_id?: string;
+  jobId?: string;
+
+  status?: "queued" | "running" | "completed" | "failed";
+  message?: string;
+  error?: string;
+
+  result?: DgaPayload;
+
+  /*
+   * Compatibility with the old synchronous backend.
+   * If an older Render deployment returns the prediction payload directly,
+   * the frontend must accept it instead of reporting "missing job id".
+   */
+  predictions?: unknown;
+  rows?: unknown;
+  transformer_summary?: unknown;
+  dataset_summary?: unknown;
+}
+
 export function getAuthToken(): string | null {
   if (typeof window === "undefined") return null;
   return window.localStorage.getItem(AUTH_TOKEN_KEY);
@@ -50,15 +80,14 @@ export function getAuthToken(): string | null {
 
 function authHeaders(): Record<string, string> {
   const token = getAuthToken();
-  return token
-    ? { Authorization: `Bearer ${token}` }
-    : {};
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 async function parseJsonResponse(
   res: Response,
 ): Promise<Record<string, unknown>> {
   const body = await res.json().catch(() => ({}));
+
   return body &&
     typeof body === "object" &&
     !Array.isArray(body)
@@ -76,6 +105,7 @@ async function fetchWithTimeout(
   timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
   const controller = new AbortController();
+
   const timer = window.setTimeout(
     () => controller.abort(),
     timeoutMs,
@@ -218,7 +248,9 @@ export async function loginAccount(
 export async function fetchCurrentUser(): Promise<AuthUser | null> {
   const token = getAuthToken();
 
-  if (!token) return null;
+  if (!token) {
+    return null;
+  }
 
   try {
     const res = await fetchBackend(
@@ -232,7 +264,9 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
       20_000,
     );
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      return null;
+    }
 
     const body = await parseJsonResponse(res);
 
@@ -303,58 +337,220 @@ export async function checkBackendHealth(): Promise<boolean> {
   }
 }
 
-async function handlePredictResponse(
-  res: Response,
-): Promise<DgaPayload> {
-  const body = await res.json().catch(() => null);
-
-  if (!res.ok) {
-    const message =
-      body &&
-      typeof body === "object" &&
-      typeof (body as { error?: unknown }).error === "string"
-        ? (body as { error: string }).error
-        : `Prediction request failed (${res.status}).`;
-
-    if (res.status === 409) {
-      throw new ApiError(
-        `${message} Please wait for the current prediction to finish.`,
-      );
-    }
-
-    throw new ApiError(message);
+/**
+ * The new backend returns a job identifier.
+ *
+ * We also accept:
+ *   - prediction_job_id
+ *   - jobId
+ *   - a complete legacy DgaPayload
+ *
+ * The last case is important during a rolling Render deployment or when the
+ * frontend is newer than the currently running backend.
+ */
+function extractPredictionResult(
+  body: PredictionJobResponse,
+): DgaPayload | null {
+  if (
+    body.result &&
+    typeof body.result === "object"
+  ) {
+    return body.result;
   }
 
   if (
-    !body ||
-    typeof body !== "object" ||
-    Array.isArray(body)
+    Array.isArray(body.predictions) &&
+    Array.isArray(body.rows) &&
+    Array.isArray(body.transformer_summary) &&
+    body.dataset_summary &&
+    typeof body.dataset_summary === "object"
   ) {
+    return body as unknown as DgaPayload;
+  }
+
+  return null;
+}
+
+function extractPredictionJobId(
+  body: PredictionJobResponse,
+): string | null {
+  const candidates = [
+    body.job_id,
+    body.prediction_job_id,
+    body.jobId,
+  ];
+
+  for (const candidate of candidates) {
+    if (
+      typeof candidate === "string" &&
+      candidate.trim()
+    ) {
+      return candidate.trim();
+    }
+  }
+
+  return null;
+}
+
+async function parsePredictionJobResponse(
+  res: Response,
+): Promise<PredictionJobResponse> {
+  const body = await parseJsonResponse(res);
+
+  /*
+   * Some valid acknowledgement responses are 202; normal status endpoints
+   * are 200. Any other non-2xx response is an API failure.
+   */
+  if (!res.ok) {
     throw new ApiError(
-      "Backend returned an invalid prediction response.",
+      typeof body.error === "string"
+        ? body.error
+        : `Prediction request failed (${res.status}).`,
     );
   }
 
-  return body as DgaPayload;
+  return body as PredictionJobResponse;
 }
 
-async function startPrediction(
+async function waitForPredictionJob(
+  jobId: string,
+): Promise<DgaPayload> {
+  let pollCount = 0;
+
+  for (;;) {
+    const res = await fetchBackend(
+      `${BACKEND_PREFIX}/predict/status/${encodeURIComponent(jobId)}`,
+      {
+        method: "GET",
+        headers: authHeaders(),
+        cache: "no-store",
+        mode: "cors",
+      },
+      DEFAULT_REQUEST_TIMEOUT_MS,
+    );
+
+    const body = await parsePredictionJobResponse(res);
+
+    const status = body.status;
+
+    if (status === "completed") {
+      const result = extractPredictionResult(body);
+
+      if (!result) {
+        throw new ApiError(
+          "Prediction job completed but backend returned no prediction result.",
+        );
+      }
+
+      return result;
+    }
+
+    if (status === "failed") {
+      throw new ApiError(
+        body.error || "Prediction job failed.",
+      );
+    }
+
+    /*
+     * 404 is checked after parsing because it is a terminal API response and
+     * must not be treated as a transient polling state.
+     */
+    if (res.status === 404) {
+      throw new ApiError(
+        "Prediction job was not found or has expired.",
+      );
+    }
+
+    if (
+      status !== "queued" &&
+      status !== "running"
+    ) {
+      throw new ApiError(
+        `Backend returned an invalid prediction job status: ${String(
+          status ?? "undefined",
+        )}.`,
+      );
+    }
+
+    pollCount += 1;
+
+    await sleep(
+      pollCount > 30
+        ? PREDICTION_POLL_SLOW_INTERVAL_MS
+        : PREDICTION_POLL_INTERVAL_MS,
+    );
+  }
+}
+
+async function startPredictionJob(
   init: RequestInit,
 ): Promise<DgaPayload> {
   const response = await fetchBackend(
     `${BACKEND_PREFIX}/predict`,
     init,
-    PREDICTION_REQUEST_TIMEOUT_MS,
+    PREDICTION_UPLOAD_TIMEOUT_MS,
   );
 
-  return handlePredictResponse(response);
+  const body = await parsePredictionJobResponse(response);
+
+  /*
+   * Case 1:
+   * New async backend already completed the request.
+   */
+  const immediateResult = extractPredictionResult(body);
+
+  if (
+    body.status === "completed" &&
+    immediateResult
+  ) {
+    return immediateResult;
+  }
+
+  /*
+   * Case 2:
+   * New async backend returned queued/running with a job id.
+   */
+  const jobId = extractPredictionJobId(body);
+
+  if (jobId) {
+    return waitForPredictionJob(jobId);
+  }
+
+  /*
+   * Case 3:
+   * Very old backend returned the DgaPayload directly without any async job
+   * wrapper. Accept it instead of producing the misleading:
+   * "Backend did not return a prediction job id."
+   */
+  const legacyResult = extractPredictionResult(body);
+
+  if (legacyResult) {
+    return legacyResult;
+  }
+
+  /*
+   * At this point the backend genuinely returned a malformed prediction
+   * response. Include the status and visible response shape to make diagnosis
+   * deterministic rather than guessing.
+   */
+  const keys = Object.keys(body);
+
+  throw new ApiError(
+    [
+      "Backend returned neither a prediction job id nor a prediction payload.",
+      `HTTP ${response.status}.`,
+      keys.length
+        ? `Response fields: ${keys.join(", ")}.`
+        : "Response body was empty.",
+    ].join(" "),
+  );
 }
+
+let predictionInFlight: Promise<DgaPayload> | null = null;
 
 export async function runPredictionFromFile(
   file: File,
 ): Promise<DgaPayload> {
-  // Prevent double-clicks / repeated React effect calls from starting two
-  // expensive requests at the same time.
   if (predictionInFlight) {
     return predictionInFlight;
   }
@@ -362,7 +558,7 @@ export async function runPredictionFromFile(
   const form = new FormData();
   form.append("file", file);
 
-  predictionInFlight = startPrediction({
+  predictionInFlight = startPredictionJob({
     method: "POST",
     headers: authHeaders(),
     body: form,
@@ -382,7 +578,7 @@ export async function runPredictionFromJson(
     return predictionInFlight;
   }
 
-  predictionInFlight = startPrediction({
+  predictionInFlight = startPredictionJob({
     method: "POST",
     headers: {
       "Content-Type": "application/json",

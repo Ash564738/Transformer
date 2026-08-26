@@ -642,45 +642,6 @@ def create_payload(df, ranking_df, comparison_df=None):
         },
     }
 
-def _limit_fast_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    """Optional row cap; disabled by default because ranking requires history.
-
-    Set DGA_MAX_ROWS > 0 only for emergency resource constraints. A production
-    deployment should normally process the complete uploaded time series.
-    """
-    before = len(df)
-    max_rows = int(os.getenv("DGA_MAX_ROWS", "0"))
-    if max_rows <= 0 or len(df) <= max_rows:
-        return df.reset_index(drop=True), {
-            "input_rows_before_limit": int(before),
-            "input_rows_after_limit": int(len(df)),
-            "max_rows": 0,
-            "rows_reduced": 0,
-            "history_truncated": False,
-        }
-
-    work = df.copy()
-    work["sample_day"] = pd.to_datetime(work["sample_day"], errors="coerce")
-    ordered = work.sort_values(["transformer_id", "sample_day"], kind="mergesort")
-    # Never silently remove transformers. When a cap is explicitly requested,
-    # retain the newest record for each transformer, then fill remaining slots
-    # with the most recent observations fleet-wide.
-    latest = ordered.groupby("transformer_id", group_keys=False, dropna=False).tail(1)
-    if len(latest) >= max_rows:
-        work = latest.sort_values("sample_day", ascending=False, kind="mergesort").head(max_rows)
-    else:
-        remaining = max_rows - len(latest)
-        extras = ordered.drop(index=latest.index, errors="ignore").sort_values("sample_day", ascending=False, kind="mergesort").head(remaining)
-        work = pd.concat([latest, extras], axis=0)
-    work = work.sort_values(["transformer_id", "sample_day"], kind="mergesort").reset_index(drop=True)
-    return work, {
-        "input_rows_before_limit": int(before),
-        "input_rows_after_limit": int(len(work)),
-        "max_rows": int(max_rows),
-        "rows_reduced": int(before - len(work)),
-        "history_truncated": True,
-    }
-
 def _apply_production_fault_selection(df: pd.DataFrame, selection: dict) -> pd.DataFrame:
     """Apply the offline-selected production fault pipeline without training."""
     out = df.copy()
@@ -825,7 +786,8 @@ def process_dataframe(uploaded_df: pd.DataFrame):
     if df_clean.empty:
         raise ValueError("Cleaning produced an empty dataset.")
 
-    df_clean, limit_meta = _limit_fast_rows(df_clean)
+    # IMPORTANT: never cap uploaded rows or samples per transformer.
+    # The uploaded dataset is the prediction target and must be processed in full.
     df_features = _timed_call("fast_feature_preparation", timings, _prepare_fast_dga_frame, df_clean)
     if df_features.empty:
         raise ValueError("Inference preparation produced an empty dataset.")
@@ -857,7 +819,16 @@ def process_dataframe(uploaded_df: pd.DataFrame):
         "transformers": int(df_labeled["transformer_id"].nunique()),
         "elapsed_seconds": 0.0,
         "timings": timings,
-        "input_limit": limit_meta,
+        "input_limit": {
+            "enabled": False,
+            "input_rows_before_limit": int(len(df_clean)),
+            "input_rows_after_limit": int(len(df_clean)),
+            "max_rows": None,
+            "max_rows_per_transformer": None,
+            "rows_reduced": 0,
+            "history_truncated": False,
+            "samples_per_transformer_are_unlimited": True,
+        },
         "clean_summary": {
             "original_rows": clean_summary.get("original_shape", [0])[0],
             "clean_rows": clean_summary.get("clean_shape", [0])[0],

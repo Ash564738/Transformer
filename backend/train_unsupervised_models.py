@@ -1,5 +1,6 @@
 # train_unsupervised_models.py
 from __future__ import annotations
+import json
 import argparse, json, logging, random, warnings
 from itertools import combinations
 from pathlib import Path
@@ -749,7 +750,7 @@ def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
     df = apply_severity(df, nei_reference=None); ranking = build_transformer_ranking(df); log_ranking_diagnostics(ranking, 20)
     processed = DATASET_DIR / "processed"; processed.mkdir(parents=True, exist_ok=True); df.to_parquet(processed / "dga_unlabeled_processed.parquet", index=False); ranking.to_parquet(processed / "transformer_ranking.parquet", index=False); ranking.to_csv(REPORT_DIR / "transformer_ranking.csv", index=False, encoding="utf-8-sig")
     if save_model:
-        MODEL_DIR.mkdir(parents=True, exist_ok=True); joblib.dump({"models": weak_students["coarse"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_COARSE_PATH); joblib.dump({"models": weak_students["fine"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_FINE_PATH); metadata = {"seed": seed, "unlabeled_dataset": str(UNLABELED_PATH), "weak_supervision": "Snorkel LabelModel or EM fallback", "student_feature_modes": ["gas_only", "gas_plus_traditional"], "student_model_count_coarse": len(weak_students["coarse"]), "student_model_count_fine": len(weak_students["fine"]), "severity_source": cfg.STANDARD, "severity_is_weighted": False, "severity_is_failure_probability": False, "ranking_policy": list(cfg.RANKING_POLICY), "ranking_is_weighted": False, "ranking_is_health_score": True, "benchmark_policy": "Operational unlabeled data are used for weak labels and student training only; labeled benchmark is reserved for external evaluation and locked test reporting."}; TRAINING_METADATA_PATH.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        MODEL_DIR.mkdir(parents=True, exist_ok=True); joblib.dump({"models": weak_students["coarse"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_COARSE_PATH); joblib.dump({"models": weak_students["fine"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_FINE_PATH); metadata = {"seed": seed, "unlabeled_dataset": str(UNLABELED_PATH), "weak_supervision": "Snorkel LabelModel or EM fallback", "student_feature_modes": ["gas_only", "gas_plus_traditional"], "student_model_count_coarse": len(weak_students["coarse"]), "student_model_count_fine": len(weak_students["fine"]), "severity_source": cfg.STANDARD, "severity_is_weighted": False, "severity_is_failure_probability": False, "ranking_policy": list(cfg.RANKING_POLICY), "ranking_is_weighted": False, "ranking_is_health_score": False, "benchmark_policy": "Operational unlabeled data are used for weak labels and student training only; labeled benchmark is reserved for external evaluation and locked test reporting."}; TRAINING_METADATA_PATH.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.debug("run_unlabeled_pipeline: complete final df shape=%s", df.shape)
     return df, ranking, weak_students
 
@@ -897,6 +898,37 @@ def main(args=None):
         logger.debug("Excel report saved to %s", REPORT_DIR / "dga_research_report.xlsx")
     except Exception:
         logger.exception("Excel report generation failed")
+
+    # The web experiment page serves only artifacts belonging to a recorded
+    # experiment run. This prevents old CSVs from surviving a model reset.
+    try:
+        required_artifacts = [
+            "reports/benchmark_split_manifest.csv",
+            "reports/traditional_individual_benchmark.csv",
+            "reports/traditional_combinations_benchmark.csv",
+        ]
+        if parsed.mode in {"unlabeled", "transfer", "all"}:
+            required_artifacts.extend([
+                "models/fault_classifiers_coarse.joblib",
+                "models/fault_classifiers_fine.joblib",
+                "models/production_fault_selection.joblib",
+                "models/training_metadata.json",
+            ])
+        manifest = {
+            "run_id": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+            "completed_at_utc": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+            "mode": parsed.mode,
+            "seed": parsed.seed,
+            "use_snorkel": bool(parsed.use_snorkel),
+            "required_artifacts": required_artifacts,
+        }
+        REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        (REPORT_DIR / "experiment_run_manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        logger.exception("Failed to write experiment run manifest")
 
 if __name__ == "__main__":
     main()

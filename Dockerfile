@@ -10,11 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OPENBLAS_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 \
     NUMEXPR_NUM_THREADS=1 \
-    VECLIB_MAXIMUM_THREADS=1 \
-    DGA_MAX_ROWS=0 \
-    DGA_PERSIST_OUTPUTS=0 \
-    DGA_SAVE_DATABASE=0 \
-    DGA_PRODUCTION_SELECTION_FALLBACK=traditional
+    VECLIB_MAXIMUM_THREADS=1
 
 WORKDIR /app
 
@@ -25,4 +21,7 @@ COPY backend/ ./
 
 EXPOSE 10000
 
-CMD ["sh", "-c", "exec gunicorn app:app --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 2 --worker-class gthread --timeout 120 --graceful-timeout 20 --keep-alive 5 --worker-tmp-dir /dev/shm --access-logfile - --error-logfile - --log-level info"]
+# /predict now acknowledges quickly and runs the full-file inference in an
+# internal background executor. The Gunicorn timeout therefore does not act as
+# the prediction timeout, while still leaving room for slow uploads/requests.
+CMD ["sh", "-c", "exec gunicorn app:app --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 2 --worker-class gthread --timeout 6000 --graceful-timeout 30 --keep-alive 5 --worker-tmp-dir /dev/shm --access-logfile - --error-logfile - --log-level info"]

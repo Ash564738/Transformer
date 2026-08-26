@@ -188,8 +188,17 @@ def _evidence_key(row):
     weighted health score.
     """
     status = int(_to_float(row.get("transformer_overall_severity_level", 0)) or 0)
-    current_exceedance = _to_float(row.get("current_standardized_exceedance", 1.0))
-    current_exceedance = current_exceedance if np.isfinite(current_exceedance) else 1.0
+    # Ranking never treats the different IEEE evidence channels as one weighted
+    # score. Concentration, delta and rate evidence remain separate.
+    concentration_ratio = _to_float(
+        row.get("ieee_concentration_exceedance_ratio",
+                 row.get("current_standardized_exceedance", 1.0))
+    )
+    concentration_ratio = concentration_ratio if np.isfinite(concentration_ratio) else 1.0
+    delta_ratio = _to_float(row.get("ieee_delta_exceedance_ratio", 1.0))
+    delta_ratio = delta_ratio if np.isfinite(delta_ratio) else 1.0
+    rate_ratio = _to_float(row.get("ieee_rate_exceedance_ratio", 1.0))
+    rate_ratio = rate_ratio if np.isfinite(rate_ratio) else 1.0
     triggers = int(_to_float(row.get("current_standard_trigger_count", 0)) or 0)
     table2 = int(_to_float(row.get("table2_exceed_count", 0)) or 0)
     table4 = int(_to_float(row.get("table4_exceed_count", 0)) or 0)
@@ -199,11 +208,13 @@ def _evidence_key(row):
     historical_exceedance = historical_exceedance if np.isfinite(historical_exceedance) else 1.0
     return (
         status,
-        current_exceedance,
+        table2,                 # current Table-2 concentration exceedance
+        table4,                 # current Table-4 rate exceedance
+        table3,                 # current Table-3 delta exceedance
         triggers,
-        table2,
-        table4,
-        table3,
+        concentration_ratio,    # concentration evidence only
+        delta_ratio,            # separate delta evidence
+        rate_ratio,             # separate rate evidence
         historical_max_status,
         historical_exceedance,
     )
@@ -427,7 +438,18 @@ def _build_transformer_summary(transformer_id, group):
             0 if record_count == 1 else 1 if record_count == 2 else 2
         ),
 
+        # Backward-compatible concentration-only field. It is not a composite
+        # of concentration, delta and rate evidence.
         "current_standardized_exceedance": current_exceedance,
+        "current_concentration_exceedance_ratio": _to_float(
+            latest.get("ieee_concentration_exceedance_ratio", current_exceedance)
+        ),
+        "current_delta_exceedance_ratio": _to_float(
+            latest.get("ieee_delta_exceedance_ratio", np.nan)
+        ),
+        "current_rate_exceedance_ratio": _to_float(
+            latest.get("ieee_rate_exceedance_ratio", np.nan)
+        ),
         "current_status3_standardized_exceedance": current_s3_exceedance,
         "current_delta_exceedance": int(bool(t3)),
         "current_standard_trigger_count": int(
@@ -548,10 +570,10 @@ def build_transformer_ranking(df):
         axis=1,
     )
     ranking["ranking_policy"] = (
-        "current IEEE status; current standardized exceedance; "
-        "independent IEEE trigger-table count; current Table-2 count; "
-        "current Table-4 count; current Table-3 count; historical maximum "
-        "status; historical maximum standardized exceedance"
+        "current IEEE status; current Table-2 concentration evidence; current Table-4 "
+        "rate evidence; current Table-3 delta evidence; current trigger-table count; "
+        "separate concentration/delta/rate ratios; historical maximum status; "
+        "historical maximum concentration exceedance"
     )
     ranking["ranking_is_weighted"] = False
     ranking["ranking_is_health_score"] = False

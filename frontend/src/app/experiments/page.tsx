@@ -1,3 +1,4 @@
+// src/app/experiments/page.tsx
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -16,11 +17,14 @@ import {
 import { getAuthToken } from "@/lib/api";
 
 const BACKEND_PREFIX =
-  process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:5000";
+  process.env.NEXT_PUBLIC_BACKEND_URL ??
+  "http://127.0.0.1:5000";
 
 type Row = Record<string, unknown>;
 
 interface ExperimentsReport {
+  available?: boolean;
+  reason?: string;
   metadata?: Row;
   executive_summary?: Row[];
   traditional_methods?: Row[];
@@ -212,7 +216,12 @@ function MetricChart({
             <YAxis />
             <Tooltip />
             <Legend />
-            <Line type="monotone" dataKey={yKey} stroke="#c96f28" strokeWidth={2} />
+            <Line
+              type="monotone"
+              dataKey={yKey}
+              stroke="#c96f28"
+              strokeWidth={2}
+            />
           </LineChart>
         ) : (
           <BarChart data={data}>
@@ -253,11 +262,10 @@ function RankingPriorityCard({ rows }: { rows: Row[] }) {
     <Section title="Fleet Maintenance Priority">
       <div className="rounded-xl border border-cream-300 bg-cream-50 p-5">
         <p className="text-sm text-teal-700">
-          IEEE condition status and maintenance priority are separate.
-          Status 3 does not mean every transformer is the first machine to
-          inspect. The fleet order is an unweighted lexicographic ranking of
-          current standardized exceedance, independent IEEE trigger evidence,
-          and then historical evidence.
+          IEEE condition status and maintenance priority are separate. The
+          ranking does not combine concentration, delta, and gassing-rate
+          ratios into a single weighted score. Each evidence channel remains
+          separate.
         </p>
 
         <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
@@ -291,16 +299,20 @@ function RankingPriorityCard({ rows }: { rows: Row[] }) {
 
         <div className="mt-4 text-sm text-teal-700">
           <strong>Why first:</strong>{" "}
-          {String(top.maintenance_priority_reason ?? "")} Current standardized
-          exceedance ={" "}
-          <strong>{String(top.current_standardized_exceedance ?? "N/A")}×</strong>,
-          independent trigger tables ={" "}
-          <strong>{String(top.current_standard_trigger_count ?? 0)}</strong>,
-          Table-2 exceedances ={" "}
-          <strong>{String(top.table2_exceed_count ?? 0)}</strong>, Table-4
-          exceedances ={" "}
-          <strong>{String(top.table4_exceed_count ?? 0)}</strong>, Table-3
-          exceedances ={" "}
+          {String(top.maintenance_priority_reason ?? "")} Current Table-2
+          concentration exceedance ={" "}
+          <strong>
+            {String(
+              top.current_concentration_exceedance_ratio ??
+                top.current_standardized_exceedance ??
+                "N/A"
+            )}
+            ×
+          </strong>
+          , Table-2 exceedances ={" "}
+          <strong>{String(top.table2_exceed_count ?? 0)}</strong>, Table-4 rate
+          exceedances = <strong>{String(top.table4_exceed_count ?? 0)}</strong>,
+          Table-3 delta exceedances ={" "}
           <strong>{String(top.table3_exceed_count ?? 0)}</strong>.
         </div>
       </div>
@@ -341,6 +353,7 @@ export default function ExperimentsPage() {
       setReport(await response.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
+      setReport(null);
     } finally {
       setLoading(false);
     }
@@ -392,6 +405,30 @@ export default function ExperimentsPage() {
     return (
       <div className="p-8 text-center text-teal-400">
         No report data available.
+      </div>
+    );
+  }
+
+  if (report.available === false) {
+    return (
+      <div className="card-surface mx-auto max-w-3xl p-8 text-center">
+        <h1 className="text-xl font-bold text-teal-900">
+          No current experiment results
+        </h1>
+        <p className="mt-3 text-sm text-teal-600">
+          {report.reason ??
+            "The previous experiment artifacts are no longer available."}
+        </p>
+        <p className="mt-2 text-xs text-teal-400">
+          Run the offline experiment pipeline again to publish a new research
+          report.
+        </p>
+        <button
+          onClick={fetchReport}
+          className="mt-5 rounded-lg border border-teal-200 px-4 py-2 text-sm font-semibold text-teal-700"
+        >
+          Check again
+        </button>
       </div>
     );
   }
@@ -561,7 +598,9 @@ export default function ExperimentsPage() {
                 "rank",
                 "transformer_id",
                 "transformer_overall_severity_label",
-                "current_standardized_exceedance",
+                "current_concentration_exceedance_ratio",
+                "current_delta_exceedance_ratio",
+                "current_rate_exceedance_ratio",
                 "current_standard_trigger_count",
                 "table2_exceed_count",
                 "table4_exceed_count",
