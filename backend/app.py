@@ -9,14 +9,10 @@ import time
 from pathlib import Path
 from threading import Lock
 
-import matplotlib
-
-matplotlib.use("Agg")
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
-from flask_cors import CORS
+from flask import Flask, jsonify, make_response, request
 
 load_dotenv()
 from logging_config import init_logging
@@ -36,10 +32,67 @@ _MAX_UPLOAD_MB = max(1, int(os.getenv("DGA_MAX_UPLOAD_MB", "10")))
 app = Flask(__name__)
 app.json.ensure_ascii = False
 app.config["MAX_CONTENT_LENGTH"] = _MAX_UPLOAD_MB * 1024 * 1024
-_CORS_ORIGINS = os.getenv("DGA_CORS_ORIGINS", "*").strip() or "*"
-CORS(app, resources={r"/*": {"origins": "*" if _CORS_ORIGINS == "*" else [x.strip() for x in _CORS_ORIGINS.split(",") if x.strip()]}})
 
-# Các route và logic khác giữ nguyên, nhưng bỏ các hàm _apply_cors, before_request, after_request
+# CORS is handled explicitly instead of relying on a static list of Vercel
+# preview URLs. Vercel creates a new *.vercel.app hostname for many preview
+# deployments, so an exact hostname whitelist breaks login preflight.
+#
+# Allowed:
+#   - any https://*.vercel.app frontend
+#   - configured exact origins from DGA_CORS_ORIGINS
+#   - localhost/127.0.0.1 during development
+_CORS_CONFIG = os.getenv("DGA_CORS_ORIGINS", "*").strip() or "*"
+_CORS_EXACT = {
+    origin.strip().rstrip("/")
+    for origin in _CORS_CONFIG.split(",")
+    if origin.strip() and origin.strip() != "*"
+}
+_CORS_ALLOW_ALL = "*" in _CORS_CONFIG
+
+def _origin_allowed(origin: str | None) -> bool:
+    if not origin:
+        return True
+    origin = origin.rstrip("/")
+    if _CORS_ALLOW_ALL:
+        return True
+    if origin in _CORS_EXACT:
+        return True
+    if origin.startswith("https://") and origin.endswith(".vercel.app"):
+        return True
+    if origin.startswith("http://localhost:") or origin.startswith("http://127.0.0.1:"):
+        return True
+    return False
+
+@app.before_request
+def _handle_cors_preflight():
+    if request.method != "OPTIONS":
+        return None
+    origin = request.headers.get("Origin")
+    if not _origin_allowed(origin):
+        return make_response(("", 204))
+    response = make_response(("", 204))
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+    else:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept, Origin, X-Requested-With"
+    response.headers["Access-Control-Max-Age"] = "600"
+    return response
+
+@app.after_request
+def _add_cors_headers(response):
+    origin = request.headers.get("Origin")
+    if not origin or not _origin_allowed(origin):
+        return response
+
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept, Origin, X-Requested-With"
+    response.headers["Access-Control-Max-Age"] = "600"
+    response.headers["Vary"] = "Origin"
+    return response
 
 auth.init_db()
 
@@ -143,6 +196,9 @@ def auth_login():
         user, token = auth.login(email, password)
     except ValueError as exc:
         return jsonify(error=str(exc)), 401
+    except RuntimeError as exc:
+        logger.error("Authentication configuration error: %s", exc)
+        return jsonify(error="Backend authentication is not configured correctly."), 503
     return jsonify(user=user, token=token)
 
 @app.route("/auth/me", methods=["GET"])

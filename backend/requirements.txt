@@ -28,3 +28,4 @@ lightgbm
 xgboost
 redis
 celery
+openai

@@ -11,7 +11,7 @@ services:
       - key: DGA_MAX_ROWS
         value: "2200"
       - key: DGA_MAX_ROWS_PER_TRANSFORMER
-        value: "18"
+        value: "12"
       - key: DGA_SAVE_DATABASE
         value: "1"
       - key: DGA_PERSIST_OUTPUTS
@@ -23,7 +23,7 @@ services:
       - key: DGA_PREDICTION_CACHE_TTL
         value: "600"
       - key: DGA_CORS_ORIGINS
-        sync: false
+        value: "*"
       - key: DGA_AUTH_SECRET
         generateValue: true
       - key: DGA_ADMIN_EMAIL
@@ -31,6 +31,6 @@ services:
       - key: DGA_ADMIN_PASSWORD
         sync: false
       - key: DGA_ADMIN_NAME
-        value: "DGA Administrator"
+        value: "Administrator"
       - key: DGA_SESSION_HOURS
         value: "24"

@@ -1,9 +1,11 @@
 // src/lib/api.ts
 import type { DgaPayload } from "@/types/dga";
 
-const DEFAULT_PRODUCTION_BACKEND = "https://transformer-kgen.onrender.com";
+const DEFAULT_PRODUCTION_BACKEND =
+  "https://transformer-kgen.onrender.com";
 
-const configuredBackend = process.env.NEXT_PUBLIC_BACKEND_URL?.trim();
+const configuredBackend =
+  process.env.NEXT_PUBLIC_BACKEND_URL?.trim();
 
 const BACKEND_PREFIX = (
   configuredBackend ||
@@ -14,8 +16,6 @@ const BACKEND_PREFIX = (
 
 const AUTH_TOKEN_KEY = "dga-auth-token";
 
-// Large enough for Render free cold-start + the optimized inference path,
-// but deliberately bounded. Do not use multi-hour browser timeouts.
 const PREDICTION_REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const HEALTH_REQUEST_TIMEOUT_MS = 15_000;
@@ -42,22 +42,24 @@ export interface ChatHistoryTurn {
 }
 
 export function getAuthToken(): string | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
+  if (typeof window === "undefined") return null;
   return window.localStorage.getItem(AUTH_TOKEN_KEY);
 }
 
 function authHeaders(): Record<string, string> {
   const token = getAuthToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
 }
 
 async function parseJsonResponse(
   res: Response,
 ): Promise<Record<string, unknown>> {
   const body = await res.json().catch(() => ({}));
-  return body && typeof body === "object" && !Array.isArray(body)
+  return body &&
+    typeof body === "object" &&
+    !Array.isArray(body)
     ? (body as Record<string, unknown>)
     : {};
 }
@@ -72,7 +74,10 @@ async function fetchWithTimeout(
   timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = window.setTimeout(
+    () => controller.abort(),
+    timeoutMs,
+  );
 
   try {
     return await fetch(input, {
@@ -80,16 +85,27 @@ async function fetchWithTimeout(
       signal: controller.signal,
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (
+      error instanceof DOMException &&
+      error.name === "AbortError"
+    ) {
       throw new ApiError(
-        `Backend request timed out after ${Math.round(timeoutMs / 1000)} seconds.`,
+        `Backend request timed out after ${Math.round(
+          timeoutMs / 1000,
+        )} seconds.`,
       );
     }
 
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ApiError(`Backend request failed: ${message}.`);
+    const message =
+      error instanceof Error
+        ? error.message
+        : String(error);
+
+    throw new ApiError(
+      `Backend request failed: ${message}.`,
+    );
   } finally {
-    clearTimeout(timer);
+    window.clearTimeout(timer);
   }
 }
 
@@ -100,21 +116,34 @@ async function fetchBackend(
 ): Promise<Response> {
   let lastError: unknown = null;
 
-  for (let attempt = 0; attempt <= MAX_NETWORK_RETRIES; attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt <= MAX_NETWORK_RETRIES;
+    attempt += 1
+  ) {
     try {
-      const res = await fetchWithTimeout(input, init, timeoutMs);
+      const response = await fetchWithTimeout(
+        input,
+        init,
+        timeoutMs,
+      );
 
-      if (RETRYABLE_STATUS.has(res.status) && attempt < MAX_NETWORK_RETRIES) {
+      if (
+        RETRYABLE_STATUS.has(response.status) &&
+        attempt < MAX_NETWORK_RETRIES
+      ) {
         await sleep(750 * 2 ** attempt);
         continue;
       }
 
-      return res;
+      return response;
     } catch (error) {
       lastError = error;
+
       if (attempt >= MAX_NETWORK_RETRIES) {
         throw error;
       }
+
       await sleep(750 * 2 ** attempt);
     }
   }
@@ -124,7 +153,9 @@ async function fetchBackend(
     : new ApiError("Backend request failed.");
 }
 
-async function handleAuthResponse(res: Response): Promise<{
+async function handleAuthResponse(
+  res: Response,
+): Promise<{
   user: AuthUser;
   token: string;
 }> {
@@ -135,6 +166,7 @@ async function handleAuthResponse(res: Response): Promise<{
       typeof body.error === "string"
         ? body.error
         : `Authentication request failed (${res.status}).`;
+
     throw new ApiError(message);
   }
 
@@ -143,7 +175,9 @@ async function handleAuthResponse(res: Response): Promise<{
     typeof body.user !== "object" ||
     typeof body.token !== "string"
   ) {
-    throw new ApiError("Backend returned an invalid authentication response.");
+    throw new ApiError(
+      "Backend returned an invalid authentication response.",
+    );
   }
 
   return {
@@ -155,14 +189,23 @@ async function handleAuthResponse(res: Response): Promise<{
 export async function loginAccount(
   email: string,
   password: string,
-): Promise<{ user: AuthUser; token: string }> {
+): Promise<{
+  user: AuthUser;
+  token: string;
+}> {
   const res = await fetchBackend(
     `${BACKEND_PREFIX}/auth/login`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email,
+        password,
+      }),
       cache: "no-store",
+      mode: "cors",
     },
     30_000,
   );
@@ -172,9 +215,8 @@ export async function loginAccount(
 
 export async function fetchCurrentUser(): Promise<AuthUser | null> {
   const token = getAuthToken();
-  if (!token) {
-    return null;
-  }
+
+  if (!token) return null;
 
   try {
     const res = await fetchBackend(
@@ -183,16 +225,17 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
         method: "GET",
         headers: authHeaders(),
         cache: "no-store",
+        mode: "cors",
       },
       20_000,
     );
 
-    if (!res.ok) {
-      return null;
-    }
+    if (!res.ok) return null;
 
     const body = await parseJsonResponse(res);
-    return body.user && typeof body.user === "object"
+
+    return body.user &&
+      typeof body.user === "object"
       ? (body.user as AuthUser)
       : null;
   } catch {
@@ -208,6 +251,7 @@ export async function logoutAccount(): Promise<void> {
         method: "POST",
         headers: authHeaders(),
         cache: "no-store",
+        mode: "cors",
       },
       15_000,
     );
@@ -223,12 +267,14 @@ export async function resetDataset(): Promise<void> {
       method: "POST",
       headers: authHeaders(),
       cache: "no-store",
+      mode: "cors",
     },
     15_000,
   );
 
   if (!res.ok) {
     const body = await parseJsonResponse(res);
+
     throw new ApiError(
       typeof body.error === "string"
         ? body.error
@@ -244,16 +290,20 @@ export async function checkBackendHealth(): Promise<boolean> {
       {
         method: "GET",
         cache: "no-store",
+        mode: "cors",
       },
       HEALTH_REQUEST_TIMEOUT_MS,
     );
+
     return res.ok;
   } catch {
     return false;
   }
 }
 
-async function handlePredictResponse(res: Response): Promise<DgaPayload> {
+async function handlePredictResponse(
+  res: Response,
+): Promise<DgaPayload> {
   const body = await res.json().catch(() => null);
 
   if (!res.ok) {
@@ -265,29 +315,42 @@ async function handlePredictResponse(res: Response): Promise<DgaPayload> {
         : `Prediction request failed (${res.status}).`;
 
     if (res.status === 409) {
-      throw new ApiError(`${message} Please wait for the current prediction to finish.`);
+      throw new ApiError(
+        `${message} Please wait for the current prediction to finish.`,
+      );
     }
 
     throw new ApiError(message);
   }
 
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw new ApiError("Backend returned an invalid prediction response.");
+  if (
+    !body ||
+    typeof body !== "object" ||
+    Array.isArray(body)
+  ) {
+    throw new ApiError(
+      "Backend returned an invalid prediction response.",
+    );
   }
 
   return body as DgaPayload;
 }
 
-async function startPrediction(init: RequestInit): Promise<DgaPayload> {
+async function startPrediction(
+  init: RequestInit,
+): Promise<DgaPayload> {
   const response = await fetchBackend(
     `${BACKEND_PREFIX}/predict`,
     init,
     PREDICTION_REQUEST_TIMEOUT_MS,
   );
+
   return handlePredictResponse(response);
 }
 
-export async function runPredictionFromFile(file: File): Promise<DgaPayload> {
+export async function runPredictionFromFile(
+  file: File,
+): Promise<DgaPayload> {
   const form = new FormData();
   form.append("file", file);
 
@@ -309,7 +372,9 @@ export async function runPredictionFromJson(
       "Content-Type": "application/json",
       ...authHeaders(),
     },
-    body: JSON.stringify({ data: rows }),
+    body: JSON.stringify({
+      data: rows,
+    }),
     cache: "no-store",
     mode: "cors",
   });
@@ -328,7 +393,11 @@ export async function askChatBackend(
         "Content-Type": "application/json",
         ...authHeaders(),
       },
-      body: JSON.stringify({ question, context, history }),
+      body: JSON.stringify({
+        question,
+        context,
+        history,
+      }),
       cache: "no-store",
       mode: "cors",
     },
@@ -337,6 +406,7 @@ export async function askChatBackend(
 
   if (!res.ok) {
     const body = await parseJsonResponse(res);
+
     throw new ApiError(
       typeof body.error === "string"
         ? body.error
@@ -345,8 +415,11 @@ export async function askChatBackend(
   }
 
   const body = await parseJsonResponse(res);
+
   if (typeof body.answer !== "string") {
-    throw new ApiError("Backend returned an invalid chat response.");
+    throw new ApiError(
+      "Backend returned an invalid chat response.",
+    );
   }
 
   return body.answer;
