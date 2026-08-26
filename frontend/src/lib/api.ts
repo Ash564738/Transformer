@@ -1,24 +1,48 @@
 // src/lib/api.ts
-import type { DgaPayload, DgaRow } from "@/types/dga";
+import type { DgaPayload } from "@/types/dga";
 
-// Called directly from the browser (not through Next.js's rewrite proxy):
-// large-dataset /predict calls can run close to a minute, and the dev
-// server's proxy was resetting the connection on requests that long. Flask
-// has CORS enabled (backend/app.py) specifically so this direct call works.
-const BACKEND_PREFIX = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:5000";
+const DEFAULT_PRODUCTION_BACKEND =
+  "https://transformer-kgen.onrender.com";
+
+const configuredBackend =
+  process.env.NEXT_PUBLIC_BACKEND_URL?.trim();
+
+const BACKEND_PREFIX =
+  (
+    configuredBackend ||
+    (process.env.NODE_ENV === "production"
+      ? DEFAULT_PRODUCTION_BACKEND
+      : "http://127.0.0.1:5000")
+  )
+    .replace(/\/+$/, "");
 
 const AUTH_TOKEN_KEY = "dga-auth-token";
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 
 export function getAuthToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(AUTH_TOKEN_KEY);
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return window.localStorage.getItem(
+    AUTH_TOKEN_KEY
+  );
 }
 
 function authHeaders(): Record<string, string> {
   const token = getAuthToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+
+  return token
+    ? {
+        Authorization: `Bearer ${token}`,
+      }
+    : {};
 }
 
 export interface AuthUser {
@@ -27,30 +51,121 @@ export interface AuthUser {
   name: string;
 }
 
-async function handleAuthResponse(res: Response): Promise<{ user: AuthUser; token: string }> {
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new ApiError(body.error ?? "Authentication request failed.");
+async function parseJsonResponse(
+  res: Response
+): Promise<Record<string, unknown>> {
+  const body = await res
+    .json()
+    .catch(() => ({}));
+
+  if (
+    body &&
+    typeof body === "object" &&
+    !Array.isArray(body)
+  ) {
+    return body as Record<string, unknown>;
   }
-  return body;
+
+  return {};
 }
 
-export async function loginAccount(email: string, password: string) {
-  const res = await fetch(`${BACKEND_PREFIX}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
+async function handleAuthResponse(
+  res: Response
+): Promise<{
+  user: AuthUser;
+  token: string;
+}> {
+  const body =
+    await parseJsonResponse(res);
+
+  if (!res.ok) {
+    const message =
+      typeof body.error === "string"
+        ? body.error
+        : `Authentication request failed (${res.status}).`;
+
+    throw new ApiError(message);
+  }
+
+  if (
+    !body.user ||
+    typeof body.user !== "object" ||
+    typeof body.token !== "string"
+  ) {
+    throw new ApiError(
+      "Backend returned an invalid authentication response."
+    );
+  }
+
+  return {
+    user: body.user as AuthUser,
+    token: body.token,
+  };
+}
+
+export async function loginAccount(
+  email: string,
+  password: string
+) {
+  let res: Response;
+
+  try {
+    res = await fetch(
+      `${BACKEND_PREFIX}/auth/login`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+        body: JSON.stringify({
+          email,
+          password,
+        }),
+        cache: "no-store",
+      }
+    );
+  } catch (error) {
+    throw new ApiError(
+      `Cannot reach backend at ${BACKEND_PREFIX}. ` +
+        `Check NEXT_PUBLIC_BACKEND_URL and the Render service.`
+    );
+  }
+
   return handleAuthResponse(res);
 }
 
 export async function fetchCurrentUser(): Promise<AuthUser | null> {
   const token = getAuthToken();
-  if (!token) return null;
+
+  if (!token) {
+    return null;
+  }
+
   try {
-    const res = await fetch(`${BACKEND_PREFIX}/auth/me`, { headers: authHeaders(), cache: "no-store" });
-    if (!res.ok) return null;
-    const body = await res.json();
+    const res = await fetch(
+      `${BACKEND_PREFIX}/auth/me`,
+      {
+        method: "GET",
+        headers: authHeaders(),
+        cache: "no-store",
+      }
+    );
+
+    if (!res.ok) {
+      return null;
+    }
+
+    const body =
+      await parseJsonResponse(res);
+
+    if (
+      !body.user ||
+      typeof body.user !== "object"
+    ) {
+      return null;
+    }
+
     return body.user as AuthUser;
   } catch {
     return null;
@@ -59,57 +174,142 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
 
 export async function logoutAccount(): Promise<void> {
   try {
-    await fetch(`${BACKEND_PREFIX}/auth/logout`, { method: "POST", headers: authHeaders() });
+    await fetch(
+      `${BACKEND_PREFIX}/auth/logout`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+        cache: "no-store",
+      }
+    );
   } catch {
-    // best-effort — the client clears its own token regardless
+    // Best effort. The client clears its token regardless.
   }
 }
 
 export async function resetDataset(): Promise<void> {
   try {
-    await fetch(`${BACKEND_PREFIX}/dataset/reset`, { method: "POST", headers: authHeaders() });
+    await fetch(
+      `${BACKEND_PREFIX}/dataset/reset`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+        cache: "no-store",
+      }
+    );
   } catch {
-    // best-effort — the client clears its own view regardless; worst case
-    // the next upload merges into leftover server-side history instead of
-    // starting fresh, which the user can just clear again.
+    // Best effort.
   }
 }
 
 export async function checkBackendHealth(): Promise<boolean> {
   try {
-    const res = await fetch(`${BACKEND_PREFIX}/health`, { cache: "no-store" });
+    const res = await fetch(
+      `${BACKEND_PREFIX}/health`,
+      {
+        method: "GET",
+        cache: "no-store",
+      }
+    );
+
     return res.ok;
   } catch {
     return false;
   }
 }
 
-export async function runPredictionFromFile(file: File): Promise<DgaPayload> {
-  const form = new FormData();
-  form.append("file", file);
-  const res = await fetch(`${BACKEND_PREFIX}/predict`, { method: "POST", headers: authHeaders(), body: form });
-  return handlePredictResponse(res);
-}
+async function handlePredictResponse(
+  res: Response
+): Promise<DgaPayload> {
+  const body =
+    await res
+      .json()
+      .catch(() => null);
 
-export async function runPredictionFromJson(rows: unknown[]): Promise<DgaPayload> {
-  const res = await fetch(`${BACKEND_PREFIX}/predict`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ data: rows }),
-  });
-  return handlePredictResponse(res);
-}
-
-async function handlePredictResponse(res: Response): Promise<DgaPayload> {
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(body.error ?? "Prediction request failed.");
+    const message =
+      body &&
+      typeof body === "object" &&
+      typeof body.error === "string"
+        ? body.error
+        : `Prediction request failed (${res.status}).`;
+
+    throw new ApiError(message);
   }
-  return res.json();
+
+  if (!body || typeof body !== "object") {
+    throw new ApiError(
+      "Backend returned an invalid prediction response."
+    );
+  }
+
+  return body as DgaPayload;
+}
+
+export async function runPredictionFromFile(
+  file: File
+): Promise<DgaPayload> {
+  const form =
+    new FormData();
+
+  form.append(
+    "file",
+    file
+  );
+
+  let res: Response;
+
+  try {
+    res = await fetch(
+      `${BACKEND_PREFIX}/predict`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+        body: form,
+      }
+    );
+  } catch {
+    throw new ApiError(
+      `Cannot reach backend at ${BACKEND_PREFIX}.`
+    );
+  }
+
+  return handlePredictResponse(res);
+}
+
+export async function runPredictionFromJson(
+  rows: unknown[]
+): Promise<DgaPayload> {
+  let res: Response;
+
+  try {
+    res = await fetch(
+      `${BACKEND_PREFIX}/predict`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+          ...authHeaders(),
+        },
+        body: JSON.stringify({
+          data: rows,
+        }),
+      }
+    );
+  } catch {
+    throw new ApiError(
+      `Cannot reach backend at ${BACKEND_PREFIX}.`
+    );
+  }
+
+  return handlePredictResponse(res);
 }
 
 export interface ChatHistoryTurn {
-  role: "user" | "assistant";
+  role:
+    | "user"
+    | "assistant";
   content: string;
 }
 
@@ -118,15 +318,55 @@ export async function askChatBackend(
   context: unknown,
   history?: ChatHistoryTurn[]
 ): Promise<string> {
-  const res = await fetch(`${BACKEND_PREFIX}/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ question, context, history }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(body.error ?? "Chat request failed.");
+  let res: Response;
+
+  try {
+    res = await fetch(
+      `${BACKEND_PREFIX}/chat`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+          ...authHeaders(),
+        },
+        body: JSON.stringify({
+          question,
+          context,
+          history,
+        }),
+      }
+    );
+  } catch {
+    throw new ApiError(
+      `Cannot reach backend at ${BACKEND_PREFIX}.`
+    );
   }
-  const data = await res.json();
-  return data.answer as string;
+
+  if (!res.ok) {
+    const body =
+      await parseJsonResponse(res);
+
+    const message =
+      typeof body.error === "string"
+        ? body.error
+        : `Chat request failed (${res.status}).`;
+
+    throw new ApiError(message);
+  }
+
+  const body =
+    await parseJsonResponse(res);
+
+  if (typeof body.answer !== "string") {
+    throw new ApiError(
+      "Backend returned an invalid chat response."
+    );
+  }
+
+  return body.answer;
+}
+
+export function getBackendUrl(): string {
+  return BACKEND_PREFIX;
 }
