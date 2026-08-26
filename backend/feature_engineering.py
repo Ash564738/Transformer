@@ -243,172 +243,97 @@ def add_calendar_and_sequence_features(df: pd.DataFrame) -> pd.DataFrame:
     out["days_since_prev"] = (out["sample_day"] - prev_date).dt.days.astype(float)
     return out
 
+def _attach_feature_columns(df: pd.DataFrame, features: dict[str, pd.Series]) -> pd.DataFrame:
+    """Attach many feature columns in one concat to avoid DataFrame fragmentation."""
+    if not features:
+        return df
+    feature_frame = pd.DataFrame(features, index=df.index)
+    return pd.concat([df, feature_frame], axis=1, copy=False)
+
+
 def add_lag_delta_rate_features(
     df: pd.DataFrame,
     value_cols: List[str],
 ) -> pd.DataFrame:
     out = df.copy()
-
     out = out.sort_values(
         ["transformer_id", "sample_day"],
         kind="mergesort",
     ).reset_index(drop=True)
 
-    group = out.groupby(
-        "transformer_id",
-        sort=False,
-    )
+    group = out.groupby("transformer_id", sort=False)
+    features: dict[str, pd.Series] = {}
 
     for col in value_cols:
         if col not in out.columns:
             continue
 
-        # --------------------------------------------------------
-        # Lag features
-        # --------------------------------------------------------
-        for lag in LAG_STEPS:
-            out[f"{col}_lag{lag}"] = (
-                group[col].shift(lag)
-            )
+        lag1 = group[col].shift(1)
+        lag2 = group[col].shift(2)
+        lag3 = group[col].shift(3)
 
-        out[f"{col}_delta1"] = (
-            out[col] - out[f"{col}_lag1"]
-        )
+        features[f"{col}_lag1"] = lag1
+        features[f"{col}_lag2"] = lag2
+        features[f"{col}_lag3"] = lag3
 
-        out[f"{col}_delta2"] = (
-            out[col] - out[f"{col}_lag2"]
-        )
+        delta1 = out[col] - lag1
+        delta2 = out[col] - lag2
+        delta3 = out[col] - lag3
+        features[f"{col}_delta1"] = delta1
+        features[f"{col}_delta2"] = delta2
+        features[f"{col}_delta3"] = delta3
+        features[f"{col}_pct_change1"] = safe_div(delta1, lag1)
+        features[f"{col}_rate_per_day"] = safe_div(delta1, out["days_since_prev"])
 
-        out[f"{col}_delta3"] = (
-            out[col] - out[f"{col}_lag3"]
-        )
-
-        out[f"{col}_pct_change1"] = safe_div(
-            out[f"{col}_delta1"],
-            out[f"{col}_lag1"],
-        )
-
-        out[f"{col}_rate_per_day"] = safe_div(
-            out[f"{col}_delta1"],
-            out["days_since_prev"],
-        )
-
-        # --------------------------------------------------------
-        # Multipoint yearly rate
-        #
-        # Instead of calculating a Python slope for every row,
-        # use first/last valid observation within the previous
-        # MAX_POINTS observations.
-        # --------------------------------------------------------
-        values = out[col]
-        dates = out["sample_day"]
-
-        previous_value = group[col].shift(
-            MULTIPOINT_RATE_MAX_POINTS - 1
-        )
-
-        previous_date = group["sample_day"].shift(
-            MULTIPOINT_RATE_MAX_POINTS - 1
-        )
-
-        fallback_value = group[col].shift(1)
+        previous_value = group[col].shift(MULTIPOINT_RATE_MAX_POINTS - 1)
+        previous_date = group["sample_day"].shift(MULTIPOINT_RATE_MAX_POINTS - 1)
+        fallback_value = lag1
         fallback_date = group["sample_day"].shift(1)
 
-        start_value = previous_value.combine_first(
-            fallback_value
-        )
-
-        start_date = previous_date.combine_first(
-            fallback_date
-        )
-
-        end_value = values
-        end_date = dates
-
-        span_days = (
-            end_date - start_date
-        ).dt.total_seconds() / 86400.0
-
-        span_months = (
-            span_days / 30.4375
-        )
-
-        delta_value = (
-            end_value - start_value
-        )
-
-        rate_per_year = safe_div(
-            delta_value,
-            span_days,
-        ) * 365.25
+        start_value = previous_value.combine_first(fallback_value)
+        start_date = previous_date.combine_first(fallback_date)
+        span_days = (out["sample_day"] - start_date).dt.total_seconds() / 86400.0
+        span_months = span_days / 30.4375
+        rate_per_year = safe_div(out[col] - start_value, span_days) * 365.25
 
         valid = (
             start_value.notna()
-            & end_value.notna()
+            & out[col].notna()
             & start_date.notna()
-            & end_date.notna()
+            & out["sample_day"].notna()
             & (span_months >= MULTIPOINT_RATE_MIN_MONTHS)
             & (span_months <= MULTIPOINT_RATE_MAX_MONTHS)
         )
-
-        rate_per_year = rate_per_year.where(
-            valid,
-            np.nan,
-        )
-
-        out[f"{col}_rate_per_year"] = (
-            rate_per_year
-        )
-
-        out[f"{col}_rate_ppm_per_year"] = (
-            rate_per_year
-        )
+        rate_per_year = rate_per_year.where(valid, np.nan)
+        features[f"{col}_rate_per_year"] = rate_per_year
+        features[f"{col}_rate_ppm_per_year"] = rate_per_year
 
         if col == value_cols[0]:
-            out["rate_span_months"] = (
-                span_months.where(
-                    valid,
-                    np.nan,
-                )
+            features["rate_span_months"] = span_months.where(valid, np.nan)
+            features["rate_span_days"] = span_days.where(valid, np.nan)
+            features["rate_points"] = pd.Series(
+                np.where(valid, MULTIPOINT_RATE_MAX_POINTS, 1),
+                index=out.index,
+                dtype="int8",
             )
 
-            out["rate_span_days"] = (
-                span_days.where(
-                    valid,
-                    np.nan,
-                )
-            )
+    return _attach_feature_columns(out, features)
 
-            out["rate_points"] = np.where(
-                valid,
-                MULTIPOINT_RATE_MAX_POINTS,
-                1,
-            )
-
-    return out
 
 def add_rolling_features(
     df: pd.DataFrame,
     value_cols: List[str],
 ) -> pd.DataFrame:
     out = df.copy()
+    features: dict[str, pd.Series] = {}
+    transformer_groups = out["transformer_id"]
 
     for col in value_cols:
         if col not in out.columns:
             continue
 
-        history = (
-            out.groupby(
-                "transformer_id",
-                sort=False,
-            )[col]
-            .shift(1)
-        )
-
-        history_grouped = history.groupby(
-            out["transformer_id"],
-            sort=False,
-        )
+        history = out.groupby("transformer_id", sort=False)[col].shift(1)
+        history_grouped = history.groupby(transformer_groups, sort=False)
 
         for window in ROLL_WINDOWS:
             rolling = history_grouped.rolling(
@@ -416,61 +341,49 @@ def add_rolling_features(
                 min_periods=1,
             )
 
-            mean_s = (
-                rolling.mean()
-                .reset_index(level=0, drop=True)
-            )
+            mean_s = rolling.mean().reset_index(level=0, drop=True)
+            std_s = rolling.std().reset_index(level=0, drop=True)
+            min_s = rolling.min().reset_index(level=0, drop=True)
+            max_s = rolling.max().reset_index(level=0, drop=True)
 
-            std_s = (
-                rolling.std()
-                .reset_index(level=0, drop=True)
-            )
+            features[f"{col}_roll{window}_mean"] = mean_s
+            features[f"{col}_roll{window}_std"] = std_s
+            features[f"{col}_roll{window}_min"] = min_s
+            features[f"{col}_roll{window}_max"] = max_s
+            features[f"{col}_vs_roll{window}_mean"] = out[col] - mean_s
+            features[f"{col}_roll{window}_range"] = max_s - min_s
 
-            min_s = (
-                rolling.min()
-                .reset_index(level=0, drop=True)
-            )
+    return _attach_feature_columns(out, features)
 
-            max_s = (
-                rolling.max()
-                .reset_index(level=0, drop=True)
-            )
-
-            out[
-                f"{col}_roll{window}_mean"
-            ] = mean_s
-
-            out[
-                f"{col}_roll{window}_std"
-            ] = std_s
-
-            out[
-                f"{col}_roll{window}_min"
-            ] = min_s
-
-            out[
-                f"{col}_roll{window}_max"
-            ] = max_s
-
-            out[
-                f"{col}_vs_roll{window}_mean"
-            ] = out[col] - mean_s
-
-            out[
-                f"{col}_roll{window}_range"
-            ] = max_s - min_s
-
-    return out
 
 def add_ewm_features(df: pd.DataFrame, value_cols: List[str]) -> pd.DataFrame:
     out = df.copy()
+    features: dict[str, pd.Series] = {}
+    transformer_groups = out["transformer_id"]
+
     for col in value_cols:
-        if col not in out.columns: continue
+        if col not in out.columns:
+            continue
+
         history = out.groupby("transformer_id", sort=False)[col].shift(1)
+        history_grouped = history.groupby(transformer_groups, sort=False)
+
         for span in EWMA_SPANS:
-            ewm = history.groupby(out["transformer_id"], sort=False).transform(lambda s: s.ewm(span=span, adjust=False, min_periods=1).mean())
-            out[f"{col}_ewm{span}"] = ewm; out[f"{col}_vs_ewm{span}"] = out[col] - ewm
-    return out
+            # Vectorized grouped EWM. The previous implementation used
+            # groupby(...).transform(lambda ...), which executes Python code
+            # once per transformer group and becomes disproportionately slow
+            # on production datasets with hundreds of transformers.
+            ewm = (
+                history_grouped
+                .ewm(span=span, adjust=False, min_periods=1)
+                .mean()
+                .reset_index(level=0, drop=True)
+            )
+            features[f"{col}_ewm{span}"] = ewm
+            features[f"{col}_vs_ewm{span}"] = out[col] - ewm
+
+    return _attach_feature_columns(out, features)
+
 
 def add_cross_gas_trend_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()

@@ -16,11 +16,6 @@ const BACKEND_PREFIX = (
 
 const AUTH_TOKEN_KEY = "dga-auth-token";
 
-/*
- * Prediction can be a long-running ML request.
- * Keep the browser-side timeout comfortably above the backend
- * Gunicorn timeout.
- */
 const PREDICTION_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 60 * 1000;
 
@@ -43,9 +38,7 @@ function authHeaders(): Record<string, string> {
   const token = getAuthToken();
 
   return token
-    ? {
-        Authorization: `Bearer ${token}`,
-      }
+    ? { Authorization: `Bearer ${token}` }
     : {};
 }
 
@@ -77,10 +70,7 @@ async function fetchWithTimeout(
   timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
 ): Promise<Response> {
   const controller = new AbortController();
-
-  const timer = window.setTimeout(() => {
-    controller.abort();
-  }, timeoutMs);
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     return await fetch(input, {
@@ -95,14 +85,12 @@ async function fetchWithTimeout(
       throw new ApiError(
         `Backend request timed out after ${Math.round(
           timeoutMs / 1000
-        )} seconds.`
+        )} seconds. URL: ${String(input)}`
       );
     }
 
     const message =
-      error instanceof Error
-        ? error.message
-        : String(error);
+      error instanceof Error ? error.message : String(error);
 
     throw new ApiError(
       `Backend request failed: ${message}. URL: ${String(input)}`
@@ -125,10 +113,7 @@ async function fetchBackend(
 
 async function handleAuthResponse(
   res: Response
-): Promise<{
-  user: AuthUser;
-  token: string;
-}> {
+): Promise<{ user: AuthUser; token: string }> {
   const body = await parseJsonResponse(res);
 
   if (!res.ok) {
@@ -159,21 +144,13 @@ async function handleAuthResponse(
 export async function loginAccount(
   email: string,
   password: string
-): Promise<{
-  user: AuthUser;
-  token: string;
-}> {
+): Promise<{ user: AuthUser; token: string }> {
   const res = await fetchBackend(
     `${BACKEND_PREFIX}/auth/login`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        email,
-        password,
-      }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
       cache: "no-store",
     }
   );
@@ -184,9 +161,7 @@ export async function loginAccount(
 export async function fetchCurrentUser(): Promise<AuthUser | null> {
   const token = getAuthToken();
 
-  if (!token) {
-    return null;
-  }
+  if (!token) return null;
 
   try {
     const res = await fetch(
@@ -198,16 +173,11 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
       }
     );
 
-    if (!res.ok) {
-      return null;
-    }
+    if (!res.ok) return null;
 
     const body = await parseJsonResponse(res);
 
-    if (
-      !body.user ||
-      typeof body.user !== "object"
-    ) {
+    if (!body.user || typeof body.user !== "object") {
       return null;
     }
 
@@ -292,7 +262,6 @@ export async function runPredictionFromFile(
   file: File
 ): Promise<DgaPayload> {
   const form = new FormData();
-
   form.append("file", file);
 
   const res = await fetchWithTimeout(
@@ -320,9 +289,7 @@ export async function runPredictionFromJson(
         "Content-Type": "application/json",
         ...authHeaders(),
       },
-      body: JSON.stringify({
-        data: rows,
-      }),
+      body: JSON.stringify({ data: rows }),
       cache: "no-store",
     },
     PREDICTION_TIMEOUT_MS
@@ -349,23 +316,17 @@ export async function askChatBackend(
         "Content-Type": "application/json",
         ...authHeaders(),
       },
-      body: JSON.stringify({
-        question,
-        context,
-        history,
-      }),
+      body: JSON.stringify({ question, context, history }),
       cache: "no-store",
     }
   );
 
   if (!res.ok) {
     const body = await parseJsonResponse(res);
-
     const message =
       typeof body.error === "string"
         ? body.error
         : `Chat request failed (${res.status}).`;
-
     throw new ApiError(message);
   }
 
