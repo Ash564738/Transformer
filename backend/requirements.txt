@@ -11,28 +11,30 @@
 
 # ── Core ──────────────────────────────────────────────────
 flask
+gunicorn
 joblib
 matplotlib
 numpy
-openai             # OpenAI SDK (dùng với OpenRouter cho chatbot)
-openpyxl           # Đọc file Excel
+openai
+openpyxl
 pandas
-python-dotenv      # Nạp biến môi trường từ .env
+pyarrow
+python-dotenv
 scikit-learn
 scipy
-seaborn            # Vẽ biểu đồ nâng cao (heatmap, barplot)
+seaborn
 
 # ── Training pipeline ─────────────────────────────────────
-catboost           # CatBoost classifier (supervised_experiment.py)
-imbalanced-learn   # SMOTE và các kỹ thuật cân bằng dữ liệu
+catboost
+imbalanced-learn
 lightgbm
-torch 
+torch
 xgboost
 
 # ── Optional but recommended ──────────────────────────────
-lifelines          # (nếu có dùng trong survival analysis)
-shap               # Giải thích model (SHAP values)
-snorkel            # Weak supervision (Snorkel LabelModel)
+lifelines
+shap
+snorkel
 
 # ── Dev / utilities ───────────────────────────────────────
 # statsmodels      # Phân tích thống kê (bỏ comment nếu cần)
