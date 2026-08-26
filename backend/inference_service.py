@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import tempfile
 import time
 from pathlib import Path
+from threading import Lock
+from typing import Any, Callable
 
 import joblib
 import numpy as np
@@ -28,7 +31,6 @@ from ranking import (
     log_ranking_diagnostics,
 )
 from severity import apply_severity
-from weak_supervision import load_weak_supervision_artifact
 
 
 init_logging()
@@ -39,27 +41,82 @@ REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 PROCESSED_DIR = DATASET_DIR / "processed"
 
-# ---------------------------------------------------------------------------
-# Production model artifacts
-# ---------------------------------------------------------------------------
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+# Cache models in the Gunicorn worker process.
+#
+# With --workers 1 this means each Render worker loads the artifacts once,
+# instead of running joblib.load() on every /predict request.
+#
+# Set DGA_MODEL_CACHE=0 if you explicitly want to disable this.
+MODEL_CACHE_ENABLED = (
+    os.getenv("DGA_MODEL_CACHE", "1").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
+
+# Operational output persistence.
+#
+# 1 = save parquet/csv/metadata/database as before.
+# 0 = return prediction without writing operational artifacts.
+#
+# Default is 1 to preserve the existing application behavior.
+PERSIST_OUTPUTS = (
+    os.getenv("DGA_PERSIST_OUTPUTS", "1").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
+
+SAVE_DATABASE = (
+    os.getenv("DGA_SAVE_DATABASE", "1").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
+
+# Ranking diagnostic logging is useful during development but is not required
+# to generate the prediction payload.
+ENABLE_RANKING_DIAGNOSTICS = (
+    os.getenv("DGA_RANKING_DIAGNOSTICS", "0").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
+
+# Emit a warning if a stage takes longer than this.
+SLOW_STAGE_SECONDS = float(
+    os.getenv("DGA_SLOW_STAGE_SECONDS", "10")
+)
+
+
+# ============================================================================
+# MODEL ARTIFACTS
+# ============================================================================
 
 STUDENT_MODEL_PATH = MODEL_DIR / "fault_classifier.joblib"
 ANOMALY_MODEL_PATH = MODEL_DIR / "anomaly_ensemble.joblib"
 
-WEAK_COARSE_MODEL_PATH = MODEL_DIR / "weak_label_model_coarse.joblib"
-WEAK_FINE_MODEL_PATH = MODEL_DIR / "weak_label_model_fine.joblib"
+WEAK_COARSE_MODEL_PATH = (
+    MODEL_DIR / "weak_label_model_coarse.joblib"
+)
 
-# Optional research artifacts. These are NOT used by /predict.
-FAULT_MODEL_COARSE_PATH = MODEL_DIR / "fault_model_coarse.joblib"
-FAULT_MODEL_FINE_PATH = MODEL_DIR / "fault_model_fine.joblib"
+WEAK_FINE_MODEL_PATH = (
+    MODEL_DIR / "weak_label_model_fine.joblib"
+)
 
-# ---------------------------------------------------------------------------
-# Operational outputs
-# ---------------------------------------------------------------------------
 
-UNLABELED_PATH = PROCESSED_DIR / "dga_unlabeled.parquet"
-RANKING_PATH = PROCESSED_DIR / "transformer_ranking.parquet"
-PROCESSED_OUTPUT_PATH = PROCESSED_DIR / "dga_unlabeled_processed.parquet"
+# ============================================================================
+# OPERATIONAL OUTPUTS
+# ============================================================================
+
+UNLABELED_PATH = (
+    PROCESSED_DIR / "dga_unlabeled.parquet"
+)
+
+RANKING_PATH = (
+    PROCESSED_DIR / "transformer_ranking.parquet"
+)
+
+PROCESSED_OUTPUT_PATH = (
+    PROCESSED_DIR / "dga_unlabeled_processed.parquet"
+)
 
 STUDENT_COMPARISON_PATH = (
     REPORT_DIR / "student_vs_traditional_by_transformer.csv"
@@ -70,11 +127,189 @@ INFERENCE_METADATA_PATH = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Generic helpers
-# ---------------------------------------------------------------------------
+# ============================================================================
+# MODEL CACHE
+# ============================================================================
 
-def _safe_int(value, default=0):
+_MODEL_CACHE: dict[str, Any] = {}
+_MODEL_CACHE_LOCK = Lock()
+
+
+def clear_model_cache() -> None:
+    """
+    Clear all in-process production model artifacts.
+
+    Useful during development/testing after replacing model files.
+    """
+    with _MODEL_CACHE_LOCK:
+        _MODEL_CACHE.clear()
+
+    logger.info("Production model cache cleared.")
+
+
+def _safe_model_cache_key(path: Path) -> str:
+    return str(path.resolve())
+
+
+def _load_joblib_artifact(
+    path: Path,
+    description: str,
+):
+    """
+    Load a production artifact once per Gunicorn worker.
+
+    This is intentionally different from the old behavior where every
+    /predict request called joblib.load().
+    """
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing production model artifact: "
+            f"{description}. Expected file: {path}"
+        )
+
+    cache_key = _safe_model_cache_key(path)
+
+    if MODEL_CACHE_ENABLED:
+        with _MODEL_CACHE_LOCK:
+            if cache_key in _MODEL_CACHE:
+                logger.debug(
+                    "MODEL CACHE HIT | %s",
+                    description,
+                )
+                return _MODEL_CACHE[cache_key]
+
+    started = time.perf_counter()
+
+    logger.info(
+        "MODEL LOAD START | %s | path=%s",
+        description,
+        path,
+    )
+
+    try:
+        artifact = joblib.load(path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to load production model artifact "
+            f"{description}: {exc}"
+        ) from exc
+
+    elapsed = time.perf_counter() - started
+
+    logger.info(
+        "MODEL LOAD END | %s | %.3f seconds",
+        description,
+        elapsed,
+    )
+
+    if elapsed >= SLOW_STAGE_SECONDS:
+        logger.warning(
+            "SLOW MODEL LOAD | %s | %.3f seconds",
+            description,
+            elapsed,
+        )
+
+    if MODEL_CACHE_ENABLED:
+        with _MODEL_CACHE_LOCK:
+            _MODEL_CACHE[cache_key] = artifact
+
+    return artifact
+
+
+# ============================================================================
+# TIMING HELPERS
+# ============================================================================
+
+class StageTimer:
+    """
+    Small helper for measuring production inference stages.
+
+    Every stage is written to logs and returned in payload["pipeline"]["timings"].
+    """
+
+    def __init__(
+        self,
+        name: str,
+        timings: dict[str, float],
+    ):
+        self.name = name
+        self.timings = timings
+        self.started = 0.0
+
+    def __enter__(self):
+        self.started = time.perf_counter()
+
+        logger.info(
+            "[TIMER] START %s",
+            self.name,
+        )
+
+        return self
+
+    def __exit__(
+        self,
+        exc_type,
+        exc_value,
+        traceback,
+    ):
+        elapsed = (
+            time.perf_counter() - self.started
+        )
+
+        self.timings[self.name] = round(
+            elapsed,
+            4,
+        )
+
+        if exc_type is None:
+            logger.info(
+                "[TIMER] END %s | %.4f seconds",
+                self.name,
+                elapsed,
+            )
+        else:
+            logger.error(
+                "[TIMER] FAIL %s | %.4f seconds | %s",
+                self.name,
+                elapsed,
+                exc_value,
+            )
+
+        if elapsed >= SLOW_STAGE_SECONDS:
+            logger.warning(
+                "[TIMER] SLOW STAGE %s | %.4f seconds",
+                self.name,
+                elapsed,
+            )
+
+        return False
+
+
+def _timed_call(
+    name: str,
+    timings: dict[str, float],
+    fn: Callable,
+    *args,
+    **kwargs,
+):
+    with StageTimer(
+        name,
+        timings,
+    ):
+        return fn(
+            *args,
+            **kwargs,
+        )
+
+
+# ============================================================================
+# GENERIC HELPERS
+# ============================================================================
+
+def _safe_int(
+    value,
+    default=0,
+):
     try:
         if pd.isna(value):
             return int(default)
@@ -87,29 +322,45 @@ def _safe_int(value, default=0):
         return int(default)
 
 
-def _safe_float(value, default=np.nan):
+def _safe_float(
+    value,
+    default=np.nan,
+):
     try:
         x = float(value)
     except (TypeError, ValueError):
         return default
 
-    return x if np.isfinite(x) else default
+    return (
+        x
+        if np.isfinite(x)
+        else default
+    )
 
 
-def _ui_status(status: int) -> str:
+def _ui_status(
+    status: int,
+) -> str:
     return {
         0: "Insufficient data",
         1: "Normal",
         2: "Watch",
         3: "High",
-    }.get(_safe_int(status), "Insufficient data")
+    }.get(
+        _safe_int(status),
+        "Insufficient data",
+    )
 
 
-def _ui_severity_label(value):
+def _ui_severity_label(
+    value,
+):
     if value is None:
         return "INSUFFICIENT_DATA"
 
-    text = str(value).strip().upper()
+    text = str(
+        value
+    ).strip().upper()
 
     if text in cfg.SEVERITY_ORDER:
         return text
@@ -120,7 +371,11 @@ def _ui_severity_label(value):
     )
 
 
-def _first(row, names, default=None):
+def _first(
+    row,
+    names,
+    default=None,
+):
     for name in names:
         if name not in row.index:
             continue
@@ -136,7 +391,9 @@ def _first(row, names, default=None):
     return default
 
 
-def _normalize_series(series):
+def _normalize_series(
+    series,
+):
     return (
         series
         .map(normalize_fault)
@@ -145,8 +402,15 @@ def _normalize_series(series):
     )
 
 
-def _save_csv(df: pd.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _save_csv(
+    df: pd.DataFrame,
+    path: Path,
+):
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
     df.to_csv(
         path,
         index=False,
@@ -161,9 +425,19 @@ def _save_csv(df: pd.DataFrame, path: Path) -> None:
     )
 
 
-def _save_parquet(df: pd.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=False)
+def _save_parquet(
+    df: pd.DataFrame,
+    path: Path,
+):
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    df.to_parquet(
+        path,
+        index=False,
+    )
 
     logger.info(
         "Saved Parquet | %s | rows=%d | columns=%d",
@@ -173,37 +447,9 @@ def _save_parquet(df: pd.DataFrame, path: Path) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Model artifact validation
-# ---------------------------------------------------------------------------
-
-def _require_artifact(path: Path, description: str) -> Path:
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Missing production model artifact: {description}. "
-            f"Expected file: {path}"
-        )
-
-    return path
-
-
-def _load_joblib_artifact(path: Path, description: str):
-    _require_artifact(path, description)
-
-    try:
-        artifact = joblib.load(path)
-    except Exception as exc:
-        raise RuntimeError(
-            f"Unable to load production model artifact "
-            f"{description}: {exc}"
-        ) from exc
-
-    return artifact
-
-
-# ---------------------------------------------------------------------------
-# Weak-label model inference
-# ---------------------------------------------------------------------------
+# ============================================================================
+# WEAK LABEL MODEL
+# ============================================================================
 
 def _build_weak_label_matrix(
     df: pd.DataFrame,
@@ -211,34 +457,38 @@ def _build_weak_label_matrix(
     groups: list[str],
 ):
     """
-    Rebuild the same diagnostic label matrix used during weak-label
-    model training.
+    Construct the same label matrix used by the saved weak-label model.
 
-    IMPORTANT:
-    This does NOT train anything.
-
-    It only converts the existing traditional diagnostic outputs into the
-    integer label matrix expected by the saved weak-label model.
+    This function NEVER trains a model.
     """
-    from weak_supervision import build_label_matrix
 
-    L, methods, resolved_groups = build_label_matrix(
-        df,
-        label_columns=None,
-        groups=groups,
-        granularity=granularity,
+    from weak_supervision import (
+        build_label_matrix,
+    )
+
+    L, methods, resolved_groups = (
+        build_label_matrix(
+            df,
+            label_columns=None,
+            groups=groups,
+            granularity=granularity,
+        )
     )
 
     logger.debug(
-        "Built production weak-label matrix | granularity=%s | rows=%d | "
-        "methods=%d | groups=%s",
+        "Weak label matrix | granularity=%s | "
+        "shape=%s | methods=%d | groups=%s",
         granularity,
-        len(df),
+        L.shape,
         len(methods),
         resolved_groups,
     )
 
-    return L, methods, resolved_groups
+    return (
+        L,
+        methods,
+        resolved_groups,
+    )
 
 
 def _predict_weak_label_model(
@@ -248,65 +498,110 @@ def _predict_weak_label_model(
 ):
     """
     Apply a PRE-TRAINED weak-label model.
-
-    No fitting/training occurs here.
     """
-    if not isinstance(artifact, dict):
+
+    if not isinstance(
+        artifact,
+        dict,
+    ):
         raise ValueError(
             f"Invalid weak-label artifact for {granularity}."
         )
 
-    model = artifact.get("model")
-    groups = artifact.get("groups")
+    model = artifact.get(
+        "model"
+    )
+
+    groups = artifact.get(
+        "groups"
+    )
+
+    metadata = artifact.get(
+        "metadata",
+        {},
+    )
 
     if model is None:
         raise ValueError(
-            f"Weak-label artifact for {granularity} does not contain a model."
+            f"Weak-label artifact for {granularity} "
+            f"does not contain a model."
         )
 
     if not groups:
         raise ValueError(
-            f"Weak-label artifact for {granularity} does not contain groups."
+            f"Weak-label artifact for {granularity} "
+            f"does not contain groups."
         )
 
-    groups = [str(value).strip().upper() for value in groups]
+    groups = [
+        str(value).strip().upper()
+        for value in groups
+    ]
 
-    L, _, resolved_groups = _build_weak_label_matrix(
-        df,
-        granularity,
-        groups,
+    L, methods, resolved_groups = (
+        _build_weak_label_matrix(
+            df,
+            granularity,
+            groups,
+        )
     )
 
-    try:
-        probabilities = np.asarray(
-            model.predict_proba(L),
-            dtype=float,
+    started = time.perf_counter()
+
+    probabilities = np.asarray(
+        model.predict_proba(L),
+        dtype=float,
+    )
+
+    elapsed = (
+        time.perf_counter()
+        - started
+    )
+
+    logger.info(
+        "Weak model predict | granularity=%s | "
+        "rows=%d | %.4f seconds",
+        granularity,
+        len(df),
+        elapsed,
+    )
+
+    if elapsed >= SLOW_STAGE_SECONDS:
+        logger.warning(
+            "SLOW weak model prediction | "
+            "granularity=%s | %.4f seconds",
+            granularity,
+            elapsed,
         )
-    except Exception as exc:
-        raise RuntimeError(
-            f"Weak-label {granularity} model prediction failed: {exc}"
-        ) from exc
 
     if probabilities.ndim != 2:
         raise ValueError(
-            f"Weak-label {granularity} probability output must be 2D."
+            f"Weak-label {granularity} "
+            f"probability output must be 2D."
         )
 
-    if probabilities.shape[1] != len(resolved_groups):
+    if probabilities.shape[1] != len(
+        resolved_groups
+    ):
         raise ValueError(
             f"Weak-label {granularity} model classes do not match "
-            f"artifact groups. probabilities={probabilities.shape[1]}, "
+            f"artifact groups. "
+            f"probabilities={probabilities.shape[1]}, "
             f"groups={len(resolved_groups)}"
         )
 
-    prediction_indices = np.argmax(
-        probabilities,
-        axis=1,
+    prediction_indices = (
+        np.argmax(
+            probabilities,
+            axis=1,
+        )
     )
 
-    posterior_max = np.max(
-        probabilities,
-        axis=1,
+    posterior_max = (
+        np.max(
+            probabilities,
+            axis=1,
+        )
     )
 
     safe_probabilities = np.clip(
@@ -316,85 +611,142 @@ def _predict_weak_label_model(
     )
 
     entropy = -np.sum(
-        safe_probabilities * np.log(safe_probabilities),
+        safe_probabilities
+        * np.log(safe_probabilities),
         axis=1,
     )
 
+    # Keep entropy semantics consistent with the existing weak supervision
+    # module: normalize by log(number of classes).
+    if len(resolved_groups) >= 2:
+        entropy = (
+            entropy
+            / np.log(
+                len(resolved_groups)
+            )
+        )
+
     active_count = (
         L != -1
-    ).sum(axis=1)
+    ).sum(
+        axis=1
+    )
 
     active_coverage = (
-        active_count / float(L.shape[1])
+        active_count
+        / float(
+            L.shape[1]
+        )
+        * 100.0
         if L.shape[1] > 0
-        else np.zeros(len(df), dtype=float)
+        else np.zeros(
+            len(df),
+            dtype=float,
+        )
     )
 
     predicted_labels = [
-        resolved_groups[int(index)]
+        resolved_groups[
+            int(index)
+        ]
         for index in prediction_indices
     ]
 
-    # A weak-label model can technically output a class even when all
-    # labeling functions abstain. Preserve ABSTAIN explicitly in that case.
-    no_evidence = active_count == 0
+    no_evidence = (
+        active_count == 0
+    )
 
     predicted_labels = [
-        "ABSTAIN" if no_evidence[i] else predicted_labels[i]
-        for i in range(len(predicted_labels))
+        "ABSTAIN"
+        if no_evidence[i]
+        else predicted_labels[i]
+        for i in range(
+            len(predicted_labels)
+        )
     ]
 
-    if granularity == "coarse":
-        output_prefix = "weak_coarse"
-    else:
-        output_prefix = "weak_fine"
+    output_prefix = (
+        "weak_coarse"
+        if granularity == "coarse"
+        else "weak_fine"
+    )
 
-    result = pd.DataFrame(index=df.index)
+    result = pd.DataFrame(
+        index=df.index
+    )
 
-    result[f"{output_prefix}_fault"] = predicted_labels
+    result[
+        f"{output_prefix}_fault"
+    ] = predicted_labels
 
-    if granularity == "fine":
-        result[f"{output_prefix}_fault_group"] = [
-            unify_fault(value)
-            for value in predicted_labels
-        ]
-    else:
-        result[f"{output_prefix}_fault_group"] = [
-            unify_fault(value)
-            for value in predicted_labels
-        ]
+    result[
+        f"{output_prefix}_fault_group"
+    ] = [
+        unify_fault(value)
+        for value in predicted_labels
+    ]
 
-    result[f"{output_prefix}_posterior_max"] = posterior_max
-    result[f"{output_prefix}_entropy"] = entropy
-    result[f"{output_prefix}_lf_active_count"] = active_count
-    result[f"{output_prefix}_lf_coverage"] = active_coverage
-    result[f"{output_prefix}_is_ABSTAIN"] = no_evidence
+    result[
+        f"{output_prefix}_posterior_max"
+    ] = posterior_max
+
+    result[
+        f"{output_prefix}_entropy"
+    ] = entropy
+
+    result[
+        f"{output_prefix}_lf_active_count"
+    ] = active_count
+
+    result[
+        f"{output_prefix}_lf_coverage"
+    ] = active_coverage
+
+    result[
+        f"{output_prefix}_is_ABSTAIN"
+    ] = no_evidence
+
+    result[
+        f"{output_prefix}_backend"
+    ] = metadata.get(
+        "backend",
+        type(model).__name__,
+    )
 
     logger.info(
-        "Applied production weak-label model | granularity=%s | "
-        "rows=%d | abstain=%d",
+        "Applied production weak-label model | "
+        "granularity=%s | rows=%d | abstain=%d",
         granularity,
         len(df),
-        int(no_evidence.sum()),
+        int(
+            no_evidence.sum()
+        ),
     )
 
     return result
 
 
-def _apply_pretrained_weak_models(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+def _apply_pretrained_weak_models(
+    df: pd.DataFrame,
+):
     """
-    Apply the saved coarse/fine weak-label artifacts.
+    Apply saved weak-label models.
 
-    This replaces weak_supervision_pipeline() in production.
+    No training occurs.
     """
-    coarse_artifact = _load_joblib_artifact(
-        WEAK_COARSE_MODEL_PATH,
-        "coarse weak-label model",
+
+    coarse_artifact = (
+        _load_joblib_artifact(
+            WEAK_COARSE_MODEL_PATH,
+            "coarse weak-label model",
+        )
     )
 
-    fine_artifact = _load_joblib_artifact(
-        WEAK_FINE_MODEL_PATH,
-        "fine weak-label model",
+    fine_artifact = (
+        _load_joblib_artifact(
+            WEAK_FINE_MODEL_PATH,
+            "fine weak-label model",
+        )
     )
 
     coarse = _predict_weak_label_model(
@@ -417,45 +769,76 @@ def _apply_pretrained_weak_models(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]
     for column in fine.columns:
         output[column] = fine[column]
 
-    metadata = {
+    weak_metadata = {
         "backend": {
             "coarse": (
                 coarse_artifact
-                .get("metadata", {})
-                .get("backend")
+                .get(
+                    "metadata",
+                    {},
+                )
+                .get(
+                    "backend"
+                )
             ),
             "fine": (
                 fine_artifact
-                .get("metadata", {})
-                .get("backend")
+                .get(
+                    "metadata",
+                    {},
+                )
+                .get(
+                    "backend"
+                )
             ),
         },
         "granularity": "coarse+fine",
-        "coarse": coarse_artifact.get("metadata", {}),
-        "fine": fine_artifact.get("metadata", {}),
+        "coarse": coarse_artifact.get(
+            "metadata",
+            {},
+        ),
+        "fine": fine_artifact.get(
+            "metadata",
+            {},
+        ),
         "uses_manual_lf_weights": False,
         "runtime_training": False,
     }
 
-    return output, metadata
+    return (
+        output,
+        weak_metadata,
+    )
 
 
-# ---------------------------------------------------------------------------
-# Production student model
-# ---------------------------------------------------------------------------
+# ============================================================================
+# STUDENT MODEL
+# ============================================================================
 
-def _validate_student_artifact(artifact):
-    if not isinstance(artifact, dict):
+def _validate_student_artifact(
+    artifact,
+):
+    if not isinstance(
+        artifact,
+        dict,
+    ):
         return False
 
-    if artifact.get("model") is None:
+    if artifact.get(
+        "model"
+    ) is None:
         return False
 
-    if not artifact.get("labels"):
+    if not artifact.get(
+        "labels"
+    ):
         return False
 
     granularity = str(
-        artifact.get("granularity", "")
+        artifact.get(
+            "granularity",
+            "",
+        )
     ).strip().lower()
 
     if granularity != "fine":
@@ -478,24 +861,24 @@ def _load_student_model():
         "production student classifier",
     )
 
-    if not _validate_student_artifact(artifact):
+    if not _validate_student_artifact(
+        artifact
+    ):
         raise ValueError(
-            f"Production student artifact is incompatible: "
+            "Production student artifact is incompatible: "
             f"{STUDENT_MODEL_PATH}"
         )
 
     return artifact
 
 
-def _student_feature_columns():
-    return list(cfg.COMMON_BENCHMARK_GASES)
-
-
 def _prepare_student_matrix(
     df: pd.DataFrame,
     feature_columns,
 ):
-    feature_columns = list(feature_columns)
+    feature_columns = list(
+        feature_columns
+    )
 
     missing = [
         column
@@ -505,13 +888,23 @@ def _prepare_student_matrix(
 
     if missing:
         raise ValueError(
-            f"Missing student-model features: {missing}"
+            "Missing student-model features: "
+            f"{missing}"
         )
 
     return (
         df[feature_columns]
-        .apply(pd.to_numeric, errors="coerce")
-        .replace([np.inf, -np.inf], np.nan)
+        .apply(
+            pd.to_numeric,
+            errors="coerce",
+        )
+        .replace(
+            [
+                np.inf,
+                -np.inf,
+            ],
+            np.nan,
+        )
     )
 
 
@@ -536,7 +929,11 @@ def _apply_student(
         feature_columns,
     )
 
-    model = artifact["model"]
+    model = artifact[
+        "model"
+    ]
+
+    started = time.perf_counter()
 
     try:
         proba = np.asarray(
@@ -545,8 +942,14 @@ def _apply_student(
         )
 
         estimator = (
-            model.named_steps.get("classifier", model)
-            if hasattr(model, "named_steps")
+            model.named_steps.get(
+                "classifier",
+                model,
+            )
+            if hasattr(
+                model,
+                "named_steps",
+            )
             else model
         )
 
@@ -557,7 +960,9 @@ def _apply_student(
         )
 
         labels = [
-            normalize_fault(value)
+            normalize_fault(
+                value
+            )
             for value in (
                 model_classes
                 if model_classes is not None
@@ -570,10 +975,11 @@ def _apply_student(
                 "Student probability matrix must be 2D."
             )
 
-        if proba.shape[1] != len(labels):
+        if proba.shape[1] != len(
+            labels
+        ):
             raise ValueError(
-                "Student probability matrix does not match "
-                "model classes."
+                "Student probability matrix does not match model classes."
             )
 
         best = np.argmax(
@@ -587,67 +993,97 @@ def _apply_student(
         )
 
         pred = [
-            labels[int(index)]
+            labels[
+                int(index)
+            ]
             for index in best
         ]
 
-    except Exception as exc:
+    except Exception:
         logger.exception(
-            "Student predict_proba failed."
+            "Student predict_proba failed; "
+            "falling back to predict()."
         )
 
         try:
             pred = [
-                normalize_fault(value)
-                for value in model.predict(X)
+                normalize_fault(
+                    value
+                )
+                for value in model.predict(
+                    X
+                )
             ]
+
             confidence = np.full(
                 len(out),
                 np.nan,
                 dtype=float,
             )
-        except Exception as predict_exc:
+
+        except Exception as exc:
             raise RuntimeError(
                 "Production student model prediction failed: "
-                f"{predict_exc}"
+                f"{exc}"
             ) from exc
 
-    out["student_fault_label"] = pred
-
-    out["student_fault_group"] = [
-        unify_fault(value)
-        for value in pred
-    ]
-
-    out["student_fault_confidence"] = confidence
-
-    out["student_model_name"] = artifact.get(
-        "model_name",
-        "UNKNOWN",
+    elapsed = (
+        time.perf_counter()
+        - started
     )
 
-    out["student_training_type"] = artifact.get(
-        "training_type",
-        "PRETRAINED",
+    logger.info(
+        "Student model prediction | "
+        "rows=%d | %.4f seconds",
+        len(out),
+        elapsed,
     )
 
-    out["student_feature_set"] = ",".join(
-        feature_columns
-    )
+    return_columns = {
+        "student_fault_label": pred,
+        "student_fault_group": [
+            unify_fault(
+                value
+            )
+            for value in pred
+        ],
+        "student_fault_confidence": confidence,
+        "student_model_name": artifact.get(
+            "model_name",
+            "UNKNOWN",
+        ),
+        "student_training_type": artifact.get(
+            "training_type",
+            "PRETRAINED",
+        ),
+        "student_feature_set": ",".join(
+            feature_columns
+        ),
+    }
+
+    for column, values in (
+        return_columns.items()
+    ):
+        out[column] = values
 
     return out
 
 
-# ---------------------------------------------------------------------------
-# Traditional + weak + student fusion
-# ---------------------------------------------------------------------------
+# ============================================================================
+# FUSION
+# ============================================================================
 
-def _combine_consensus_and_student(df):
+def _combine_consensus_and_student(
+    df,
+):
     out = df.copy()
 
     weak_fine = (
-        _normalize_series(out["weak_fine_fault"])
-        if "weak_fine_fault" in out.columns
+        _normalize_series(
+            out["weak_fine_fault"]
+        )
+        if "weak_fine_fault"
+        in out.columns
         else pd.Series(
             "ABSTAIN",
             index=out.index,
@@ -655,8 +1091,11 @@ def _combine_consensus_and_student(df):
     )
 
     traditional = (
-        _normalize_series(out["consensus_fault"])
-        if "consensus_fault" in out.columns
+        _normalize_series(
+            out["consensus_fault"]
+        )
+        if "consensus_fault"
+        in out.columns
         else pd.Series(
             "ABSTAIN",
             index=out.index,
@@ -664,17 +1103,28 @@ def _combine_consensus_and_student(df):
     )
 
     student = (
-        _normalize_series(out["student_fault_label"])
-        if "student_fault_label" in out.columns
+        _normalize_series(
+            out["student_fault_label"]
+        )
+        if "student_fault_label"
+        in out.columns
         else pd.Series(
             "ABSTAIN",
             index=out.index,
         )
     )
 
-    weak_active = weak_fine != "ABSTAIN"
-    traditional_active = traditional != "ABSTAIN"
-    student_active = student != "ABSTAIN"
+    weak_active = (
+        weak_fine != "ABSTAIN"
+    )
+
+    traditional_active = (
+        traditional != "ABSTAIN"
+    )
+
+    student_active = (
+        student != "ABSTAIN"
+    )
 
     final_fine = weak_fine.copy()
 
@@ -695,61 +1145,95 @@ def _combine_consensus_and_student(df):
         & student_active
     )
 
-    final_fine.loc[use_traditional] = (
-        traditional.loc[use_traditional]
-    )
+    final_fine.loc[
+        use_traditional
+    ] = traditional.loc[
+        use_traditional
+    ]
 
-    final_fine.loc[use_student] = (
-        student.loc[use_student]
-    )
+    final_fine.loc[
+        use_student
+    ] = student.loc[
+        use_student
+    ]
 
-    source.loc[weak_active] = (
-        "weak_fine_label_model"
-    )
+    source.loc[
+        weak_active
+    ] = "weak_fine_label_model"
 
-    source.loc[use_traditional] = (
+    source.loc[
+        use_traditional
+    ] = (
         "traditional_consensus_after_weak_abstain"
     )
 
-    source.loc[use_student] = (
-        "student_last_resort"
+    source.loc[
+        use_student
+    ] = "student_last_resort"
+
+    weak_group = weak_fine.map(
+        unify_fault
     )
 
-    weak_group = weak_fine.map(unify_fault)
-    traditional_group = traditional.map(unify_fault)
-    student_group = student.map(unify_fault)
+    traditional_group = (
+        traditional.map(
+            unify_fault
+        )
+    )
+
+    student_group = (
+        student.map(
+            unify_fault
+        )
+    )
 
     physical_conflict = (
         weak_active
         & traditional_active
-        & (weak_group != traditional_group)
+        & (
+            weak_group
+            != traditional_group
+        )
     )
 
     same_group_different_fine = (
         weak_active
         & traditional_active
         & ~physical_conflict
-        & (weak_fine != traditional)
+        & (
+            weak_fine
+            != traditional
+        )
     )
 
-    out["final_fault"] = final_fine
+    out[
+        "final_fault"
+    ] = final_fine
 
-    out["final_fault_group"] = (
+    out[
+        "final_fault_group"
+    ] = (
         final_fine
         .map(unify_fault)
         .fillna("ABSTAIN")
         .astype(str)
     )
 
-    out["final_fault_source"] = source
+    out[
+        "final_fault_source"
+    ] = source
 
-    out["final_fault_conflict"] = physical_conflict
+    out[
+        "final_fault_conflict"
+    ] = physical_conflict
 
-    out["final_fault_same_coarse_different_fine"] = (
-        same_group_different_fine
-    )
+    out[
+        "final_fault_same_coarse_different_fine"
+    ] = same_group_different_fine
 
-    out["final_fault_conflict_level"] = np.select(
+    out[
+        "final_fault_conflict_level"
+    ] = np.select(
         [
             physical_conflict,
             same_group_different_fine,
@@ -767,37 +1251,45 @@ def _combine_consensus_and_student(df):
         default="ABSTAIN",
     )
 
-    out["student_used_as_fallback"] = use_student
+    out[
+        "student_used_as_fallback"
+    ] = use_student
 
-    out["final_fault_is_weak_supervision"] = (
-        weak_active
-    )
+    out[
+        "final_fault_is_weak_supervision"
+    ] = weak_active
 
-    out["student_vs_traditional_coarse_agreement"] = (
+    out[
+        "student_vs_traditional_coarse_agreement"
+    ] = (
         traditional_active
         & student_active
-        & traditional_group.eq(student_group)
-    )
-
-    out["fault_criticality_class"] = (
-        final_fine.map(
-            classify_fault_criticality
+        & traditional_group.eq(
+            student_group
         )
     )
 
-    out["fault_criticality_source"] = (
-        fault_criticality_source()
+    out[
+        "fault_criticality_class"
+    ] = final_fine.map(
+        classify_fault_criticality
     )
+
+    out[
+        "fault_criticality_source"
+    ] = fault_criticality_source()
 
     return out
 
 
-# ---------------------------------------------------------------------------
-# Anomaly model
-# ---------------------------------------------------------------------------
+# ============================================================================
+# ANOMALY MODEL
+# ============================================================================
 
 def _load_anomaly_model():
-    from anomaly import UnsupervisedEnsemble
+    from anomaly import (
+        UnsupervisedEnsemble,
+    )
 
     artifact = _load_joblib_artifact(
         ANOMALY_MODEL_PATH,
@@ -809,8 +1301,9 @@ def _load_anomaly_model():
         UnsupervisedEnsemble,
     ):
         raise ValueError(
-            f"Anomaly artifact is not a valid "
-            f"UnsupervisedEnsemble: {ANOMALY_MODEL_PATH}"
+            "Anomaly artifact is not a valid "
+            f"UnsupervisedEnsemble: "
+            f"{ANOMALY_MODEL_PATH}"
         )
 
     return artifact
@@ -835,7 +1328,10 @@ def _predict_anomaly(
             errors="coerce",
         )
         .replace(
-            [np.inf, -np.inf],
+            [
+                np.inf,
+                -np.inf,
+            ],
             np.nan,
         )
         .fillna(0.0)
@@ -844,12 +1340,23 @@ def _predict_anomaly(
         )
     )
 
-    try:
-        scores = model.predict(X)
-    except Exception as exc:
-        raise RuntimeError(
-            f"Production anomaly model prediction failed: {exc}"
-        ) from exc
+    started = time.perf_counter()
+
+    scores = model.predict(
+        X
+    )
+
+    elapsed = (
+        time.perf_counter()
+        - started
+    )
+
+    logger.info(
+        "Anomaly model prediction | "
+        "rows=%d | %.4f seconds",
+        len(df),
+        elapsed,
+    )
 
     return np.asarray(
         scores,
@@ -857,11 +1364,13 @@ def _predict_anomaly(
     )
 
 
-# ---------------------------------------------------------------------------
-# Student vs traditional comparison
-# ---------------------------------------------------------------------------
+# ============================================================================
+# STUDENT/TRADITIONAL COMPARISON
+# ============================================================================
 
-def _build_student_comparison(df):
+def _build_student_comparison(
+    df,
+):
     required = {
         "transformer_id",
         "student_fault_label",
@@ -875,27 +1384,39 @@ def _build_student_comparison(df):
 
     work = df.copy()
 
-    work["_consensus_fine"] = (
-        _normalize_series(
-            work["consensus_fault"]
-        )
+    work[
+        "_consensus_fine"
+    ] = _normalize_series(
+        work[
+            "consensus_fault"
+        ]
     )
 
-    work["_student_fine"] = (
-        _normalize_series(
-            work["student_fault_label"]
-        )
+    work[
+        "_student_fine"
+    ] = _normalize_series(
+        work[
+            "student_fault_label"
+        ]
     )
 
-    work["_consensus_group"] = (
-        work["_consensus_fine"]
+    work[
+        "_consensus_group"
+    ] = (
+        work[
+            "_consensus_fine"
+        ]
         .map(unify_fault)
         .fillna("ABSTAIN")
         .astype(str)
     )
 
-    work["_student_group"] = (
-        work["_student_fine"]
+    work[
+        "_student_group"
+    ] = (
+        work[
+            "_student_fine"
+        ]
         .map(unify_fault)
         .fillna("ABSTAIN")
         .astype(str)
@@ -903,13 +1424,25 @@ def _build_student_comparison(df):
 
     rows = []
 
-    for transformer_id, group in work.groupby(
-        "transformer_id",
-        sort=False,
+    for transformer_id, group in (
+        work.groupby(
+            "transformer_id",
+            sort=False,
+        )
     ):
         joint = (
-            (group["_consensus_group"] != "ABSTAIN")
-            & (group["_student_group"] != "ABSTAIN")
+            (
+                group[
+                    "_consensus_group"
+                ]
+                != "ABSTAIN"
+            )
+            & (
+                group[
+                    "_student_group"
+                ]
+                != "ABSTAIN"
+            )
         )
 
         n_joint = int(
@@ -953,30 +1486,44 @@ def _build_student_comparison(df):
         rows.append(
             {
                 "transformer_id": transformer_id,
-                "n_samples": int(len(group)),
+                "n_samples": int(
+                    len(group)
+                ),
                 "n_joint_active": n_joint,
-                "coarse_agreement_rate": coarse_agreement,
-                "fine_agreement_rate": fine_agreement,
+                "coarse_agreement_rate": (
+                    coarse_agreement
+                ),
+                "fine_agreement_rate": (
+                    fine_agreement
+                ),
                 "traditional_abstain_count": int(
                     (
-                        group["_consensus_fine"]
+                        group[
+                            "_consensus_fine"
+                        ]
                         == "ABSTAIN"
                     ).sum()
                 ),
                 "student_abstain_count": int(
                     (
-                        group["_student_fine"]
+                        group[
+                            "_student_fine"
+                        ]
                         == "ABSTAIN"
                     ).sum()
                 ),
                 "student_used_as_fallback_count": int(
                     (
                         (
-                            group["_consensus_fine"]
+                            group[
+                                "_consensus_fine"
+                            ]
                             == "ABSTAIN"
                         )
                         & (
-                            group["_student_fine"]
+                            group[
+                                "_student_fine"
+                            ]
                             != "ABSTAIN"
                         )
                     ).sum()
@@ -985,26 +1532,33 @@ def _build_student_comparison(df):
                     (
                         joint
                         & (
-                            group["_consensus_group"]
-                            != group["_student_group"]
+                            group[
+                                "_consensus_group"
+                            ]
+                            != group[
+                                "_student_group"
+                            ]
                         )
                     ).sum()
                 ),
             }
         )
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        rows
+    )
 
 
-# ---------------------------------------------------------------------------
-# Metadata
-# ---------------------------------------------------------------------------
+# ============================================================================
+# METADATA
+# ============================================================================
 
 def _write_inference_metadata(
     df,
     artifact,
     weak_metadata,
     elapsed_seconds,
+    timings: dict[str, float] | None = None,
 ):
     metadata = {
         "pipeline_type": (
@@ -1013,9 +1567,22 @@ def _write_inference_metadata(
         "runtime_training": False,
         "runtime_research_benchmark": False,
         "runtime_excel_generation": False,
-        "n_rows": int(len(df)),
+        "model_cache_enabled": (
+            MODEL_CACHE_ENABLED
+        ),
+        "persist_outputs": (
+            PERSIST_OUTPUTS
+        ),
+        "save_database": (
+            SAVE_DATABASE
+        ),
+        "n_rows": int(
+            len(df)
+        ),
         "n_transformers": int(
-            df["transformer_id"].nunique()
+            df[
+                "transformer_id"
+            ].nunique()
         ),
         "diagnostic_methods": list(
             cfg.DIAGNOSTIC_METHODS
@@ -1029,7 +1596,9 @@ def _write_inference_metadata(
         "severity_uses_manual_weights": False,
         "severity_uses_nei": False,
         "severity_uses_anomaly": False,
-        "severity_type": "IEEE_ORDINAL_STATUS",
+        "severity_type": (
+            "IEEE_ORDINAL_STATUS"
+        ),
         "ranking_policy": list(
             cfg.RANKING_POLICY
         ),
@@ -1043,25 +1612,37 @@ def _write_inference_metadata(
         "maintenance_priority_extension": (
             "NONE; IEEE_STATUS_1_2_3_ONLY"
         ),
-        "critical_rule": "NOT_USED",
-        "critical_reference": cfg.CRITICAL_REFERENCE,
+        "critical_rule": (
+            "NOT_USED"
+        ),
+        "critical_reference": (
+            cfg.CRITICAL_REFERENCE
+        ),
         "fault_criticality_source": (
             fault_criticality_source()
         ),
-        "student_model_name": artifact.get(
-            "model_name",
-            "UNKNOWN",
+        "student_model_name": (
+            artifact.get(
+                "model_name",
+                "UNKNOWN",
+            )
         ),
-        "student_training_type": artifact.get(
-            "training_type",
-            "PRETRAINED",
+        "student_training_type": (
+            artifact.get(
+                "training_type",
+                "PRETRAINED",
+            )
         ),
-        "student_features": artifact.get(
-            "feature_cols",
-            cfg.COMMON_BENCHMARK_GASES,
+        "student_features": (
+            artifact.get(
+                "feature_cols",
+                cfg.COMMON_BENCHMARK_GASES,
+            )
         ),
         "weak_supervision_backend": (
-            weak_metadata.get("backend")
+            weak_metadata.get(
+                "backend"
+            )
             if isinstance(
                 weak_metadata,
                 dict,
@@ -1069,7 +1650,9 @@ def _write_inference_metadata(
             else None
         ),
         "weak_supervision_granularity": (
-            weak_metadata.get("granularity")
+            weak_metadata.get(
+                "granularity"
+            )
             if isinstance(
                 weak_metadata,
                 dict,
@@ -1078,6 +1661,9 @@ def _write_inference_metadata(
         ),
         "processing_seconds": float(
             elapsed_seconds
+        ),
+        "timings": (
+            timings or {}
         ),
     }
 
@@ -1097,27 +1683,36 @@ def _write_inference_metadata(
     )
 
 
-# ---------------------------------------------------------------------------
-# Payload creation
-# ---------------------------------------------------------------------------
+# ============================================================================
+# PAYLOAD CREATION
+# ============================================================================
 
 def create_payload(
     df,
     ranking_df,
     comparison_df=None,
 ):
+    """
+    Preserve the current DgaPayload contract.
+
+    This function is intentionally kept separate from the computational
+    inference stages so its runtime can be measured independently.
+    """
+
     rows = []
 
-    ordered = df.sort_values(
-        [
-            "transformer_id",
-            "sample_day",
-        ],
-        ascending=[
-            True,
-            False,
-        ],
-        kind="mergesort",
+    ordered = (
+        df.sort_values(
+            [
+                "transformer_id",
+                "sample_day",
+            ],
+            ascending=[
+                True,
+                False,
+            ],
+            kind="mergesort",
+        )
     )
 
     export_fields = [
@@ -1225,11 +1820,19 @@ def create_payload(
     ]
 
     ranking_lookup = {
-        str(r.get("transformer_id")): r
+        str(
+            r.get(
+                "transformer_id"
+            )
+        ): r
         for _, r in ranking_df.iterrows()
     }
 
     predictions = []
+
+    # ------------------------------------------------------------------------
+    # Per-row prediction payload
+    # ------------------------------------------------------------------------
 
     for idx, row in ordered.iterrows():
         status = _safe_int(
@@ -1239,25 +1842,33 @@ def create_payload(
             )
         )
 
-        severity_label = _ui_severity_label(
-            row.get(
-                "severity_label_text",
-                "INSUFFICIENT_DATA",
+        severity_label = (
+            _ui_severity_label(
+                row.get(
+                    "severity_label_text",
+                    "INSUFFICIENT_DATA",
+                )
             )
         )
 
-        rank_info = ranking_lookup.get(
-            str(
-                row.get(
-                    "transformer_id"
-                )
-            ),
-            {},
+        transformer_id = row.get(
+            "transformer_id"
         )
 
-        current_priority = rank_info.get(
-            "maintenance_priority",
-            "DATA_REVIEW",
+        rank_info = (
+            ranking_lookup.get(
+                str(
+                    transformer_id
+                ),
+                {},
+            )
+        )
+
+        current_priority = (
+            rank_info.get(
+                "maintenance_priority",
+                "DATA_REVIEW",
+            )
         )
 
         current_critical = bool(
@@ -1267,9 +1878,11 @@ def create_payload(
             )
         )
 
-        current_priority_reason = rank_info.get(
-            "maintenance_priority_reason",
-            "",
+        current_priority_reason = (
+            rank_info.get(
+                "maintenance_priority_reason",
+                "",
+            )
         )
 
         critical_ratio = _safe_float(
@@ -1297,15 +1910,19 @@ def create_payload(
 
         predictions.append(
             {
-                "row_index": int(idx),
-                "transformer_id": row.get(
-                    "transformer_id"
+                "row_index": int(
+                    idx
                 ),
+                "transformer_id": transformer_id,
                 "pred_ensemble": status,
                 "ieee_status": status,
                 "ieee_status_label": severity_label,
-                "status": _ui_status(status),
-                "severity": _ui_status(status),
+                "status": _ui_status(
+                    status
+                ),
+                "severity": _ui_status(
+                    status
+                ),
                 "severity_label": severity_label,
                 "maintenance_priority": current_priority,
                 "critical_front": current_critical,
@@ -1323,8 +1940,10 @@ def create_payload(
                 ),
                 "fault_type": fault_type,
                 "fault_group": fault_group,
-                "fault_criticality_class": classify_fault_criticality(
-                    fault_type
+                "fault_criticality_class": (
+                    classify_fault_criticality(
+                        fault_type
+                    )
                 ),
                 "fault_source": row.get(
                     "final_fault_source",
@@ -1378,6 +1997,10 @@ def create_payload(
                 if key in row.index
             }
         )
+
+    # ------------------------------------------------------------------------
+    # Transformer summary
+    # ------------------------------------------------------------------------
 
     transformer_summary = []
 
@@ -1506,8 +2129,12 @@ def create_payload(
                         status,
                     )
                 ),
-                "status": _ui_status(status),
-                "severity": _ui_status(status),
+                "status": _ui_status(
+                    status
+                ),
+                "severity": _ui_status(
+                    status
+                ),
                 "severity_label": _ui_severity_label(
                     rank_row.get(
                         "transformer_overall_severity_label",
@@ -1655,41 +2282,55 @@ def create_payload(
             }
         )
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
     # Time series
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
 
     timeseries = {}
 
     critical_lookup = (
         {
-            str(r.get("transformer_id")): r
+            str(
+                r.get(
+                    "transformer_id"
+                )
+            ): r
             for _, r in ranking_df.iterrows()
         }
-        if ranking_df is not None
-        and not ranking_df.empty
+        if (
+            ranking_df is not None
+            and not ranking_df.empty
+        )
         else {}
     )
 
-    for transformer_id, group in ordered.groupby(
-        "transformer_id",
-        sort=False,
+    for transformer_id, group in (
+        ordered.groupby(
+            "transformer_id",
+            sort=False,
+        )
     ):
         series = []
 
-        group_sorted = group.sort_values(
-            "sample_day"
+        group_sorted = (
+            group.sort_values(
+                "sample_day"
+            )
         )
 
         latest_index = (
             group_sorted.index[-1]
-            if len(group_sorted)
+            if len(
+                group_sorted
+            )
             else None
         )
 
-        rank_info = critical_lookup.get(
-            str(transformer_id),
-            {},
+        rank_info = (
+            critical_lookup.get(
+                str(transformer_id),
+                {},
+            )
         )
 
         transformer_is_critical = bool(
@@ -1699,7 +2340,9 @@ def create_payload(
             )
         )
 
-        for row_index, row in group_sorted.iterrows():
+        for row_index, row in (
+            group_sorted.iterrows()
+        ):
             status = _safe_int(
                 row.get(
                     "ieee_dga_status",
@@ -1709,7 +2352,8 @@ def create_payload(
 
             critical_front = bool(
                 transformer_is_critical
-                and row_index == latest_index
+                and row_index
+                == latest_index
                 and status == 3
             )
 
@@ -1759,7 +2403,9 @@ def create_payload(
             series.append(
                 {
                     "Sample Day": str(
-                        row["sample_day"]
+                        row[
+                            "sample_day"
+                        ]
                     ),
                     "H2": _safe_float(
                         row.get(
@@ -1791,7 +2437,9 @@ def create_payload(
                         "ieee_dga_status_label",
                         "INSUFFICIENT_DATA",
                     ),
-                    "status": _ui_status(status),
+                    "status": _ui_status(
+                        status
+                    ),
                     "fault_type": fault,
                     "fault_group": row.get(
                         "final_fault_group",
@@ -1800,8 +2448,10 @@ def create_payload(
                             "ABSTAIN",
                         ),
                     ),
-                    "fault_criticality_class": classify_fault_criticality(
-                        fault
+                    "fault_criticality_class": (
+                        classify_fault_criticality(
+                            fault
+                        )
                     ),
                     "severity": row.get(
                         "severity_label_text",
@@ -1816,9 +2466,9 @@ def create_payload(
                     ),
                     "continuous_evidence_is_score": False,
                     "continuous_evidence_reference": (
-                        "IEEE threshold ratio; per-sample "
-                        "diagnostic evidence, not a weighted "
-                        "severity score"
+                        "IEEE threshold ratio; "
+                        "per-sample diagnostic evidence, "
+                        "not a weighted severity score"
                     ),
                     "table2_concentration_ratio": concentration_ratio,
                     "table3_delta_ratio": delta_ratio,
@@ -1832,11 +2482,13 @@ def create_payload(
                 }
             )
 
-        timeseries[str(transformer_id)] = series
+        timeseries[
+            str(transformer_id)
+        ] = series
 
-    # -----------------------------------------------------------------------
-    # Dataset summary
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------------
 
     status_series = pd.to_numeric(
         df.get(
@@ -1849,43 +2501,45 @@ def create_payload(
         errors="coerce",
     ).fillna(0)
 
-    priority_counts = (
-        ranking_df[
-            "transformer_overall_severity_label"
-        ]
-        .value_counts()
-        .reindex(
-            [
-                "STATUS_3",
-                "STATUS_2",
-                "STATUS_1",
-                "INSUFFICIENT_DATA",
+    if (
+        ranking_df is not None
+        and "transformer_overall_severity_label"
+        in ranking_df.columns
+    ):
+        priority_counts = (
+            ranking_df[
+                "transformer_overall_severity_label"
             ]
+            .value_counts()
+            .reindex(
+                [
+                    "STATUS_3",
+                    "STATUS_2",
+                    "STATUS_1",
+                    "INSUFFICIENT_DATA",
+                ]
+            )
+            .fillna(0)
+            .astype(int)
+            .to_dict()
         )
-        .fillna(0)
-        .astype(int)
-        .to_dict()
-        if (
-            ranking_df is not None
-            and "transformer_overall_severity_label"
-            in ranking_df.columns
-        )
-        else {}
-    )
+    else:
+        priority_counts = {}
 
-    fault_context_counts = (
-        ranking_df[
-            "fault_criticality_class"
-        ]
-        .value_counts()
-        .to_dict()
-        if (
-            ranking_df is not None
-            and "fault_criticality_class"
-            in ranking_df.columns
+    if (
+        ranking_df is not None
+        and "fault_criticality_class"
+        in ranking_df.columns
+    ):
+        fault_context_counts = (
+            ranking_df[
+                "fault_criticality_class"
+            ]
+            .value_counts()
+            .to_dict()
         )
-        else {}
-    )
+    else:
+        fault_context_counts = {}
 
     top_queue = []
 
@@ -1893,7 +2547,11 @@ def create_payload(
         ranking_df is not None
         and not ranking_df.empty
     ):
-        for _, r in ranking_df.head(20).iterrows():
+        for _, r in (
+            ranking_df
+            .head(20)
+            .iterrows()
+        ):
             top_queue.append(
                 {
                     "rank": _safe_int(
@@ -1974,22 +2632,40 @@ def create_payload(
 
     dataset_summary = {
         "total_transformers": int(
-            df["transformer_id"].nunique()
+            df[
+                "transformer_id"
+            ].nunique()
         ),
-        "total_rows": int(len(df)),
+        "total_rows": int(
+            len(df)
+        ),
         "severity_status_1": int(
-            (status_series == 1).sum()
+            (
+                status_series
+                == 1
+            ).sum()
         ),
         "severity_status_2": int(
-            (status_series == 2).sum()
+            (
+                status_series
+                == 2
+            ).sum()
         ),
         "severity_status_3": int(
-            (status_series == 3).sum()
+            (
+                status_series
+                == 3
+            ).sum()
         ),
         "severity_insufficient_data": int(
-            (status_series == 0).sum()
+            (
+                status_series
+                == 0
+            ).sum()
         ),
-        "maintenance_priority_counts": priority_counts,
+        "maintenance_priority_counts": (
+            priority_counts
+        ),
         "high_risk_transformer_count": int(
             priority_counts.get(
                 "STATUS_3",
@@ -2009,16 +2685,22 @@ def create_payload(
             )
         ),
         "first_priority_transformer_id": (
-            top_queue[0]["transformer_id"]
+            top_queue[0][
+                "transformer_id"
+            ]
             if top_queue
             else None
         ),
         "first_priority_rank": (
-            top_queue[0]["rank"]
+            top_queue[0][
+                "rank"
+            ]
             if top_queue
             else None
         ),
-        "maintenance_queue_top20": top_queue,
+        "maintenance_queue_top20": (
+            top_queue
+        ),
         "critical_rule": "NOT_USED",
         "critical_reference": (
             "No additional Status-4 severity class is used."
@@ -2079,15 +2761,19 @@ def create_payload(
             )
         ),
         "chat_context_payload": {
-            "transformer_summary": transformer_summary,
-            "dataset_summary": dataset_summary,
+            "transformer_summary": (
+                transformer_summary
+            ),
+            "dataset_summary": (
+                dataset_summary
+            ),
         },
     }
 
 
-# ---------------------------------------------------------------------------
-# Production inference
-# ---------------------------------------------------------------------------
+# ============================================================================
+# PRODUCTION INFERENCE
+# ============================================================================
 
 def process_dataframe(
     uploaded_df: pd.DataFrame,
@@ -2095,19 +2781,24 @@ def process_dataframe(
     """
     Production inference only.
 
-    This function MUST NOT:
-      - train weak-label models
-      - train student models
-      - train anomaly models
-      - run labeled benchmarks
-      - run supervised ML comparison
-      - run weak-transfer benchmarks
-      - run hybrid research benchmarks
-      - generate the research Excel report
-
-    All those operations belong in a separate offline/research pipeline.
+    There is deliberately NO:
+      - model training
+      - weak-supervision fitting
+      - student training
+      - anomaly fitting
+      - supervised benchmark
+      - traditional benchmark
+      - weak-transfer benchmark
+      - hybrid benchmark
+      - Excel research report generation
     """
-    start = time.time()
+
+    overall_started = time.perf_counter()
+
+    timings: dict[
+        str,
+        float,
+    ] = {}
 
     tmp_dir = Path(
         tempfile.mkdtemp(
@@ -2127,38 +2818,41 @@ def process_dataframe(
 
     try:
         logger.info(
-            "\n\n%s\n%s\n%s\n%s",
+            "\n%s\n"
+            "# PRODUCTION DGA INFERENCE START\n"
+            "# uploaded rows=%d\n"
+            "%s",
             "#" * 110,
-            "# PRODUCTION DGA INFERENCE START",
-            f"# uploaded rows={len(uploaded_df)}",
+            len(uploaded_df),
             "#" * 110,
         )
 
-        # ------------------------------------------------------------------
-        # 1. Convert uploaded dataframe to temporary Excel file.
-        #
-        # clean_dataset() already expects the existing input format.
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------------
+        # 1. Temporary input
+        # --------------------------------------------------------------------
 
         input_path = (
-            tmp_dir / "uploaded_input.xlsx"
+            tmp_dir
+            / "uploaded_input.xlsx"
         )
 
-        uploaded_df.to_excel(
+        _timed_call(
+            "write_temporary_excel",
+            timings,
+            uploaded_df.to_excel,
             input_path,
             index=False,
             engine="openpyxl",
         )
 
-        # ------------------------------------------------------------------
-        # 2. Cleaning
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------------
+        # 2. Clean
+        # --------------------------------------------------------------------
 
-        logger.info(
-            "PIPELINE: Cleaning dataset"
-        )
-
-        df_clean, _ = clean_dataset(
+        df_clean, _ = _timed_call(
+            "clean_dataset",
+            timings,
+            clean_dataset,
             input_file=input_path,
             output_dir=PROCESSED_DIR,
         )
@@ -2169,26 +2863,31 @@ def process_dataframe(
             )
 
         logger.info(
-            "Cleaning complete | rows=%d | transformers=%d | columns=%d",
+            "Cleaning complete | "
+            "rows=%d | transformers=%d | columns=%d",
             len(df_clean),
             (
-                df_clean["transformer_id"].nunique()
-                if "transformer_id" in df_clean.columns
+                df_clean[
+                    "transformer_id"
+                ].nunique()
+                if "transformer_id"
+                in df_clean.columns
                 else 0
             ),
-            len(df_clean.columns),
+            len(
+                df_clean.columns
+            ),
         )
 
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------------
         # 3. Feature engineering
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------------
 
-        logger.info(
-            "PIPELINE: Building DGA features"
-        )
-
-        df_features = build_training_features_from_clean(
-            df_clean
+        df_features = _timed_call(
+            "feature_engineering",
+            timings,
+            build_training_features_from_clean,
+            df_clean,
         )
 
         if df_features.empty:
@@ -2197,24 +2896,27 @@ def process_dataframe(
             )
 
         logger.info(
-            "Feature engineering complete | rows=%d | columns=%d",
+            "Feature engineering complete | "
+            "rows=%d | columns=%d",
             len(df_features),
             len(df_features.columns),
         )
 
-        # ------------------------------------------------------------------
-        # 4. Traditional diagnostics + consensus
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------------
+        # 4. Traditional diagnostics
+        # --------------------------------------------------------------------
 
-        logger.info(
-            "PIPELINE: Traditional diagnostics + consensus"
+        df_labeled = _timed_call(
+            "traditional_consensus",
+            timings,
+            apply_consensus,
+            df_features,
         )
 
-        df_labeled = apply_consensus(
-            df_features
-        )
-
-        if "consensus_fault" in df_labeled.columns:
+        if (
+            "consensus_fault"
+            in df_labeled.columns
+        ):
             logger.info(
                 "Traditional consensus distribution | %s",
                 df_labeled[
@@ -2224,67 +2926,68 @@ def process_dataframe(
                 ).to_dict(),
             )
 
-        # ------------------------------------------------------------------
-        # 5. Apply PRE-TRAINED weak-label models
-        # ------------------------------------------------------------------
-
-        logger.info(
-            "PIPELINE: Loading pre-trained weak-label models"
-        )
+        # --------------------------------------------------------------------
+        # 5. Weak models
+        # --------------------------------------------------------------------
 
         df_labeled, weak_metadata = (
-            _apply_pretrained_weak_models(
-                df_labeled
+            _timed_call(
+                "pretrained_weak_models",
+                timings,
+                _apply_pretrained_weak_models,
+                df_labeled,
             )
         )
 
-        # ------------------------------------------------------------------
-        # 6. Apply PRE-TRAINED production student model
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------------
+        # 6. Student model
+        # --------------------------------------------------------------------
 
-        logger.info(
-            "PIPELINE: Loading pre-trained student model"
+        artifact = _timed_call(
+            "load_student_model",
+            timings,
+            _load_student_model,
         )
 
-        artifact = _load_student_model()
-
-        df_labeled = _apply_student(
+        df_labeled = _timed_call(
+            "student_prediction",
+            timings,
+            _apply_student,
             df_labeled,
             artifact,
         )
 
-        # ------------------------------------------------------------------
-        # 7. Combine traditional + weak + student evidence
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------------
+        # 7. Fusion
+        # --------------------------------------------------------------------
 
-        logger.info(
-            "PIPELINE: Combining traditional + weak + student evidence"
+        df_labeled = _timed_call(
+            "evidence_fusion",
+            timings,
+            _combine_consensus_and_student,
+            df_labeled,
         )
 
-        df_labeled = _combine_consensus_and_student(
-            df_labeled
+        # --------------------------------------------------------------------
+        # 8. Student comparison
+        # --------------------------------------------------------------------
+
+        comparison_df = _timed_call(
+            "student_comparison",
+            timings,
+            _build_student_comparison,
+            df_labeled,
         )
 
-        comparison_df = _build_student_comparison(
-            df_labeled
-        )
+        # --------------------------------------------------------------------
+        # 9. Anomaly model
+        # --------------------------------------------------------------------
 
-        if not comparison_df.empty:
-            _save_csv(
-                comparison_df,
-                STUDENT_COMPARISON_PATH,
-            )
-
-        # ------------------------------------------------------------------
-        # 8. Apply PRE-TRAINED anomaly model
-        # ------------------------------------------------------------------
-
-        logger.info(
-            "PIPELINE: Applying pre-trained anomaly model"
-        )
-
-        anomaly_scores = _predict_anomaly(
-            df_labeled
+        anomaly_scores = _timed_call(
+            "anomaly_prediction",
+            timings,
+            _predict_anomaly,
+            df_labeled,
         )
 
         df_labeled[
@@ -2302,23 +3005,37 @@ def process_dataframe(
             "not IEEE severity or maintenance rank input."
         )
 
-        if len(anomaly_scores):
+        if len(
+            anomaly_scores
+        ):
             logger.info(
-                "Anomaly detection complete | min=%.2f | median=%.2f | max=%.2f",
-                float(np.nanmin(anomaly_scores)),
-                float(np.nanmedian(anomaly_scores)),
-                float(np.nanmax(anomaly_scores)),
+                "Anomaly detection complete | "
+                "min=%.2f | median=%.2f | max=%.2f",
+                float(
+                    np.nanmin(
+                        anomaly_scores
+                    )
+                ),
+                float(
+                    np.nanmedian(
+                        anomaly_scores
+                    )
+                ),
+                float(
+                    np.nanmax(
+                        anomaly_scores
+                    )
+                ),
             )
 
-        # ------------------------------------------------------------------
-        # 9. IEEE severity
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------------
+        # 10. IEEE severity
+        # --------------------------------------------------------------------
 
-        logger.info(
-            "PIPELINE: IEEE C57.104-2019 severity"
-        )
-
-        df_labeled = apply_severity(
+        df_labeled = _timed_call(
+            "ieee_severity",
+            timings,
+            apply_severity,
             df_labeled,
             nei_reference=None,
         )
@@ -2352,78 +3069,125 @@ def process_dataframe(
             ).sort_index().to_dict(),
         )
 
-        # ------------------------------------------------------------------
-        # 10. Transformer maintenance ranking
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------------
+        # 11. Ranking
+        # --------------------------------------------------------------------
 
-        logger.info(
-            "PIPELINE: Transformer maintenance ranking"
+        ranking_df = _timed_call(
+            "transformer_ranking",
+            timings,
+            build_transformer_ranking,
+            df_labeled,
         )
 
-        ranking_df = build_transformer_ranking(
-            df_labeled
-        )
-
-        if not ranking_df.empty:
-            log_ranking_diagnostics(
+        if (
+            ENABLE_RANKING_DIAGNOSTICS
+            and not ranking_df.empty
+        ):
+            _timed_call(
+                "ranking_diagnostics",
+                timings,
+                log_ranking_diagnostics,
                 ranking_df,
                 top_n=20,
             )
 
-            _save_parquet(
-                ranking_df,
-                RANKING_PATH,
+        # --------------------------------------------------------------------
+        # 12. Optional operational persistence
+        # --------------------------------------------------------------------
+
+        if PERSIST_OUTPUTS:
+            if not comparison_df.empty:
+                _timed_call(
+                    "save_student_comparison",
+                    timings,
+                    _save_csv,
+                    comparison_df,
+                    STUDENT_COMPARISON_PATH,
+                )
+
+            if not ranking_df.empty:
+                _timed_call(
+                    "save_ranking_parquet",
+                    timings,
+                    _save_parquet,
+                    ranking_df,
+                    RANKING_PATH,
+                )
+
+                _timed_call(
+                    "save_ranking_csv",
+                    timings,
+                    _save_csv,
+                    ranking_df,
+                    REPORT_DIR
+                    / "transformer_ranking.csv",
+                )
+
+            _timed_call(
+                "save_unlabeled_parquet",
+                timings,
+                _save_parquet,
+                df_labeled,
+                UNLABELED_PATH,
             )
 
-            _save_csv(
-                ranking_df,
-                REPORT_DIR
-                / "transformer_ranking.csv",
+            _timed_call(
+                "save_processed_parquet",
+                timings,
+                _save_parquet,
+                df_labeled,
+                PROCESSED_OUTPUT_PATH,
             )
 
-        # ------------------------------------------------------------------
-        # 11. Save operational artifacts
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------------
+        # 13. Create response payload
+        # --------------------------------------------------------------------
 
-        logger.info(
-            "PIPELINE: Saving operational artifacts"
-        )
-
-        _save_parquet(
-            df_labeled,
-            UNLABELED_PATH,
-        )
-
-        _save_parquet(
-            df_labeled,
-            PROCESSED_OUTPUT_PATH,
-        )
-
-        # ------------------------------------------------------------------
-        # 12. Final response
-        # ------------------------------------------------------------------
-
-        elapsed = time.time() - start
-
-        _write_inference_metadata(
-            df_labeled,
-            artifact,
-            weak_metadata,
-            elapsed,
-        )
-
-        payload = create_payload(
+        payload = _timed_call(
+            "create_payload",
+            timings,
+            create_payload,
             df_labeled,
             ranking_df,
             comparison_df,
         )
 
-        payload["pipeline"] = {
+        # --------------------------------------------------------------------
+        # 14. Add pipeline metadata
+        # --------------------------------------------------------------------
+
+        elapsed = (
+            time.perf_counter()
+            - overall_started
+        )
+
+        # Sort timing information by descending duration for easier debugging.
+        timing_by_cost = dict(
+            sorted(
+                timings.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        )
+
+        payload[
+            "pipeline"
+        ] = {
             "status": "completed",
             "mode": "production_inference",
             "runtime_training": False,
             "runtime_research_benchmark": False,
             "runtime_excel_generation": False,
+            "model_cache_enabled": (
+                MODEL_CACHE_ENABLED
+            ),
+            "persist_outputs": (
+                PERSIST_OUTPUTS
+            ),
+            "save_database": (
+                SAVE_DATABASE
+            ),
             "rows": int(
                 len(df_labeled)
             ),
@@ -2435,48 +3199,75 @@ def process_dataframe(
             "elapsed_seconds": float(
                 elapsed
             ),
-            "weak_backend": weak_metadata[
+            "timings": timings,
+            "timings_by_cost": (
+                timing_by_cost
+            ),
+            "slowest_stage": (
+                next(
+                    iter(
+                        timing_by_cost
+                    ),
+                    None,
+                )
+            ),
+            "slowest_stage_seconds": (
+                next(
+                    iter(
+                        timing_by_cost.values()
+                    ),
+                    None,
+                )
+            ),
+            "weak_backend": weak_metadata.get(
                 "backend"
-            ],
+            ),
             "models": {
-                "weak_coarse": (
-                    "pretrained"
+                "weak_coarse": "pretrained",
+                "weak_fine": "pretrained",
+                "student": artifact.get(
+                    "model_name",
+                    "UNKNOWN",
                 ),
-                "weak_fine": (
-                    "pretrained"
-                ),
-                "student": (
-                    artifact.get(
-                        "model_name",
-                        "UNKNOWN",
-                    )
-                ),
-                "anomaly": (
-                    "pretrained"
-                ),
+                "anomaly": "pretrained",
             },
             "research_benchmark": {
-                "status": "precomputed_offline",
+                "status": (
+                    "precomputed_offline"
+                ),
                 "executed_during_request": False,
             },
             "excel": {
-                "status": "precomputed_offline",
+                "status": (
+                    "precomputed_offline"
+                ),
                 "executed_during_request": False,
             },
             "files": {
                 "processed_parquet": str(
                     PROCESSED_OUTPUT_PATH
-                ),
+                )
+                if PERSIST_OUTPUTS
+                else None,
                 "ranking_parquet": str(
                     RANKING_PATH
-                ),
+                )
+                if PERSIST_OUTPUTS
+                else None,
                 "ranking_csv": str(
                     REPORT_DIR
                     / "transformer_ranking.csv"
-                ),
+                )
+                if PERSIST_OUTPUTS
+                else None,
                 "student_comparison": str(
                     STUDENT_COMPARISON_PATH
-                ),
+                )
+                if (
+                    PERSIST_OUTPUTS
+                    and not comparison_df.empty
+                )
+                else None,
                 "weak_coarse_model": str(
                     WEAK_COARSE_MODEL_PATH
                 ),
@@ -2492,62 +3283,164 @@ def process_dataframe(
             },
         }
 
-        # ------------------------------------------------------------------
-        # 13. Save payload
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------------
+        # 15. Metadata file
+        # --------------------------------------------------------------------
 
-        try:
-            from data_store import (
-                save_payload_to_db,
+        if PERSIST_OUTPUTS:
+            _timed_call(
+                "save_inference_metadata",
+                timings,
+                _write_inference_metadata,
+                df_labeled,
+                artifact,
+                weak_metadata,
+                elapsed,
+                timings,
             )
 
-            save_payload_to_db(
-                payload
-            )
+        # --------------------------------------------------------------------
+        # 16. Database
+        # --------------------------------------------------------------------
 
-        except Exception:
-            # Database persistence should not destroy an otherwise valid
-            # inference response.
-            logger.exception(
-                "Failed to save inference payload to database"
-            )
+        if SAVE_DATABASE:
+            try:
+                def _save_database():
+                    from data_store import (
+                        save_payload_to_db,
+                    )
 
-        # ------------------------------------------------------------------
-        # Final logging
-        # ------------------------------------------------------------------
+                    save_payload_to_db(
+                        payload
+                    )
+
+                _timed_call(
+                    "save_database",
+                    timings,
+                    _save_database,
+                )
+
+            except Exception:
+                # Database persistence should not make a valid inference
+                # response fail.
+                logger.exception(
+                    "Failed to save inference payload to database"
+                )
+
+        # --------------------------------------------------------------------
+        # Final timing update
+        # --------------------------------------------------------------------
+
+        final_elapsed = (
+            time.perf_counter()
+            - overall_started
+        )
+
+        payload[
+            "pipeline"
+        ][
+            "elapsed_seconds"
+        ] = float(
+            final_elapsed
+        )
+
+        payload[
+            "pipeline"
+        ][
+            "timings"
+        ] = timings
+
+        timing_by_cost = dict(
+            sorted(
+                timings.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        )
+
+        payload[
+            "pipeline"
+        ][
+            "timings_by_cost"
+        ] = timing_by_cost
+
+        payload[
+            "pipeline"
+        ][
+            "slowest_stage"
+        ] = next(
+            iter(
+                timing_by_cost
+            ),
+            None,
+        )
+
+        payload[
+            "pipeline"
+        ][
+            "slowest_stage_seconds"
+        ] = next(
+            iter(
+                timing_by_cost.values()
+            ),
+            None,
+        )
 
         logger.info(
             "=" * 110
         )
+
         logger.info(
             "PRODUCTION DGA INFERENCE COMPLETED"
         )
+
         logger.info(
             "Rows           : %d",
             len(df_labeled),
         )
+
         logger.info(
             "Transformers   : %d",
             df_labeled[
                 "transformer_id"
             ].nunique(),
         )
+
         logger.info(
-            "Elapsed seconds: %.2f",
-            elapsed,
+            "Elapsed seconds: %.3f",
+            final_elapsed,
         )
+
         logger.info(
-            "Weak backend   : %s",
-            weak_metadata.get(
-                "backend"
+            "Slowest stage  : %s | %.3f seconds",
+            payload[
+                "pipeline"
+            ].get(
+                "slowest_stage"
             ),
+            payload[
+                "pipeline"
+            ].get(
+                "slowest_stage_seconds"
+            )
+            or 0.0,
         )
+
+        for name, seconds in timing_by_cost.items():
+            logger.info(
+                "[TIMING] %-32s %.4f seconds",
+                name,
+                seconds,
+            )
+
         logger.info(
             "Research       : SKIPPED DURING REQUEST"
         )
+
         logger.info(
             "Excel report   : SKIPPED DURING REQUEST"
         )
+
         logger.info(
             "=" * 110
         )
@@ -2567,7 +3460,12 @@ def process_dataframe(
         )
 
 
+# ============================================================================
+# EXPORTS
+# ============================================================================
+
 __all__ = [
     "process_dataframe",
     "create_payload",
+    "clear_model_cache",
 ]
