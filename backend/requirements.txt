@@ -18,6 +18,7 @@ pandas
 pyarrow
 openpyxl
 python-dotenv
+attrs
 
 scikit-learn
 scipy
@@ -26,3 +27,5 @@ attrs
 matplotlib
 catboost
 snorkel
+lightgbm
+xgboost
