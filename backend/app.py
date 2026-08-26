@@ -168,21 +168,70 @@ def auth_logout():
 @auth.require_auth
 def predict():
     try:
-        logger.info("UPLOAD REQUEST RECEIVED | origin=%s | content_type=%s", request.headers.get("Origin"), request.content_type)
-        data = parse_request_data()
-        logger.info("Uploaded dataset | rows=%d | columns=%d", len(data), len(data.columns))
-        if data.empty:
-            return jsonify(error="No data provided."), 400
-        job_id = submit_prediction(data)
-        return jsonify(job_id=job_id, status="queued", poll_url=f"/predict/status/{job_id}", message="Prediction started. Poll the status endpoint for the result."), 202
-    except ValueError as exc:
-        logger.exception("Prediction validation error")
-        return jsonify(error=str(exc), pipeline_status="failed"), 400
-    except Exception as exc:
-        logger.exception("Failed to queue prediction request")
-        return jsonify(error=str(exc), pipeline_status="failed"), 500
+        logger.info(
+            "UPLOAD REQUEST RECEIVED | origin=%s | content_type=%s",
+            request.headers.get("Origin"),
+            request.content_type,
+        )
 
-@app.route("/predict/status/<job_id>", methods=["GET"])
+        data = parse_request_data()
+
+        logger.info(
+            "Uploaded dataset | rows=%d | columns=%d",
+            len(data),
+            len(data.columns),
+        )
+
+        if data.empty:
+            return jsonify(
+                error="No data provided."
+            ), 400
+
+        try:
+            job_id = submit_prediction(data)
+
+        except RuntimeError as exc:
+            logger.warning(
+                "Prediction rejected: %s",
+                exc,
+            )
+
+            return jsonify(
+                error=str(exc),
+                pipeline_status="busy",
+            ), 409
+
+        return jsonify(
+            job_id=job_id,
+            status="running",
+            poll_url=f"/predict/status/{job_id}",
+            message="Prediction started.",
+        ), 202
+
+    except ValueError as exc:
+        logger.exception(
+            "Prediction validation error"
+        )
+
+        return jsonify(
+            error=str(exc),
+            pipeline_status="failed",
+        ), 400
+
+    except Exception as exc:
+        logger.exception(
+            "Failed to start prediction"
+        )
+
+        return jsonify(
+            error=str(exc),
+            pipeline_status="failed",
+        ), 500
+
+@app.route(
+    "/predict/status/<job_id>",
+    methods=["GET"],
+)
 @auth.require_auth
 def prediction_status(job_id: str):
     try:
@@ -190,17 +239,23 @@ def prediction_status(job_id: str):
 
         if job is None:
             return jsonify(
-                error="Prediction job not found or expired.",
                 job_id=job_id,
+                status="not_found",
+                error="Prediction job not found or expired.",
             ), 404
 
-        status = job.get("status", "running")
+        status = job.get(
+            "status",
+            "running",
+        )
 
         if status == "completed":
             return jsonify(
                 job_id=job_id,
                 status="completed",
-                elapsed_seconds=job.get("elapsed_seconds"),
+                elapsed_seconds=job.get(
+                    "elapsed_seconds"
+                ),
                 result=_sanitize_for_json(
                     job.get("result")
                 ),
@@ -214,7 +269,7 @@ def prediction_status(job_id: str):
                     "elapsed_seconds"
                 ),
                 error=job.get("error")
-                or "Prediction worker failed.",
+                or "Prediction failed.",
             ), 200
 
         return jsonify(
@@ -226,7 +281,6 @@ def prediction_status(job_id: str):
             running_seconds=job.get(
                 "running_seconds"
             ),
-            pid=job.get("pid"),
         ), 200
 
     except Exception as exc:
