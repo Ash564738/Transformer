@@ -20,16 +20,27 @@ RUN apt-get update \
         libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Install backend dependencies first for better Docker layer caching.
 COPY backend/requirements.txt ./requirements.txt
 
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt \
     && pip install gunicorn
 
+# Copy backend application.
 COPY backend/ ./
 
+# Render normally injects PORT=10000.
+# This is only a fallback/default.
 ENV PORT=10000
 
 EXPOSE 10000
 
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT} --workers 1 --threads 2 --timeout 120 app:app"]
+# IMPORTANT:
+# The prediction pipeline is CPU/ML intensive and can take more than 120s.
+# Gunicorn's default/previous 120s timeout was likely killing the worker
+# before /predict could return the JSON response.
+#
+# 15 minutes is intentionally chosen here. Render supports substantially
+# longer HTTP requests, so this does not conflict with Render's platform.
+CMD ["sh", "-c", "exec gunicorn app:app --bind 0.0.0.0:${PORT} --workers 1 --threads 2 --timeout 900 --graceful-timeout 900 --keep-alive 75 --worker-tmp-dir /dev/shm"]

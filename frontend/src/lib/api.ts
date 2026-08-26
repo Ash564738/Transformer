@@ -7,16 +7,22 @@ const DEFAULT_PRODUCTION_BACKEND =
 const configuredBackend =
   process.env.NEXT_PUBLIC_BACKEND_URL?.trim();
 
-const BACKEND_PREFIX =
-  (
-    configuredBackend ||
-    (process.env.NODE_ENV === "production"
-      ? DEFAULT_PRODUCTION_BACKEND
-      : "http://127.0.0.1:5000")
-  )
-    .replace(/\/+$/, "");
+const BACKEND_PREFIX = (
+  configuredBackend ||
+  (process.env.NODE_ENV === "production"
+    ? DEFAULT_PRODUCTION_BACKEND
+    : "http://127.0.0.1:5000")
+).replace(/\/+$/, "");
 
 const AUTH_TOKEN_KEY = "dga-auth-token";
+
+/*
+ * Prediction can be a long-running ML request.
+ * Keep the browser-side timeout comfortably above the backend
+ * Gunicorn timeout.
+ */
+const PREDICTION_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 60 * 1000;
 
 export class ApiError extends Error {
   constructor(message: string) {
@@ -30,9 +36,7 @@ export function getAuthToken(): string | null {
     return null;
   }
 
-  return window.localStorage.getItem(
-    AUTH_TOKEN_KEY
-  );
+  return window.localStorage.getItem(AUTH_TOKEN_KEY);
 }
 
 function authHeaders(): Record<string, string> {
@@ -54,9 +58,7 @@ export interface AuthUser {
 async function parseJsonResponse(
   res: Response
 ): Promise<Record<string, unknown>> {
-  const body = await res
-    .json()
-    .catch(() => ({}));
+  const body = await res.json().catch(() => ({}));
 
   if (
     body &&
@@ -69,14 +71,65 @@ async function parseJsonResponse(
   return {};
 }
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+
+  const timer = window.setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (
+      error instanceof DOMException &&
+      error.name === "AbortError"
+    ) {
+      throw new ApiError(
+        `Backend request timed out after ${Math.round(
+          timeoutMs / 1000
+        )} seconds.`
+      );
+    }
+
+    const message =
+      error instanceof Error
+        ? error.message
+        : String(error);
+
+    throw new ApiError(
+      `Backend request failed: ${message}. URL: ${String(input)}`
+    );
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function fetchBackend(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<Response> {
+  return fetchWithTimeout(
+    input,
+    init,
+    DEFAULT_REQUEST_TIMEOUT_MS
+  );
+}
+
 async function handleAuthResponse(
   res: Response
 ): Promise<{
   user: AuthUser;
   token: string;
 }> {
-  const body =
-    await parseJsonResponse(res);
+  const body = await parseJsonResponse(res);
 
   if (!res.ok) {
     const message =
@@ -103,28 +156,13 @@ async function handleAuthResponse(
   };
 }
 
-async function fetchBackend(
-  input: RequestInfo | URL,
-  init?: RequestInit
-): Promise<Response> {
-  try {
-    return await fetch(input, init);
-  } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : String(error);
-
-    throw new ApiError(
-      `Backend request failed: ${message}. URL: ${String(input)}`
-    );
-  }
-}
-
 export async function loginAccount(
   email: string,
   password: string
-) {
+): Promise<{
+  user: AuthUser;
+  token: string;
+}> {
   const res = await fetchBackend(
     `${BACKEND_PREFIX}/auth/login`,
     {
@@ -164,8 +202,7 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
       return null;
     }
 
-    const body =
-      await parseJsonResponse(res);
+    const body = await parseJsonResponse(res);
 
     if (
       !body.user ||
@@ -191,7 +228,7 @@ export async function logoutAccount(): Promise<void> {
       }
     );
   } catch {
-    // Best effort. The client clears its token regardless.
+    // Best effort.
   }
 }
 
@@ -229,10 +266,7 @@ export async function checkBackendHealth(): Promise<boolean> {
 async function handlePredictResponse(
   res: Response
 ): Promise<DgaPayload> {
-  const body =
-    await res
-      .json()
-      .catch(() => null);
+  const body = await res.json().catch(() => null);
 
   if (!res.ok) {
     const message =
@@ -259,18 +293,17 @@ export async function runPredictionFromFile(
 ): Promise<DgaPayload> {
   const form = new FormData();
 
-  form.append(
-    "file",
-    file
-  );
+  form.append("file", file);
 
-  const res = await fetchBackend(
+  const res = await fetchWithTimeout(
     `${BACKEND_PREFIX}/predict`,
     {
       method: "POST",
       headers: authHeaders(),
       body: form,
-    }
+      cache: "no-store",
+    },
+    PREDICTION_TIMEOUT_MS
   );
 
   return handlePredictResponse(res);
@@ -279,36 +312,27 @@ export async function runPredictionFromFile(
 export async function runPredictionFromJson(
   rows: unknown[]
 ): Promise<DgaPayload> {
-  let res: Response;
-
-  try {
-    res = await fetch(
-      `${BACKEND_PREFIX}/predict`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type":
-            "application/json",
-          ...authHeaders(),
-        },
-        body: JSON.stringify({
-          data: rows,
-        }),
-      }
-    );
-  } catch {
-    throw new ApiError(
-      `Cannot reach backend at ${BACKEND_PREFIX}.`
-    );
-  }
+  const res = await fetchWithTimeout(
+    `${BACKEND_PREFIX}/predict`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(),
+      },
+      body: JSON.stringify({
+        data: rows,
+      }),
+      cache: "no-store",
+    },
+    PREDICTION_TIMEOUT_MS
+  );
 
   return handlePredictResponse(res);
 }
 
 export interface ChatHistoryTurn {
-  role:
-    | "user"
-    | "assistant";
+  role: "user" | "assistant";
   content: string;
 }
 
@@ -317,34 +341,25 @@ export async function askChatBackend(
   context: unknown,
   history?: ChatHistoryTurn[]
 ): Promise<string> {
-  let res: Response;
-
-  try {
-    res = await fetch(
-      `${BACKEND_PREFIX}/chat`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type":
-            "application/json",
-          ...authHeaders(),
-        },
-        body: JSON.stringify({
-          question,
-          context,
-          history,
-        }),
-      }
-    );
-  } catch {
-    throw new ApiError(
-      `Cannot reach backend at ${BACKEND_PREFIX}.`
-    );
-  }
+  const res = await fetchBackend(
+    `${BACKEND_PREFIX}/chat`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(),
+      },
+      body: JSON.stringify({
+        question,
+        context,
+        history,
+      }),
+      cache: "no-store",
+    }
+  );
 
   if (!res.ok) {
-    const body =
-      await parseJsonResponse(res);
+    const body = await parseJsonResponse(res);
 
     const message =
       typeof body.error === "string"
@@ -354,8 +369,7 @@ export async function askChatBackend(
     throw new ApiError(message);
   }
 
-  const body =
-    await parseJsonResponse(res);
+  const body = await parseJsonResponse(res);
 
   if (typeof body.answer !== "string") {
     throw new ApiError(
