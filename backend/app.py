@@ -185,15 +185,61 @@ def predict():
 @app.route("/predict/status/<job_id>", methods=["GET"])
 @auth.require_auth
 def prediction_status(job_id: str):
-    job = get_prediction_job(job_id)
-    if job is None:
-        return jsonify(error="Prediction job not found or expired."), 404
-    status = job.get("status")
-    if status == "completed":
-        return jsonify(job_id=job_id, status="completed", elapsed_seconds=job.get("elapsed_seconds"), result=_sanitize_for_json(job.get("result")))
-    if status == "failed":
-        return jsonify(job_id=job_id, status="failed", elapsed_seconds=job.get("elapsed_seconds"), error=job.get("error") or "Prediction failed.")
-    return jsonify(job_id=job_id, status=status or "running", elapsed_seconds=job.get("elapsed_seconds"), running_seconds=job.get("running_seconds"))
+    try:
+        job = get_prediction_job(job_id)
+
+        if job is None:
+            return jsonify(
+                error="Prediction job not found or expired.",
+                job_id=job_id,
+            ), 404
+
+        status = job.get("status", "running")
+
+        if status == "completed":
+            return jsonify(
+                job_id=job_id,
+                status="completed",
+                elapsed_seconds=job.get("elapsed_seconds"),
+                result=_sanitize_for_json(
+                    job.get("result")
+                ),
+            ), 200
+
+        if status == "failed":
+            return jsonify(
+                job_id=job_id,
+                status="failed",
+                elapsed_seconds=job.get(
+                    "elapsed_seconds"
+                ),
+                error=job.get("error")
+                or "Prediction worker failed.",
+            ), 200
+
+        return jsonify(
+            job_id=job_id,
+            status=status,
+            elapsed_seconds=job.get(
+                "elapsed_seconds"
+            ),
+            running_seconds=job.get(
+                "running_seconds"
+            ),
+            pid=job.get("pid"),
+        ), 200
+
+    except Exception as exc:
+        logger.exception(
+            "Prediction status endpoint failed | job_id=%s",
+            job_id,
+        )
+
+        return jsonify(
+            job_id=job_id,
+            status="failed",
+            error=str(exc),
+        ), 200
 
 @app.route("/dataset/reset", methods=["POST"])
 @auth.require_auth

@@ -21,6 +21,110 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PREDICTION_POLL_INTERVAL_MS = 2_000;
 const PREDICTION_MAX_WAIT_MS = 30 * 60 * 1000;
 
+async function pollPredictionStatus(
+  jobId: string
+): Promise<DgaPayload> {
+  const deadline =
+    Date.now() + PREDICTION_MAX_WAIT_MS;
+
+  let consecutiveNetworkFailures = 0;
+
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(
+        resolve,
+        PREDICTION_POLL_INTERVAL_MS
+      );
+    });
+
+    try {
+      const response = await fetchWithTimeout(
+        `${BACKEND_PREFIX}/predict/status/${encodeURIComponent(
+          jobId
+        )}`,
+        {
+          method: "GET",
+          headers: authHeaders(),
+          cache: "no-store",
+        },
+        DEFAULT_REQUEST_TIMEOUT_MS
+      );
+
+      const raw =
+        await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const message =
+          raw &&
+          typeof raw === "object" &&
+          typeof raw.error === "string"
+            ? raw.error
+            : `Prediction status request failed (${response.status}).`;
+
+        throw new ApiError(message);
+      }
+
+      consecutiveNetworkFailures = 0;
+
+      if (
+        !raw ||
+        typeof raw !== "object" ||
+        Array.isArray(raw)
+      ) {
+        continue;
+      }
+
+      const body = raw as {
+        status?: string;
+        result?: DgaPayload;
+        error?: string;
+      };
+
+      if (body.status === "completed") {
+        if (!body.result) {
+          throw new ApiError(
+            "Prediction completed but returned no result."
+          );
+        }
+
+        return body.result;
+      }
+
+      if (body.status === "failed") {
+        throw new ApiError(
+          body.error ||
+            "Prediction worker failed."
+        );
+      }
+
+      continue;
+    } catch (error) {
+      if (error instanceof ApiError) {
+        consecutiveNetworkFailures += 1;
+
+        if (consecutiveNetworkFailures >= 5) {
+          throw error;
+        }
+
+        continue;
+      }
+
+      consecutiveNetworkFailures += 1;
+
+      if (consecutiveNetworkFailures >= 5) {
+        throw new ApiError(
+          `Unable to reach prediction status endpoint after ${consecutiveNetworkFailures} attempts.`
+        );
+      }
+    }
+  }
+
+  throw new ApiError(
+    "Prediction exceeded the 30-minute client wait limit."
+  );
+}
+
+
 export class ApiError extends Error {
   constructor(message: string) {
     super(message);
@@ -356,137 +460,32 @@ function isPredictionStatusResponse(
 async function startPrediction(
   init: RequestInit
 ): Promise<DgaPayload> {
-  const startResponse = await fetchWithTimeout(
-    `${BACKEND_PREFIX}/predict`,
-    init,
-    PREDICTION_START_TIMEOUT_MS
-  );
+  const startResponse =
+    await fetchWithTimeout(
+      `${BACKEND_PREFIX}/predict`,
+      init,
+      PREDICTION_START_TIMEOUT_MS
+    );
 
-  /*
-   * Backward compatibility:
-   * If backend still returns the final prediction directly,
-   * handle it normally.
-   */
   if (startResponse.status !== 202) {
     return handlePredictResponse(startResponse);
   }
 
-  const rawStarted =
-    await startResponse
-      .json()
-      .catch(() => null);
+  const raw =
+    await startResponse.json().catch(() => null);
 
-  if (!isRecord(rawStarted)) {
+  if (
+    !raw ||
+    typeof raw !== "object" ||
+    Array.isArray(raw) ||
+    typeof raw.job_id !== "string"
+  ) {
     throw new ApiError(
       "Backend returned an invalid prediction job response."
     );
   }
 
-  const started =
-    rawStarted as Partial<PredictionStartResponse>;
-
-  if (typeof started.job_id !== "string") {
-    const errorMessage =
-      typeof rawStarted.error === "string"
-        ? rawStarted.error
-        : "Backend returned an invalid prediction job response.";
-
-    throw new ApiError(errorMessage);
-  }
-
-  const deadline =
-    Date.now() + PREDICTION_MAX_WAIT_MS;
-
-  while (Date.now() < deadline) {
-    await new Promise<void>((resolve) => {
-      window.setTimeout(
-        resolve,
-        PREDICTION_POLL_INTERVAL_MS
-      );
-    });
-
-    const statusUrl =
-      `${BACKEND_PREFIX}/predict/status/` +
-      encodeURIComponent(started.job_id);
-
-    const statusResponse =
-      await fetchWithTimeout(
-        statusUrl,
-        {
-          method: "GET",
-          headers: authHeaders(),
-          cache: "no-store",
-        },
-        DEFAULT_REQUEST_TIMEOUT_MS
-      );
-
-    const rawBody =
-      await statusResponse
-        .json()
-        .catch(() => null);
-
-    /*
-     * HTTP error from status endpoint.
-     */
-    if (!statusResponse.ok) {
-      if (isErrorResponse(rawBody)) {
-        throw new ApiError(
-          rawBody.error ||
-            `Prediction status request failed (${statusResponse.status}).`
-        );
-      }
-
-      throw new ApiError(
-        `Prediction status request failed (${statusResponse.status}).`
-      );
-    }
-
-    /*
-     * Valid prediction status response.
-     */
-    if (
-      !isPredictionStatusResponse(rawBody)
-    ) {
-      /*
-       * Do not immediately fail on a malformed polling response.
-       * A transient proxy/backend response can occur.
-       */
-      continue;
-    }
-
-    switch (rawBody.status) {
-      case "queued":
-        continue;
-
-      case "running":
-        continue;
-
-      case "completed": {
-        if (!rawBody.result) {
-          throw new ApiError(
-            "Prediction completed but backend returned no result."
-          );
-        }
-
-        return rawBody.result;
-      }
-
-      case "failed": {
-        throw new ApiError(
-          rawBody.error ||
-            "Backend prediction failed."
-        );
-      }
-
-      default:
-        continue;
-    }
-  }
-
-  throw new ApiError(
-    "Prediction exceeded the 30-minute client wait limit. " +
-      "Check Render logs; the backend job may still be running."
-  );
+  return pollPredictionStatus(raw.job_id);
 }
 
 export async function runPredictionFromFile(
