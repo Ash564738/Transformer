@@ -1,5 +1,4 @@
 # backend/app.py
-# backend/app.py
 
 from __future__ import annotations
 
@@ -9,7 +8,9 @@ import re
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
+
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
@@ -17,30 +18,108 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 load_dotenv()
+
 from logging_config import init_logging
+
 init_logging()
+
 import auth
 from config import DATASET_DIR, MODEL_DIR, REPORT_DIR, config as cfg
 from prediction_jobs import get_prediction_job, submit_prediction
 from text2sql_chat import answer_question
+
 
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.json.ensure_ascii = False
 
-DEFAULT_ALLOWED_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
-VERCEL_ORIGIN_PATTERN = re.compile(r"^https://transformer(?:-[a-z0-9-]+)?\.vercel\.app$")
-configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
-if configured_origins:
-    CORS_ORIGINS = [origin.strip().rstrip("/") for origin in configured_origins.split(",") if origin.strip()]
-else:
-    CORS_ORIGINS = DEFAULT_ALLOWED_ORIGINS + [VERCEL_ORIGIN_PATTERN]
 
-CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}}, methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type", "Authorization"], expose_headers=["Content-Type"], supports_credentials=False, max_age=86400)
-logger.info("CORS configured | origins=%s", CORS_ORIGINS)
+# ============================================================
+# CORS
+# ============================================================
+
+DEFAULT_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+# Supports:
+#   https://transformer.vercel.app
+#   https://transformer-xxxxx.vercel.app
+#   https://transformer-xxxxx-projects.vercel.app
+VERCEL_ORIGIN_PATTERN = re.compile(
+    r"^https://transformer(?:-[a-z0-9-]+)?\.vercel\.app$"
+)
+
+configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+
+if configured_origins:
+    CORS_ORIGINS = [
+        origin.strip().rstrip("/")
+        for origin in configured_origins.split(",")
+        if origin.strip()
+    ]
+else:
+    CORS_ORIGINS = DEFAULT_ALLOWED_ORIGINS + [
+        VERCEL_ORIGIN_PATTERN
+    ]
+
+CORS(
+    app,
+    resources={
+        r"/*": {
+            "origins": CORS_ORIGINS,
+        }
+    },
+    methods=[
+        "GET",
+        "POST",
+        "OPTIONS",
+    ],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+    ],
+    expose_headers=[
+        "Content-Type",
+    ],
+    supports_credentials=False,
+    max_age=86400,
+)
+
+logger.info(
+    "CORS configured | origins=%s",
+    CORS_ORIGINS,
+)
+
+
+# ============================================================
+# Authentication database
+# ============================================================
 
 auth.init_db()
+
+
+# ============================================================
+# Explicit OPTIONS handlers
+#
+# IMPORTANT:
+# /predict/status/<job_id> contains a dynamic Flask URL
+# parameter. Flask passes job_id into the handler.
+#
+# The previous implementation:
+#
+#     def handle_options():
+#
+# caused:
+#
+#     TypeError:
+#     handle_options() got an unexpected keyword argument 'job_id'
+#
+# Accepting **kwargs fixes all current/future dynamic OPTIONS
+# routes safely.
+# ============================================================
 
 @app.route("/predict", methods=["OPTIONS"])
 @app.route("/predict/status/<job_id>", methods=["OPTIONS"])
@@ -52,117 +131,350 @@ auth.init_db()
 @app.route("/report/student-vs-traditional", methods=["OPTIONS"])
 @app.route("/report/experiments", methods=["OPTIONS"])
 @app.route("/report/experiments/refresh", methods=["OPTIONS"])
-def handle_options():
+def handle_options(**kwargs):
+    """
+    Handle CORS preflight requests.
+
+    Flask passes route variables such as `job_id` to the view
+    function for dynamic routes. Accepting **kwargs prevents:
+
+        TypeError:
+        handle_options() got an unexpected keyword argument 'job_id'
+    """
     return "", 204
+
+
+# ============================================================
+# Error handlers
+# ============================================================
 
 @app.errorhandler(400)
 def handle_400(error):
-    return jsonify(error=str(getattr(error, "description", "Bad request.")), status=400), 400
+    return (
+        jsonify(
+            error=str(
+                getattr(
+                    error,
+                    "description",
+                    "Bad request.",
+                )
+            ),
+            status=400,
+        ),
+        400,
+    )
+
 
 @app.errorhandler(401)
 def handle_401(error):
-    return jsonify(error="Authentication required.", status=401), 401
+    return (
+        jsonify(
+            error="Authentication required.",
+            status=401,
+        ),
+        401,
+    )
+
 
 @app.errorhandler(404)
 def handle_404(error):
-    return jsonify(error="API endpoint not found.", status=404), 404
+    return (
+        jsonify(
+            error="API endpoint not found.",
+            status=404,
+        ),
+        404,
+    )
+
 
 @app.errorhandler(405)
 def handle_405(error):
-    return jsonify(error="HTTP method not allowed.", status=405), 405
+    return (
+        jsonify(
+            error="HTTP method not allowed.",
+            status=405,
+        ),
+        405,
+    )
+
 
 @app.errorhandler(500)
 def handle_500(error):
     logger.exception("Unhandled Flask 500 error")
-    return jsonify(error="Internal server error.", status=500), 500
+
+    return (
+        jsonify(
+            error="Internal server error.",
+            status=500,
+        ),
+        500,
+    )
+
+
+# ============================================================
+# Input parsing
+# ============================================================
 
 def parse_file_input(file_storage):
-    filename = getattr(file_storage, "filename", "") or ""
+    filename = getattr(
+        file_storage,
+        "filename",
+        "",
+    ) or ""
+
     suffix = Path(filename).suffix.lower()
+
     try:
         if suffix in {".xlsx", ".xls"}:
-            df = pd.read_excel(file_storage, engine="openpyxl")
+            df = pd.read_excel(
+                file_storage,
+                engine="openpyxl",
+            )
+
         elif suffix in {".csv", ""}:
             df = pd.read_csv(file_storage)
+
         else:
-            raise ValueError("Only CSV, XLSX, and XLS files are supported.")
+            raise ValueError(
+                "Only CSV, XLSX, and XLS files are supported."
+            )
+
     except Exception as exc:
-        raise ValueError(f"Unable to parse uploaded file: {exc}") from exc
+        raise ValueError(
+            f"Unable to parse uploaded file: {exc}"
+        ) from exc
+
     if df.empty:
-        raise ValueError("The uploaded file is empty or invalid.")
+        raise ValueError(
+            "The uploaded file is empty or invalid."
+        )
+
     return df
 
+
+# ============================================================
+# JSON sanitization
+# ============================================================
+
 def _sanitize_for_json(value):
-    if value is None or value is Ellipsis or value is pd.NA or value is pd.NaT:
+    if (
+        value is None
+        or value is Ellipsis
+        or value is pd.NA
+        or value is pd.NaT
+    ):
         return None
+
     if isinstance(value, float):
-        return value if np.isfinite(value) else None
+        return (
+            value
+            if np.isfinite(value)
+            else None
+        )
+
     if isinstance(value, np.floating):
         x = float(value)
-        return x if np.isfinite(x) else None
+
+        return (
+            x
+            if np.isfinite(x)
+            else None
+        )
+
     if isinstance(value, np.integer):
         return int(value)
+
     if isinstance(value, np.bool_):
         return bool(value)
+
     if isinstance(value, bool):
         return value
+
     if isinstance(value, pd.Timestamp):
-        return None if pd.isna(value) else value.isoformat()
-    if isinstance(value, (np.ndarray, pd.Series, pd.Index)):
-        return [_sanitize_for_json(item) for item in value.tolist()]
+        return (
+            None
+            if pd.isna(value)
+            else value.isoformat()
+        )
+
+    if isinstance(
+        value,
+        (
+            np.ndarray,
+            pd.Series,
+            pd.Index,
+        ),
+    ):
+        return [
+            _sanitize_for_json(item)
+            for item in value.tolist()
+        ]
+
     if isinstance(value, dict):
-        return {str(k): _sanitize_for_json(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_sanitize_for_json(item) for item in value]
+        return {
+            str(k): _sanitize_for_json(v)
+            for k, v in value.items()
+        }
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+        ),
+    ):
+        return [
+            _sanitize_for_json(item)
+            for item in value
+        ]
+
     try:
         missing = pd.isna(value)
-        if isinstance(missing, (bool, np.bool_)) and missing:
+
+        if isinstance(
+            missing,
+            (
+                bool,
+                np.bool_,
+            ),
+        ) and missing:
             return None
+
     except Exception:
         pass
+
     return value
+
+
+# ============================================================
+# Request data parser
+# ============================================================
 
 def parse_request_data():
     if request.files and "file" in request.files:
-        return parse_file_input(request.files["file"])
-    payload = request.get_json(silent=True)
+        return parse_file_input(
+            request.files["file"]
+        )
+
+    payload = request.get_json(
+        silent=True
+    )
+
     if payload is None:
-        raise ValueError("Expected CSV/XLSX upload or JSON data.")
-    if isinstance(payload, dict) and "data" in payload:
-        return pd.DataFrame(payload["data"])
+        raise ValueError(
+            "Expected CSV/XLSX upload or JSON data."
+        )
+
+    if (
+        isinstance(payload, dict)
+        and "data" in payload
+    ):
+        return pd.DataFrame(
+            payload["data"]
+        )
+
     return pd.DataFrame(payload)
+
+
+# ============================================================
+# Basic routes
+# ============================================================
 
 @app.route("/", methods=["GET"])
 def root():
-    return jsonify(service="Transformer Degradation Ranking API", pipeline="production_inference", status="ok")
+    return jsonify(
+        service="Transformer Degradation Ranking API",
+        pipeline="production_inference",
+        status="ok",
+    )
+
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify(status="ok", service="Transformer Degradation Ranking API", pipeline="production_inference", model_dir=str(MODEL_DIR.resolve()), report_dir=str(REPORT_DIR.resolve()))
+    return jsonify(
+        status="ok",
+        service="Transformer Degradation Ranking API",
+        pipeline="production_inference",
+        model_dir=str(
+            MODEL_DIR.resolve()
+        ),
+        report_dir=str(
+            REPORT_DIR.resolve()
+        ),
+    )
+
+
+# ============================================================
+# Authentication
+# ============================================================
 
 @app.route("/auth/login", methods=["POST"])
 def auth_login():
-    payload = request.get_json(silent=True) or {}
+    payload = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
+
     email = payload.get("email")
     password = payload.get("password")
+
     try:
-        user, token = auth.login(email, password)
+        user, token = auth.login(
+            email,
+            password,
+        )
+
     except ValueError as exc:
-        return jsonify(error=str(exc)), 401
-    return jsonify(user=user, token=token)
+        return (
+            jsonify(
+                error=str(exc)
+            ),
+            401,
+        )
+
+    return jsonify(
+        user=user,
+        token=token,
+    )
+
 
 @app.route("/auth/me", methods=["GET"])
 @auth.require_auth
 def auth_me():
-    return jsonify(user=request.current_user)
+    return jsonify(
+        user=request.current_user
+    )
+
 
 @app.route("/auth/logout", methods=["POST"])
 def auth_logout():
-    header = request.headers.get("Authorization", "")
-    token = header[len("Bearer "):].strip() if header.startswith("Bearer ") else None
+    header = request.headers.get(
+        "Authorization",
+        "",
+    )
+
+    token = (
+        header[
+            len("Bearer "):
+        ].strip()
+        if header.startswith("Bearer ")
+        else None
+    )
+
     if token:
         auth.logout(token)
-    return jsonify(ok=True)
+
+    return jsonify(
+        ok=True
+    )
+
+
+# ============================================================
+# Prediction start
+# ============================================================
 
 @app.route("/predict", methods=["POST"])
 @auth.require_auth
@@ -183,226 +495,684 @@ def predict():
         )
 
         if data.empty:
-            return jsonify(error="No data provided."), 400
+            return (
+                jsonify(
+                    error="No data provided."
+                ),
+                400,
+            )
 
         try:
-            job_id = submit_prediction(data)
-        except RuntimeError as exc:
-            logger.warning("Prediction rejected: %s", exc)
-            return jsonify(
-                error=str(exc),
-                pipeline_status="busy",
-            ), 409
+            job_id = submit_prediction(
+                data
+            )
 
-        return jsonify(
-            job_id=job_id,
-            status="queued",
-            poll_url=f"/predict/status/{job_id}",
-            message="Prediction started. Poll the status endpoint for the result.",
-        ), 202
+        except RuntimeError as exc:
+            logger.warning(
+                "Prediction rejected: %s",
+                exc,
+            )
+
+            return (
+                jsonify(
+                    error=str(exc),
+                    pipeline_status="busy",
+                ),
+                409,
+            )
+
+        return (
+            jsonify(
+                job_id=job_id,
+                status="queued",
+                poll_url=(
+                    f"/predict/status/{job_id}"
+                ),
+                message=(
+                    "Prediction started. "
+                    "Poll the status endpoint "
+                    "for the result."
+                ),
+            ),
+            202,
+        )
 
     except ValueError as exc:
-        logger.exception("Prediction validation error")
-        return jsonify(
-            error=str(exc),
-            pipeline_status="failed",
-        ), 400
+        logger.exception(
+            "Prediction validation error"
+        )
+
+        return (
+            jsonify(
+                error=str(exc),
+                pipeline_status="failed",
+            ),
+            400,
+        )
 
     except FileNotFoundError as exc:
-        logger.exception("Prediction model artifact missing")
-        return jsonify(
-            error=str(exc),
-            pipeline_status="model_missing",
-        ), 503
+        logger.exception(
+            "Prediction model artifact missing"
+        )
+
+        return (
+            jsonify(
+                error=str(exc),
+                pipeline_status="model_missing",
+            ),
+            503,
+        )
 
     except Exception as exc:
-        logger.exception("Failed to start prediction")
-        return jsonify(
-            error=str(exc),
-            pipeline_status="failed",
-        ), 500
+        logger.exception(
+            "Failed to start prediction"
+        )
+
+        return (
+            jsonify(
+                error=str(exc),
+                pipeline_status="failed",
+            ),
+            500,
+        )
 
 
-@app.route("/predict/status/<job_id>", methods=["GET"])
+# ============================================================
+# Prediction status
+# ============================================================
+
+@app.route(
+    "/predict/status/<job_id>",
+    methods=["GET"],
+)
 @auth.require_auth
 def prediction_status(job_id: str):
     try:
-        job = get_prediction_job(job_id)
+        job = get_prediction_job(
+            job_id
+        )
 
         if job is None:
-            return jsonify(
-                job_id=job_id,
-                status="not_found",
-                error="Prediction job not found or expired.",
-            ), 404
+            return (
+                jsonify(
+                    job_id=job_id,
+                    status="not_found",
+                    error=(
+                        "Prediction job not found "
+                        "or expired."
+                    ),
+                ),
+                404,
+            )
 
-        status = job.get("status", "running")
+        status = job.get(
+            "status",
+            "running",
+        )
 
         if status == "completed":
-            return jsonify(
-                job_id=job_id,
-                status="completed",
-                elapsed_seconds=job.get("elapsed_seconds"),
-                result=_sanitize_for_json(job.get("result")),
-            ), 200
+            return (
+                jsonify(
+                    job_id=job_id,
+                    status="completed",
+                    elapsed_seconds=job.get(
+                        "elapsed_seconds"
+                    ),
+                    result=_sanitize_for_json(
+                        job.get("result")
+                    ),
+                ),
+                200,
+            )
 
         if status == "failed":
-            return jsonify(
-                job_id=job_id,
-                status="failed",
-                elapsed_seconds=job.get("elapsed_seconds"),
-                error=job.get("error") or "Prediction failed.",
-            ), 200
+            return (
+                jsonify(
+                    job_id=job_id,
+                    status="failed",
+                    elapsed_seconds=job.get(
+                        "elapsed_seconds"
+                    ),
+                    error=(
+                        job.get("error")
+                        or "Prediction failed."
+                    ),
+                ),
+                200,
+            )
 
-        return jsonify(
-            job_id=job_id,
-            status=status,
-            elapsed_seconds=job.get("elapsed_seconds"),
-            running_seconds=job.get("running_seconds"),
-        ), 200
+        return (
+            jsonify(
+                job_id=job_id,
+                status=status,
+                elapsed_seconds=job.get(
+                    "elapsed_seconds"
+                ),
+                running_seconds=job.get(
+                    "running_seconds"
+                ),
+            ),
+            200,
+        )
 
     except Exception as exc:
         logger.exception(
             "Prediction status endpoint failed | job_id=%s",
             job_id,
         )
-        return jsonify(
-            job_id=job_id,
-            status="failed",
-            error=str(exc),
-        ), 200
 
-@app.route("/dataset/reset", methods=["POST"])
+        return (
+            jsonify(
+                job_id=job_id,
+                status="failed",
+                error=str(exc),
+            ),
+            200,
+        )
+
+
+# ============================================================
+# Dataset
+# ============================================================
+
+@app.route(
+    "/dataset/reset",
+    methods=["POST"],
+)
 @auth.require_auth
 def dataset_reset():
     from data_store import reset_db
-    reset_db()
-    return jsonify(ok=True)
 
-@app.route("/report/student-vs-traditional", methods=["GET"])
+    reset_db()
+
+    return jsonify(
+        ok=True
+    )
+
+
+# ============================================================
+# Student vs traditional report
+# ============================================================
+
+@app.route(
+    "/report/student-vs-traditional",
+    methods=["GET"],
+)
 @auth.require_auth
 def student_vs_traditional_report():
-    path = REPORT_DIR / "student_vs_traditional_by_transformer.csv"
-    if not path.exists():
-        return jsonify(error="Report not found."), 404
-    try:
-        df = pd.read_csv(path, encoding="utf-8-sig")
-        df = df.replace([np.inf, -np.inf], np.nan).where(pd.notna(df), None)
-        return jsonify(_sanitize_for_json({"rows": df.to_dict(orient="records"), "path": str(path)}))
-    except Exception as exc:
-        logger.exception("Failed to load student/traditional report")
-        return jsonify(error=str(exc)), 500
+    path = (
+        REPORT_DIR
+        / "student_vs_traditional_by_transformer.csv"
+    )
 
-@app.route("/report/experiments", methods=["GET"])
+    if not path.exists():
+        return (
+            jsonify(
+                error="Report not found."
+            ),
+            404,
+        )
+
+    try:
+        df = pd.read_csv(
+            path,
+            encoding="utf-8-sig",
+        )
+
+        df = (
+            df.replace(
+                [
+                    np.inf,
+                    -np.inf,
+                ],
+                np.nan,
+            )
+            .where(
+                pd.notna(df),
+                None,
+            )
+        )
+
+        return jsonify(
+            _sanitize_for_json(
+                {
+                    "rows": df.to_dict(
+                        orient="records"
+                    ),
+                    "path": str(path),
+                }
+            )
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "Failed to load student/traditional report"
+        )
+
+        return (
+            jsonify(
+                error=str(exc)
+            ),
+            500,
+        )
+
+
+# ============================================================
+# Experiment reports
+# ============================================================
+
+@app.route(
+    "/report/experiments",
+    methods=["GET"],
+)
 @auth.require_auth
 def report_experiments():
     reports_dir = REPORT_DIR
-    benchmark_dir = REPORT_DIR / "benchmark"
-    processed_dir = DATASET_DIR / "processed"
+    benchmark_dir = (
+        REPORT_DIR / "benchmark"
+    )
+    processed_dir = (
+        DATASET_DIR / "processed"
+    )
 
-    def read_csv(filename, benchmark=True):
-        candidates = [benchmark_dir / filename] if benchmark else []
-        candidates.append(reports_dir / filename)
+    def read_csv(
+        filename,
+        benchmark=True,
+    ):
+        candidates = (
+            [benchmark_dir / filename]
+            if benchmark
+            else []
+        )
+
+        candidates.append(
+            reports_dir / filename
+        )
+
         for path in candidates:
             if not path.exists():
                 continue
+
             try:
-                frame = pd.read_csv(path, encoding="utf-8-sig")
-                frame = frame.replace([np.inf, -np.inf], np.nan).where(pd.notna(frame), None)
-                return frame.to_dict(orient="records")
+                frame = pd.read_csv(
+                    path,
+                    encoding="utf-8-sig",
+                )
+
+                frame = (
+                    frame.replace(
+                        [
+                            np.inf,
+                            -np.inf,
+                        ],
+                        np.nan,
+                    )
+                    .where(
+                        pd.notna(frame),
+                        None,
+                    )
+                )
+
+                return frame.to_dict(
+                    orient="records"
+                )
+
             except Exception:
-                logger.exception("Failed to read report: %s", path)
+                logger.exception(
+                    "Failed to read report: %s",
+                    path,
+                )
+
                 return []
+
         return []
 
     def read_json(path):
         if not path.exists():
             return {}
+
         try:
             import json
-            return json.loads(path.read_text(encoding="utf-8"))
+
+            return json.loads(
+                path.read_text(
+                    encoding="utf-8"
+                )
+            )
+
         except Exception:
-            logger.exception("Failed to read metadata: %s", path)
+            logger.exception(
+                "Failed to read metadata: %s",
+                path,
+            )
+
             return {}
 
     def read_severity():
-        path = processed_dir / "dga_unlabeled_processed.parquet"
+        path = (
+            processed_dir
+            / "dga_unlabeled_processed.parquet"
+        )
+
         if not path.exists():
             return []
+
         try:
-            frame = pd.read_parquet(path)
+            frame = pd.read_parquet(
+                path
+            )
+
             fields = [
-                "transformer_id", "sample_day", "ieee_dga_status", "ieee_dga_status_label",
-                "ieee_dga_status_reason", "ieee_max_standardized_exceedance",
-                "ieee_max_status3_standardized_exceedance", "ieee_table1_concentration_ratio_all",
-                "ieee_table2_concentration_ratio_all", "ieee_table3_delta_ratio_all",
-                "ieee_table4_rate_ratio_all", "ieee_continuous_evidence_ratio",
-                "ieee_continuous_evidence_basis", "ieee_standard_trigger_count",
-                "ieee_confirmation_required", "ieee_delta_available", "ieee_rate_available",
-                "ieee_rate_span_months"
+                "transformer_id",
+                "sample_day",
+                "ieee_dga_status",
+                "ieee_dga_status_label",
+                "ieee_dga_status_reason",
+                "ieee_max_standardized_exceedance",
+                "ieee_max_status3_standardized_exceedance",
+                "ieee_table1_concentration_ratio_all",
+                "ieee_table2_concentration_ratio_all",
+                "ieee_table3_delta_ratio_all",
+                "ieee_table4_rate_ratio_all",
+                "ieee_continuous_evidence_ratio",
+                "ieee_continuous_evidence_basis",
+                "ieee_standard_trigger_count",
+                "ieee_confirmation_required",
+                "ieee_delta_available",
+                "ieee_rate_available",
+                "ieee_rate_span_months",
             ]
-            fields = [c for c in fields if c in frame.columns]
-            return (frame[fields].replace([np.inf, -np.inf], np.nan).tail(1000)
-                    .where(lambda x: pd.notna(x), None).to_dict(orient="records"))
+
+            fields = [
+                column
+                for column in fields
+                if column in frame.columns
+            ]
+
+            return (
+                frame[fields]
+                .replace(
+                    [
+                        np.inf,
+                        -np.inf,
+                    ],
+                    np.nan,
+                )
+                .tail(1000)
+                .where(
+                    lambda x: pd.notna(x),
+                    None,
+                )
+                .to_dict(
+                    orient="records"
+                )
+            )
+
         except Exception:
-            logger.exception("Failed to read severity records")
+            logger.exception(
+                "Failed to read severity records"
+            )
+
             return []
 
-    weak_metadata = []
-    for granularity in ("coarse", "fine"):
-        metadata_path = processed_dir / f"dga_weak_label_metadata_{granularity}.json"
-        metadata = read_json(metadata_path)
-        if metadata:
-            weak_metadata.append({
-                "granularity": granularity,
-                "backend": metadata.get("backend"),
-                "n_rows": metadata.get("n_rows"),
-                "n_lfs": metadata.get("n_lfs"),
-                "rows_with_at_least_one_lf": metadata.get("rows_with_at_least_one_lf"),
-                "abstain_rate": metadata.get("abstain_rate"),
-                "mean_active_lf_count": metadata.get("mean_active_lf_count"),
-                "uses_manual_lf_weights": False
-            })
+    # --------------------------------------------------------
+    # Weak-label metadata
+    # --------------------------------------------------------
 
-    traditional = read_csv("traditional_individual_benchmark.csv")
-    combinations = read_csv("traditional_combinations_benchmark.csv")
-    supervised = read_csv("supervised_fault_benchmark.csv")
-    weak_transfer = read_csv("weak_transfer_fault_benchmark.csv")
-    ranking = read_csv("transformer_ranking.csv", benchmark=False)
-    inference_metadata = read_json(processed_dir / "dga_inference_metadata.json")
-    training_metadata = read_json(MODEL_DIR / "training_metadata.json")
+    weak_metadata = []
+
+    for granularity in (
+        "coarse",
+        "fine",
+    ):
+        metadata_path = (
+            processed_dir
+            / f"dga_weak_label_metadata_{granularity}.json"
+        )
+
+        metadata = read_json(
+            metadata_path
+        )
+
+        if metadata:
+            weak_metadata.append(
+                {
+                    "granularity": granularity,
+                    "backend": metadata.get(
+                        "backend"
+                    ),
+                    "n_rows": metadata.get(
+                        "n_rows"
+                    ),
+                    "n_lfs": metadata.get(
+                        "n_lfs"
+                    ),
+                    "rows_with_at_least_one_lf": metadata.get(
+                        "rows_with_at_least_one_lf"
+                    ),
+                    "abstain_rate": metadata.get(
+                        "abstain_rate"
+                    ),
+                    "mean_active_lf_count": metadata.get(
+                        "mean_active_lf_count"
+                    ),
+                    "uses_manual_lf_weights": False,
+                }
+            )
+
+    # --------------------------------------------------------
+    # Reports
+    # --------------------------------------------------------
+
+    traditional = read_csv(
+        "traditional_individual_benchmark.csv"
+    )
+
+    combinations = read_csv(
+        "traditional_combinations_benchmark.csv"
+    )
+
+    supervised = read_csv(
+        "supervised_fault_benchmark.csv"
+    )
+
+    weak_transfer = read_csv(
+        "weak_transfer_fault_benchmark.csv"
+    )
+
+    ranking = read_csv(
+        "transformer_ranking.csv",
+        benchmark=False,
+    )
+
+    inference_metadata = read_json(
+        processed_dir
+        / "dga_inference_metadata.json"
+    )
+
+    training_metadata = read_json(
+        MODEL_DIR
+        / "training_metadata.json"
+    )
+
+    # --------------------------------------------------------
+    # Summary helper
+    # --------------------------------------------------------
 
     summary = []
-    def best(rows, split=None, granularity=None):
+
+    def best(
+        rows,
+        split=None,
+        granularity=None,
+    ):
         selected = rows
+
         if split is not None:
-            selected = [r for r in selected if r.get("split") == split]
+            selected = [
+                row
+                for row in selected
+                if row.get("split") == split
+            ]
+
         if granularity is not None:
-            selected = [r for r in selected if r.get("granularity") == granularity]
-        selected = [r for r in selected if r.get("macro_f1") is not None]
+            selected = [
+                row
+                for row in selected
+                if row.get("granularity")
+                == granularity
+            ]
+
+        selected = [
+            row
+            for row in selected
+            if row.get("macro_f1") is not None
+        ]
+
         if not selected:
             return None
-        return max(selected, key=lambda r: float(r.get("macro_f1", 0) or 0))
 
-    item = best(traditional, granularity="fine")
+        return max(
+            selected,
+            key=lambda row: float(
+                row.get(
+                    "macro_f1",
+                    0,
+                )
+                or 0
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Best traditional method
+    # --------------------------------------------------------
+
+    item = best(
+        traditional,
+        granularity="fine",
+    )
+
     if item:
-        summary.append({"section": "Best Traditional Individual", "method": item.get("method"), "macro_f1": item.get("macro_f1")})
-    item = best(combinations, split="locked_test", granularity="fine")
+        summary.append(
+            {
+                "section": (
+                    "Best Traditional Individual"
+                ),
+                "method": item.get(
+                    "method"
+                ),
+                "macro_f1": item.get(
+                    "macro_f1"
+                ),
+            }
+        )
+
+    # --------------------------------------------------------
+    # Best traditional combination
+    # --------------------------------------------------------
+
+    item = best(
+        combinations,
+        split="locked_test",
+        granularity="fine",
+    )
+
     if item:
-        summary.append({"section": "Best Traditional Combination", "methods": item.get("methods"), "macro_f1": item.get("macro_f1")})
-    item = best(supervised, split="locked_test", granularity="fine")
+        summary.append(
+            {
+                "section": (
+                    "Best Traditional Combination"
+                ),
+                "methods": item.get(
+                    "methods"
+                ),
+                "macro_f1": item.get(
+                    "macro_f1"
+                ),
+            }
+        )
+
+    # --------------------------------------------------------
+    # Best supervised model
+    # --------------------------------------------------------
+
+    item = best(
+        supervised,
+        split="locked_test",
+        granularity="fine",
+    )
+
     if item:
-        summary.append({"section": "Best Supervised Model", "model": item.get("model"), "feature_mode": item.get("feature_mode"), "macro_f1": item.get("macro_f1")})
-    item = best(weak_transfer, split="locked_test", granularity="fine")
+        summary.append(
+            {
+                "section": (
+                    "Best Supervised Model"
+                ),
+                "model": item.get(
+                    "model"
+                ),
+                "feature_mode": item.get(
+                    "feature_mode"
+                ),
+                "macro_f1": item.get(
+                    "macro_f1"
+                ),
+            }
+        )
+
+    # --------------------------------------------------------
+    # Best weak-transfer model
+    # --------------------------------------------------------
+
+    item = best(
+        weak_transfer,
+        split="locked_test",
+        granularity="fine",
+    )
+
     if item:
-        summary.append({"section": "Best Weak Transfer Model", "model": item.get("model"), "feature_mode": item.get("feature_mode"), "macro_f1": item.get("macro_f1")})
+        summary.append(
+            {
+                "section": (
+                    "Best Weak Transfer Model"
+                ),
+                "model": item.get(
+                    "model"
+                ),
+                "feature_mode": item.get(
+                    "feature_mode"
+                ),
+                "macro_f1": item.get(
+                    "macro_f1"
+                ),
+            }
+        )
+
+    # --------------------------------------------------------
+    # Latest upload information
+    # --------------------------------------------------------
+
     if inference_metadata:
-        summary.append({
-            "section": "Latest Upload Pipeline",
-            "rows": inference_metadata.get("n_rows"),
-            "transformers": inference_metadata.get("n_transformers"),
-            "processing_seconds": inference_metadata.get("processing_seconds")
-        })
+        summary.append(
+            {
+                "section": (
+                    "Latest Upload Pipeline"
+                ),
+                "rows": inference_metadata.get(
+                    "n_rows"
+                ),
+                "transformers": inference_metadata.get(
+                    "n_transformers"
+                ),
+                "processing_seconds": inference_metadata.get(
+                    "processing_seconds"
+                ),
+            }
+        )
+
+    # --------------------------------------------------------
+    # Response
+    # --------------------------------------------------------
 
     response_payload = {
         "metadata": {
@@ -411,42 +1181,128 @@ def report_experiments():
             "standard": cfg.STANDARD,
             "operational_data_is_unlabeled": True,
             "severity_is_weighted": False,
-            "ranking_is_weighted": False
+            "ranking_is_weighted": False,
         },
         "executive_summary": summary,
         "traditional_methods": traditional,
         "traditional_per_class": [],
         "traditional_combinations": combinations,
-        "method_coverage": read_csv("traditional_method_summary.csv"),
-        "method_gas_range": read_csv("traditional_ppm_coverage.csv"),
+        "method_coverage": read_csv(
+            "traditional_method_summary.csv"
+        ),
+        "method_gas_range": read_csv(
+            "traditional_ppm_coverage.csv"
+        ),
         "supervised_ml": supervised,
         "weak_label_model": weak_metadata,
         "weak_ml_transfer": weak_transfer,
         "severity_records": read_severity(),
         "transformer_ranking": ranking,
-        "ranking_stability": ranking
+        "ranking_stability": ranking,
     }
-    return jsonify(_sanitize_for_json(response_payload))
 
-@app.route("/chat", methods=["POST"])
+    return jsonify(
+        _sanitize_for_json(
+            response_payload
+        )
+    )
+
+
+# ============================================================
+# Chat
+# ============================================================
+
+@app.route(
+    "/chat",
+    methods=["POST"],
+)
 @auth.require_auth
 def chat():
-    payload = request.get_json(force=True)
-    question = payload.get("question", "").strip() if isinstance(payload, dict) else ""
-    context = payload.get("context") if isinstance(payload, dict) else None
-    history = payload.get("history") if isinstance(payload, dict) else None
+    payload = request.get_json(
+        force=True
+    )
+
+    question = (
+        payload.get(
+            "question",
+            "",
+        ).strip()
+        if isinstance(payload, dict)
+        else ""
+    )
+
+    context = (
+        payload.get("context")
+        if isinstance(payload, dict)
+        else None
+    )
+
+    history = (
+        payload.get("history")
+        if isinstance(payload, dict)
+        else None
+    )
+
     if not question:
-        return jsonify(error="Question is required."), 400
+        return (
+            jsonify(
+                error="Question is required."
+            ),
+            400,
+        )
+
     try:
-        answer = answer_question(question, context, history)
-        return jsonify(answer=answer)
+        answer = answer_question(
+            question,
+            context,
+            history,
+        )
+
+        return jsonify(
+            answer=answer
+        )
+
     except Exception as exc:
-        logger.exception("Chat request failed")
-        return jsonify(error=str(exc)), 500
+        logger.exception(
+            "Chat request failed"
+        )
+
+        return (
+            jsonify(
+                error=str(exc)
+            ),
+            500,
+        )
+
+
+# ============================================================
+# Local development entry point
+# ============================================================
 
 if __name__ == "__main__":
-    logger.info("Starting Transformer DGA API")
-    logger.info("MODEL_DIR=%s", MODEL_DIR.resolve())
-    logger.info("REPORT_DIR=%s", REPORT_DIR.resolve())
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    logger.info(
+        "Starting Transformer DGA API"
+    )
+
+    logger.info(
+        "MODEL_DIR=%s",
+        MODEL_DIR.resolve(),
+    )
+
+    logger.info(
+        "REPORT_DIR=%s",
+        REPORT_DIR.resolve(),
+    )
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            "5000",
+        )
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+    )
