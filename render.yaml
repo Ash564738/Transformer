@@ -22,6 +22,8 @@ services:
         value: "10"
       - key: DGA_PREDICTION_CACHE_TTL
         value: "600"
+      - key: DGA_PREDICTION_WAIT_SECONDS
+        value: "105"
       - key: DGA_CORS_ORIGINS
         value: "*"
       - key: DGA_AUTH_SECRET

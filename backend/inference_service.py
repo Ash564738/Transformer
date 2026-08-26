@@ -5,13 +5,11 @@ import json, logging, os, shutil, tempfile, time
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
-import joblib
 import numpy as np
 import pandas as pd
 from clean_dataset import clean_dataset
 from config import DATASET_DIR, MODEL_DIR, REPORT_DIR, config as cfg
 from consensus import apply_consensus, normalize_fault, unify_fault
-from feature_engineering import build_training_features_from_clean
 from logging_config import init_logging
 from ranking import build_transformer_ranking, classify_fault_criticality, fault_criticality_source, log_ranking_diagnostics
 from severity import apply_severity
@@ -705,8 +703,98 @@ def _apply_fast_mode_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+
+def _prepare_fast_dga_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Minimal inference feature set.
+
+    The traditional DGA methods and IEEE severity engine calculate their own
+    diagnostic ratios / thresholds. The previous fast path still executed the
+    full training feature-engineering graph (rolling windows, EWMA, many lag
+    columns), which is unnecessary for production inference and was the main
+    source of long request times on Render Free.
+    """
+    required = [
+        "transformer_id",
+        "sample_day",
+        "h2",
+        "ch4",
+        "c2h6",
+        "c2h4",
+        "c2h2",
+        "co",
+        "co2",
+    ]
+    out = df.copy()
+
+    for column in required:
+        if column not in out.columns:
+            if column in {"transformer_id", "sample_day"}:
+                raise ValueError(f"Missing required column: {column}")
+            out[column] = np.nan
+
+    out["sample_day"] = pd.to_datetime(out["sample_day"], errors="coerce")
+    out = out.dropna(subset=["transformer_id", "sample_day"]).copy()
+
+    numeric_columns = [
+        "h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2",
+        "o2", "n2", "tdcg_raw", "year_energized",
+    ]
+    for column in numeric_columns:
+        if column in out.columns:
+            out[column] = pd.to_numeric(out[column], errors="coerce")
+            if column != "year_energized":
+                out.loc[out[column] < 0, column] = np.nan
+
+    # Keep the latest records per transformer. This is deliberately performed
+    # before severity/diagnostics so every transformer retains enough history.
+    out = out.sort_values(
+        ["transformer_id", "sample_day"],
+        kind="mergesort",
+    ).reset_index(drop=True)
+
+    # Static age context is cheap and used by the IEEE helper.
+    if "year_energized" in out.columns:
+        age = out["sample_day"].dt.year - out["year_energized"]
+        out["transformer_age_years"] = age.where(age >= 0, np.nan)
+    else:
+        out["transformer_age_years"] = np.nan
+
+    if "o2" in out.columns and "n2" in out.columns:
+        denominator = out["n2"].where(out["n2"] > 0)
+        out["o2_n2_ratio"] = out["o2"] / denominator
+    else:
+        out["o2_n2_ratio"] = np.nan
+
+    if "tdcg_raw" in out.columns:
+        combustible = out[["h2", "ch4", "c2h6", "c2h4", "c2h2", "co"]]
+        out["tdcg"] = out["tdcg_raw"].where(
+            out["tdcg_raw"].notna(),
+            combustible.sum(axis=1, min_count=1),
+        )
+    else:
+        out["tdcg"] = out[["h2", "ch4", "c2h6", "c2h4", "c2h2", "co"]].sum(
+            axis=1,
+            min_count=1,
+        )
+
+    # Lightweight historical deltas used by IEEE Table 3/4 screening.
+    group = out.groupby("transformer_id", sort=False)
+    for gas in ("h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2"):
+        previous = group[gas].shift(1)
+        previous_date = group["sample_day"].shift(1)
+        days = (
+            out["sample_day"] - previous_date
+        ).dt.total_seconds() / 86400.0
+        out[f"{gas}_delta1"] = out[gas] - previous
+        out[f"{gas}_rate_per_day"] = (
+            (out[gas] - previous) / days.where(days > 0)
+        )
+
+    return out
+
 def process_dataframe(uploaded_df: pd.DataFrame):
-    """Fast production path: clean -> features -> traditional DGA -> IEEE severity -> ranking."""
+    """Fast production path: clean -> minimal features -> traditional DGA -> IEEE severity -> ranking."""
     if uploaded_df is None or uploaded_df.empty:
         raise ValueError("Uploaded dataframe is empty.")
     overall_started = time.perf_counter()
@@ -725,9 +813,14 @@ def process_dataframe(uploaded_df: pd.DataFrame):
     if fast_mode:
         df_clean, limit_meta = _limit_fast_rows(df_clean)
 
-    df_features = _timed_call("feature_engineering", timings, build_training_features_from_clean, df_clean)
+    df_features = _timed_call(
+        "fast_feature_preparation",
+        timings,
+        _prepare_fast_dga_frame,
+        df_clean,
+    )
     if df_features.empty:
-        raise ValueError("Feature engineering produced an empty dataset.")
+        raise ValueError("Fast inference preparation produced an empty dataset.")
 
     df_labeled = _timed_call("traditional_consensus", timings, apply_consensus, df_features)
     df_labeled = _timed_call("ieee_severity", timings, apply_severity, df_labeled, nei_reference=None)
@@ -743,7 +836,7 @@ def process_dataframe(uploaded_df: pd.DataFrame):
 
     payload["pipeline"] = {
         "status": "completed",
-        "mode": "fast_production_inference" if fast_mode else "production_inference",
+        "mode": "fast_production_inference",
         "runtime_training": False,
         "runtime_research_benchmark": False,
         "runtime_excel_generation": False,

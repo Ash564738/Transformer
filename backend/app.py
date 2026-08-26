@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 
 import numpy as np
 import pandas as pd
@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 _PREDICTION_LOCK = Lock()
 _PREDICTION_CACHE: dict[str, tuple[float, dict]] = {}
+_INFLIGHT: dict[str, dict] = {}
+
 _CACHE_TTL = max(30, int(os.getenv("DGA_PREDICTION_CACHE_TTL", "600")))
 _MAX_UPLOAD_MB = max(1, int(os.getenv("DGA_MAX_UPLOAD_MB", "10")))
 
@@ -256,23 +258,82 @@ def predict():
         cached.setdefault("pipeline", {})["cache_hit"] = True
         return jsonify(_sanitize_for_json(cached)), 200
 
-    if not _PREDICTION_LOCK.acquire(blocking=False):
-        return jsonify(error="A prediction is already running. Please retry shortly.", retryable=True), 409
+    # De-duplicate identical concurrent requests. The first request computes the
+    # payload; later requests for the same exact input wait for that result
+    # instead of returning a confusing 409 to the browser.
+    with _PREDICTION_LOCK:
+        inflight = _INFLIGHT.get(key)
+        if inflight is None:
+            inflight = {
+                "event": Event(),
+                "payload": None,
+                "error": None,
+            }
+            _INFLIGHT[key] = inflight
+            is_owner = True
+        else:
+            is_owner = False
+
+    if not is_owner:
+        wait_seconds = min(
+            105,
+            max(5, int(os.getenv("DGA_PREDICTION_WAIT_SECONDS", "105"))),
+        )
+        logger.info(
+            "Duplicate prediction request detected; waiting up to %ss | key=%s",
+            wait_seconds,
+            key[:12],
+        )
+        finished = inflight["event"].wait(timeout=wait_seconds)
+        if not finished:
+            return jsonify(
+                error="The current prediction is still running. Please wait a little longer.",
+                retryable=True,
+                status="running",
+            ), 202
+
+        if inflight["error"] is not None:
+            error = inflight["error"]
+            if isinstance(error, ValueError):
+                return jsonify(error=str(error)), 400
+            return jsonify(error=f"Prediction failed: {error}"), 500
+
+        payload = inflight["payload"]
+        if payload is None:
+            return jsonify(
+                error="Prediction finished without a result.",
+                retryable=True,
+            ), 503
+
+        cached_payload = dict(payload)
+        cached_payload.setdefault("pipeline", {})["cache_hit"] = True
+        cached_payload["pipeline"]["deduplicated_request"] = True
+        return jsonify(_sanitize_for_json(cached_payload)), 200
+
+    # Only one request for a given input reaches the CPU-heavy pipeline.
     try:
         started = time.perf_counter()
         from inference_service import process_dataframe
         payload = process_dataframe(input_df)
         payload.setdefault("pipeline", {})["cache_hit"] = False
-        payload["pipeline"]["api_elapsed_seconds"] = round(time.perf_counter() - started, 4)
+        payload["pipeline"]["deduplicated_request"] = False
+        payload["pipeline"]["api_elapsed_seconds"] = round(
+            time.perf_counter() - started, 4
+        )
         _prediction_cache_set(key, payload)
+        inflight["payload"] = payload
         return jsonify(_sanitize_for_json(payload)), 200
     except ValueError as exc:
+        inflight["error"] = exc
         return jsonify(error=str(exc)), 400
     except Exception as exc:
+        inflight["error"] = exc
         logger.exception("Prediction failed")
         return jsonify(error=f"Prediction failed: {exc}"), 500
     finally:
-        _PREDICTION_LOCK.release()
+        inflight["event"].set()
+        with _PREDICTION_LOCK:
+            _INFLIGHT.pop(key, None)
 
 @app.route("/predict/status/<job_id>", methods=["GET"])
 def predict_status(job_id):

@@ -23,6 +23,8 @@ const HEALTH_REQUEST_TIMEOUT_MS = 15_000;
 const RETRYABLE_STATUS = new Set([502, 503, 504]);
 const MAX_NETWORK_RETRIES = 2;
 
+let predictionInFlight: Promise<DgaPayload> | null = null;
+
 export class ApiError extends Error {
   constructor(message: string) {
     super(message);
@@ -351,22 +353,36 @@ async function startPrediction(
 export async function runPredictionFromFile(
   file: File,
 ): Promise<DgaPayload> {
+  // Prevent double-clicks / repeated React effect calls from starting two
+  // expensive requests at the same time.
+  if (predictionInFlight) {
+    return predictionInFlight;
+  }
+
   const form = new FormData();
   form.append("file", file);
 
-  return startPrediction({
+  predictionInFlight = startPrediction({
     method: "POST",
     headers: authHeaders(),
     body: form,
     cache: "no-store",
     mode: "cors",
+  }).finally(() => {
+    predictionInFlight = null;
   });
+
+  return predictionInFlight;
 }
 
 export async function runPredictionFromJson(
   rows: unknown[],
 ): Promise<DgaPayload> {
-  return startPrediction({
+  if (predictionInFlight) {
+    return predictionInFlight;
+  }
+
+  predictionInFlight = startPrediction({
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -377,7 +393,11 @@ export async function runPredictionFromJson(
     }),
     cache: "no-store",
     mode: "cors",
+  }).finally(() => {
+    predictionInFlight = null;
   });
+
+  return predictionInFlight;
 }
 
 export async function askChatBackend(
