@@ -50,30 +50,17 @@ app.json.ensure_ascii = False
 # ============================================================================
 # CORS
 # ============================================================================
-#
-# The frontend calls Render directly:
-#
-#   https://transformer-kgen.onrender.com
-#
-# We explicitly allow the Vercel deployments plus localhost development.
-#
-# flask-cors handles:
-#
-#   - normal responses
-#   - OPTIONS preflight
-#   - Authorization header
-#   - POST multipart/form-data
-#   - POST application/json
-#
-# This is more reliable than manually adding headers in after_request.
-# ============================================================================
+
+import re
 
 DEFAULT_ALLOWED_ORIGINS = [
-    "https://transformer-ftgq1ic4z-ash564738s-projects.vercel.app",
-    "https://transformer.vercel.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
+
+VERCEL_ORIGIN_PATTERN = re.compile(
+    r"^https://transformer(?:-[a-z0-9-]+)?\.vercel\.app$"
+)
 
 configured_origins = os.getenv(
     "CORS_ALLOWED_ORIGINS",
@@ -87,8 +74,9 @@ if configured_origins:
         if origin.strip()
     ]
 else:
-    CORS_ORIGINS = DEFAULT_ALLOWED_ORIGINS
-
+    CORS_ORIGINS = DEFAULT_ALLOWED_ORIGINS + [
+        VERCEL_ORIGIN_PATTERN,
+    ]
 
 CORS(
     app,
@@ -113,12 +101,10 @@ CORS(
     max_age=86400,
 )
 
-
 logger.info(
     "CORS configured | origins=%s",
     CORS_ORIGINS,
 )
-
 
 # ============================================================================
 # Database initialization

@@ -103,34 +103,42 @@ async function handleAuthResponse(
   };
 }
 
+async function fetchBackend(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : String(error);
+
+    throw new ApiError(
+      `Backend request failed: ${message}. URL: ${String(input)}`
+    );
+  }
+}
+
 export async function loginAccount(
   email: string,
   password: string
 ) {
-  let res: Response;
-
-  try {
-    res = await fetch(
-      `${BACKEND_PREFIX}/auth/login`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type":
-            "application/json",
-        },
-        body: JSON.stringify({
-          email,
-          password,
-        }),
-        cache: "no-store",
-      }
-    );
-  } catch (error) {
-    throw new ApiError(
-      `Cannot reach backend at ${BACKEND_PREFIX}. ` +
-        `Check NEXT_PUBLIC_BACKEND_URL and the Render service.`
-    );
-  }
+  const res = await fetchBackend(
+    `${BACKEND_PREFIX}/auth/login`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email,
+        password,
+      }),
+      cache: "no-store",
+    }
+  );
 
   return handleAuthResponse(res);
 }
@@ -249,30 +257,21 @@ async function handlePredictResponse(
 export async function runPredictionFromFile(
   file: File
 ): Promise<DgaPayload> {
-  const form =
-    new FormData();
+  const form = new FormData();
 
   form.append(
     "file",
     file
   );
 
-  let res: Response;
-
-  try {
-    res = await fetch(
-      `${BACKEND_PREFIX}/predict`,
-      {
-        method: "POST",
-        headers: authHeaders(),
-        body: form,
-      }
-    );
-  } catch {
-    throw new ApiError(
-      `Cannot reach backend at ${BACKEND_PREFIX}.`
-    );
-  }
+  const res = await fetchBackend(
+    `${BACKEND_PREFIX}/predict`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: form,
+    }
+  );
 
   return handlePredictResponse(res);
 }
