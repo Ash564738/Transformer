@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import socket
 import math
 import sqlite3
 import time
@@ -28,7 +30,7 @@ _LOCK = Lock()
 _JOB_DB_PATH = DATABASE_DIR / "prediction_jobs.db"
 _JOB_TTL_SECONDS = 24 * 60 * 60
 _MAX_JOBS = 256
-_MAX_RUNNING_SECONDS = 30 * 60
+_MAX_RUNNING_SECONDS = 35 * 60
 
 
 # Initialize the database schema at process startup. This guarantees that the
@@ -180,7 +182,7 @@ def _cleanup_locked(conn: sqlite3.Connection) -> None:
         (
             now,
             now,
-            "Prediction exceeded the maximum runtime of 30 minutes.",
+            "Prediction exceeded the maximum runtime of 35 minutes.",
             stale_cutoff,
         ),
     )
@@ -592,6 +594,9 @@ def prediction_job_store_health() -> dict[str, object]:
     return {
         "ok": True,
         "job_count": int(row["count"] if row else 0),
+        "db_path": str(_JOB_DB_PATH),
+        "pid": os.getpid(),
+        "hostname": socket.gethostname(),
     }
 
 

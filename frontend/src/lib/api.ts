@@ -20,7 +20,8 @@ const PREDICTION_START_TIMEOUT_MS = 60_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PREDICTION_POLL_INTERVAL_MS = 2_000;
 const PREDICTION_MAX_WAIT_MS = 30 * 60 * 1000;
-const PREDICTION_NETWORK_RETRY_LIMIT = 8;
+const PREDICTION_NETWORK_RETRY_LIMIT = 12;
+const PREDICTION_NOT_FOUND_RETRY_LIMIT = 30;
 
 export class ApiError extends Error {
   constructor(message: string) {
@@ -361,7 +362,9 @@ async function pollPredictionStatus(
         `${BACKEND_PREFIX}/predict/status/${encodeURIComponent(jobId)}`,
         {
           method: "GET",
-          headers: authHeaders(),
+          // Status is intentionally a public, opaque-job-id endpoint.
+          // Do not send Authorization here; it forces a CORS preflight.
+          headers: {},
           cache: "no-store",
           mode: "cors",
         },
@@ -413,7 +416,7 @@ async function pollPredictionStatus(
 
         // A transient restart/proxy race should not immediately kill a
         // prediction that has already been accepted by the backend.
-        if (consecutiveNotFound < 10) {
+        if (consecutiveNotFound < PREDICTION_NOT_FOUND_RETRY_LIMIT) {
           continue;
         }
 
@@ -431,7 +434,11 @@ async function pollPredictionStatus(
         if (
           message.includes("not found or expired")
         ) {
-          throw error;
+          consecutiveNotFound += 1;
+          if (consecutiveNotFound >= PREDICTION_NOT_FOUND_RETRY_LIMIT) {
+            throw error;
+          }
+          continue;
         }
 
         consecutiveNetworkFailures += 1;

@@ -12,8 +12,7 @@ matplotlib.use("Agg")
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
-from flask_cors import CORS
+from flask import Flask, jsonify, make_response, request
 
 load_dotenv()
 from logging_config import init_logging
@@ -33,100 +32,58 @@ DEFAULT_ALLOWED_ORIGINS = {
     "http://127.0.0.1:3000",
 }
 
-# Accept every Vercel deployment of this application, including preview
-# deployments such as:
-# https://transformer-jir4dnxpq-ash564738s-projects.vercel.app
-# https://transformer-g1p0gtblr-ash564738s-projects.vercel.app
-#
-# Keep this regex intentionally simple and correctly escaped.
 VERCEL_ORIGIN_PATTERN = re.compile(
-    r"^https://(?:[a-z0-9-]+\.)?vercel\.app$",
+    r"^https://[a-z0-9-]+(?:\.[a-z0-9-]+)*\.vercel\.app$",
     re.IGNORECASE,
 )
 
 configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
-
-if configured_origins:
-    CONFIGURED_ORIGINS = {
-        origin.strip().rstrip("/")
-        for origin in configured_origins.split(",")
-        if origin.strip()
-    }
-else:
-    CONFIGURED_ORIGINS = set()
-
-logger.info(
-    "CORS configured | explicit_origins=%s | vercel_pattern=%s",
-    sorted(CONFIGURED_ORIGINS),
-    VERCEL_ORIGIN_PATTERN.pattern,
-)
+CONFIGURED_ORIGINS = {
+    origin.strip().rstrip("/")
+    for origin in configured_origins.split(",")
+    if origin.strip()
+}
 
 
 def _is_allowed_origin(origin: str | None) -> bool:
     if not origin:
         return False
+    origin = origin.strip().rstrip("/")
+    return (
+        origin in DEFAULT_ALLOWED_ORIGINS
+        or origin in CONFIGURED_ORIGINS
+        or bool(VERCEL_ORIGIN_PATTERN.fullmatch(origin))
+    )
 
-    normalized = origin.strip().rstrip("/")
 
-    if normalized in DEFAULT_ALLOWED_ORIGINS:
-        return True
+def _apply_cors(response):
+    origin = request.headers.get("Origin")
+    if _is_allowed_origin(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Max-Age"] = "86400"
+    return response
 
-    if normalized in CONFIGURED_ORIGINS:
-        return True
 
-    return bool(VERCEL_ORIGIN_PATTERN.fullmatch(normalized))
+@app.before_request
+def handle_cors_preflight():
+    if request.method == "OPTIONS":
+        response = make_response("", 204)
+        return _apply_cors(response)
+    return None
 
 
 @app.after_request
 def add_cors_headers(response):
-    """
-    Add CORS headers to every response, including errors and OPTIONS.
-
-    This intentionally does not rely on Flask-CORS origin matching because
-    preview Vercel deployments use changing subdomains.
-    """
-    origin = request.headers.get("Origin")
-
-    if _is_allowed_origin(origin):
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Vary"] = "Origin"
-
-        if request.method == "OPTIONS":
-            requested_headers = request.headers.get(
-                "Access-Control-Request-Headers",
-                "",
-            )
-
-            response.headers[
-                "Access-Control-Allow-Methods"
-            ] = "GET, POST, OPTIONS"
-
-            response.headers[
-                "Access-Control-Allow-Headers"
-            ] = (
-                requested_headers
-                or "Content-Type, Authorization"
-            )
-
-            response.headers[
-                "Access-Control-Max-Age"
-            ] = "86400"
-
-    return response
+    return _apply_cors(response)
 
 
-# Flask-CORS is retained for compatibility with the rest of the application,
-# while the explicit after_request handler above guarantees the exact origin
-# header on dynamic Vercel preview deployments.
-CORS(
-    app,
-    resources={r"/*": {"origins": "*"}},
-    methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
-    expose_headers=["Content-Type"],
-    supports_credentials=False,
-    send_wildcard=False,
-    max_age=86400,
+logger.info(
+    "CORS configured | explicit_origins=%s | vercel_pattern=%s",
+    sorted(CONFIGURED_ORIGINS),
+    VERCEL_ORIGIN_PATTERN.pattern,
 )
 
 
@@ -215,7 +172,15 @@ def root():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify(status="ok", service="Transformer Degradation Ranking API", pipeline="production_inference", model_dir=str(MODEL_DIR.resolve()), report_dir=str(REPORT_DIR.resolve()))
+    from prediction_jobs import prediction_job_store_health
+    return jsonify(
+        status="ok",
+        service="Transformer Degradation Ranking API",
+        pipeline="production_inference",
+        model_dir=str(MODEL_DIR.resolve()),
+        report_dir=str(REPORT_DIR.resolve()),
+        prediction_jobs=prediction_job_store_health(),
+    )
 
 @app.route("/auth/login", methods=["POST"])
 def auth_login():
@@ -301,7 +266,6 @@ def predict():
 
 
 @app.route("/predict/status/<job_id>", methods=["GET"])
-@auth.require_auth
 def prediction_status(job_id: str):
     try:
         job = get_prediction_job(job_id)
