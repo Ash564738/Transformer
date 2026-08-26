@@ -4,17 +4,15 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
-
+ENV MALLOC_ARENA_MAX=2
 ENV PORT=10000
 
-# Prevent BLAS/OpenMP libraries from consuming the entire Render CPU.
+# Keep scientific libraries from spawning excessive threads on Render's CPU.
 ENV OMP_NUM_THREADS=1
 ENV OPENBLAS_NUM_THREADS=1
 ENV MKL_NUM_THREADS=1
 ENV NUMEXPR_NUM_THREADS=1
 ENV VECLIB_MAXIMUM_THREADS=1
-
-# Force CPU execution for libraries that respect this variable.
 ENV CUDA_VISIBLE_DEVICES=""
 
 WORKDIR /app

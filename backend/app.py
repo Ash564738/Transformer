@@ -1,4 +1,5 @@
 # backend/app.py
+# backend/app.py
 
 from __future__ import annotations
 
@@ -20,7 +21,6 @@ from logging_config import init_logging
 init_logging()
 import auth
 from config import DATASET_DIR, MODEL_DIR, REPORT_DIR, config as cfg
-from inference_service import process_dataframe
 from prediction_jobs import get_prediction_job, submit_prediction
 from text2sql_chat import answer_question
 
@@ -183,19 +183,12 @@ def predict():
         )
 
         if data.empty:
-            return jsonify(
-                error="No data provided."
-            ), 400
+            return jsonify(error="No data provided."), 400
 
         try:
             job_id = submit_prediction(data)
-
         except RuntimeError as exc:
-            logger.warning(
-                "Prediction rejected: %s",
-                exc,
-            )
-
+            logger.warning("Prediction rejected: %s", exc)
             return jsonify(
                 error=str(exc),
                 pipeline_status="busy",
@@ -203,35 +196,34 @@ def predict():
 
         return jsonify(
             job_id=job_id,
-            status="running",
+            status="queued",
             poll_url=f"/predict/status/{job_id}",
-            message="Prediction started.",
+            message="Prediction started. Poll the status endpoint for the result.",
         ), 202
 
     except ValueError as exc:
-        logger.exception(
-            "Prediction validation error"
-        )
-
+        logger.exception("Prediction validation error")
         return jsonify(
             error=str(exc),
             pipeline_status="failed",
         ), 400
 
-    except Exception as exc:
-        logger.exception(
-            "Failed to start prediction"
-        )
+    except FileNotFoundError as exc:
+        logger.exception("Prediction model artifact missing")
+        return jsonify(
+            error=str(exc),
+            pipeline_status="model_missing",
+        ), 503
 
+    except Exception as exc:
+        logger.exception("Failed to start prediction")
         return jsonify(
             error=str(exc),
             pipeline_status="failed",
         ), 500
 
-@app.route(
-    "/predict/status/<job_id>",
-    methods=["GET"],
-)
+
+@app.route("/predict/status/<job_id>", methods=["GET"])
 @auth.require_auth
 def prediction_status(job_id: str):
     try:
@@ -244,43 +236,29 @@ def prediction_status(job_id: str):
                 error="Prediction job not found or expired.",
             ), 404
 
-        status = job.get(
-            "status",
-            "running",
-        )
+        status = job.get("status", "running")
 
         if status == "completed":
             return jsonify(
                 job_id=job_id,
                 status="completed",
-                elapsed_seconds=job.get(
-                    "elapsed_seconds"
-                ),
-                result=_sanitize_for_json(
-                    job.get("result")
-                ),
+                elapsed_seconds=job.get("elapsed_seconds"),
+                result=_sanitize_for_json(job.get("result")),
             ), 200
 
         if status == "failed":
             return jsonify(
                 job_id=job_id,
                 status="failed",
-                elapsed_seconds=job.get(
-                    "elapsed_seconds"
-                ),
-                error=job.get("error")
-                or "Prediction failed.",
+                elapsed_seconds=job.get("elapsed_seconds"),
+                error=job.get("error") or "Prediction failed.",
             ), 200
 
         return jsonify(
             job_id=job_id,
             status=status,
-            elapsed_seconds=job.get(
-                "elapsed_seconds"
-            ),
-            running_seconds=job.get(
-                "running_seconds"
-            ),
+            elapsed_seconds=job.get("elapsed_seconds"),
+            running_seconds=job.get("running_seconds"),
         ), 200
 
     except Exception as exc:
@@ -288,7 +266,6 @@ def prediction_status(job_id: str):
             "Prediction status endpoint failed | job_id=%s",
             job_id,
         )
-
         return jsonify(
             job_id=job_id,
             status="failed",
