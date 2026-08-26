@@ -26,9 +26,26 @@ _EXECUTOR = ThreadPoolExecutor(
 _LOCK = Lock()
 
 _JOB_DB_PATH = DATABASE_DIR / "prediction_jobs.db"
-_JOB_TTL_SECONDS = 60 * 60
-_MAX_JOBS = 32
+_JOB_TTL_SECONDS = 24 * 60 * 60
+_MAX_JOBS = 256
 _MAX_RUNNING_SECONDS = 30 * 60
+
+
+# Initialize the database schema at process startup. This guarantees that the
+# status endpoint can open the same persistent store immediately after deploy.
+def _initialize_job_store() -> None:
+    try:
+        with _connect() as conn:
+            _ensure_schema(conn)
+        logger.info(
+            "Prediction job store initialized | db=%s",
+            _JOB_DB_PATH,
+        )
+    except Exception:
+        logger.exception(
+            "Prediction job store initialization failed | db=%s",
+            _JOB_DB_PATH,
+        )
 
 
 def _connect() -> sqlite3.Connection:
@@ -83,6 +100,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
 
     conn.commit()
+
+
+_initialize_job_store()
 
 
 def _json_default(value: Any):
@@ -142,10 +162,9 @@ def _deserialize_result(result_json: str | None):
 
 
 def _cleanup_locked(conn: sqlite3.Connection) -> None:
-    """Remove expired jobs and mark abandoned running jobs as failed."""
+    """Clean up only terminal jobs and mark genuinely stale workers failed."""
     now = time.time()
 
-    # A running job older than the hard limit is no longer considered healthy.
     stale_cutoff = now - _MAX_RUNNING_SECONDS
 
     conn.execute(
@@ -166,24 +185,25 @@ def _cleanup_locked(conn: sqlite3.Connection) -> None:
         ),
     )
 
-    # Keep completed/failed/queued metadata for one hour. This is long enough
-    # for the frontend's 30-minute polling window and protects against transient
-    # cross-process requests/deploys.
     expiry_cutoff = now - _JOB_TTL_SECONDS
 
+    # IMPORTANT: never delete queued/running jobs. The browser may poll them
+    # throughout the whole inference period.
     conn.execute(
         """
         DELETE FROM prediction_jobs
-        WHERE COALESCE(completed_at, created_at) < ?
+        WHERE status IN ('completed', 'failed')
+          AND COALESCE(completed_at, created_at) < ?
         """,
         (expiry_cutoff,),
     )
 
-    # Bound the table to a small number of recent jobs.
+    # Limit only terminal history. Active jobs are never evicted.
     rows = conn.execute(
         """
         SELECT job_id
         FROM prediction_jobs
+        WHERE status IN ('completed', 'failed')
         ORDER BY COALESCE(completed_at, created_at) DESC
         LIMIT -1 OFFSET ?
         """,
@@ -540,14 +560,39 @@ def submit_prediction(dataframe) -> str:
 def get_prediction_job(
     job_id: str,
 ) -> dict[str, Any] | None:
-    """Return a persistent job record from SQLite."""
+    """Return a job without deleting or evicting it during polling."""
     with _connect() as conn:
         _ensure_schema(conn)
-        _cleanup_locked(conn)
-        return _get_job_locked(
-            conn,
-            job_id,
-        )
+        job = _get_job_locked(conn, job_id)
+
+        if job is None:
+            logger.warning(
+                "PREDICTION JOB NOT FOUND | job_id=%s | db=%s",
+                job_id,
+                _JOB_DB_PATH,
+            )
+        else:
+            logger.info(
+                "PREDICTION JOB STATUS | job_id=%s | status=%s",
+                job_id,
+                job.get("status"),
+            )
+
+        return job
+
+
+def prediction_job_store_health() -> dict[str, object]:
+    """Return minimal diagnostics proving that the persistent job store works."""
+    with _connect() as conn:
+        _ensure_schema(conn)
+        row = conn.execute(
+            "SELECT COUNT(*) AS count FROM prediction_jobs"
+        ).fetchone()
+
+    return {
+        "ok": True,
+        "job_count": int(row["count"] if row else 0),
+    }
 
 
 def delete_prediction_job(

@@ -229,6 +229,10 @@ def prediction_status(job_id: str):
         job = get_prediction_job(job_id)
 
         if job is None:
+            logger.error(
+                "PREDICTION STATUS NOT_FOUND | job_id=%s",
+                job_id,
+            )
             return jsonify(
                 job_id=job_id,
                 status="not_found",
@@ -442,3 +446,10 @@ def chat():
     except Exception as exc:
         logger.exception("Chat request failed")
         return jsonify(error=str(exc)), 500
+
+if __name__ == "__main__":
+    logger.info("Starting Transformer DGA API")
+    logger.info("MODEL_DIR=%s", MODEL_DIR.resolve())
+    logger.info("REPORT_DIR=%s", REPORT_DIR.resolve())
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=False)
