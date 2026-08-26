@@ -38,4 +38,4 @@ COPY backend/ ./
 
 EXPOSE 10000
 
-CMD ["sh", "-c", "exec gunicorn app:app --bind 0.0.0.0:${PORT} --workers 1 --threads 4 --worker-class gthread --timeout 900 --graceful-timeout 900 --keep-alive 30 --worker-tmp-dir /dev/shm --access-logfile - --error-logfile - --log-level info"]
+CMD ["sh", "-c", "exec gunicorn app:app --bind 0.0.0.0:${PORT} --workers 1 --threads 4 --worker-class gthread --timeout 1500 --graceful-timeout 1500 --keep-alive 30 --worker-tmp-dir /dev/shm --access-logfile - --error-logfile - --log-level info"]

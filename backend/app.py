@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from pathlib import Path
+from threading import Lock
 
 import matplotlib
 matplotlib.use("Agg")
@@ -19,10 +21,12 @@ from logging_config import init_logging
 init_logging()
 import auth
 from config import DATASET_DIR, MODEL_DIR, REPORT_DIR, config as cfg
-from prediction_jobs import get_prediction_job, submit_prediction
+from inference_service import process_dataframe
 from text2sql_chat import answer_question
 
 logger = logging.getLogger(__name__)
+
+_PREDICTION_LOCK = Lock()
 
 app = Flask(__name__)
 app.json.ensure_ascii = False
@@ -33,7 +37,7 @@ DEFAULT_ALLOWED_ORIGINS = {
 }
 
 VERCEL_ORIGIN_PATTERN = re.compile(
-    r"^https://[a-z0-9-]+(?:\.[a-z0-9-]+)*\.vercel\.app$",
+    r"^https://(?:[a-z0-9-]+\.)?vercel\.app$",
     re.IGNORECASE,
 )
 
@@ -172,14 +176,12 @@ def root():
 
 @app.route("/health", methods=["GET"])
 def health():
-    from prediction_jobs import prediction_job_store_health
     return jsonify(
         status="ok",
         service="Transformer Degradation Ranking API",
         pipeline="production_inference",
         model_dir=str(MODEL_DIR.resolve()),
         report_dir=str(REPORT_DIR.resolve()),
-        prediction_jobs=prediction_job_store_health(),
     )
 
 @app.route("/auth/login", methods=["POST"])
@@ -209,9 +211,25 @@ def auth_logout():
 @app.route("/predict", methods=["POST"])
 @auth.require_auth
 def predict():
+    """Run the production inference synchronously and return the result.
+
+    The previous implementation created an in-process background job and
+    stored its state in SQLite on Render's ephemeral filesystem. A Render
+    restart could therefore kill the worker and delete the job database,
+    producing the recurring "job not found or expired" failure.
+
+    This endpoint deliberately has no job_id and no polling protocol.
+    """
+    if not _PREDICTION_LOCK.acquire(blocking=False):
+        return jsonify(
+            error="A prediction is already running. Please wait for it to finish."
+        ), 409
+
+    started = time.perf_counter()
+
     try:
         logger.info(
-            "UPLOAD REQUEST RECEIVED | origin=%s | content_type=%s",
+            "PREDICTION REQUEST RECEIVED | origin=%s | content_type=%s",
             request.headers.get("Origin"),
             request.content_type,
         )
@@ -227,21 +245,16 @@ def predict():
         if data.empty:
             return jsonify(error="No data provided."), 400
 
-        try:
-            job_id = submit_prediction(data)
-        except RuntimeError as exc:
-            logger.warning("Prediction rejected: %s", exc)
-            return jsonify(
-                error=str(exc),
-                pipeline_status="busy",
-            ), 409
+        result = process_dataframe(data)
+        elapsed = time.perf_counter() - started
 
-        return jsonify(
-            job_id=job_id,
-            status="queued",
-            poll_url=f"/predict/status/{job_id}",
-            message="Prediction started. Poll the status endpoint for the result.",
-        ), 202
+        logger.info(
+            "PREDICTION REQUEST COMPLETED | rows=%d | elapsed=%.3fs",
+            len(data),
+            elapsed,
+        )
+
+        return jsonify(_sanitize_for_json(result)), 200
 
     except ValueError as exc:
         logger.exception("Prediction validation error")
@@ -258,64 +271,29 @@ def predict():
         ), 503
 
     except Exception as exc:
-        logger.exception("Failed to start prediction")
+        logger.exception("Prediction request failed")
         return jsonify(
             error=str(exc),
             pipeline_status="failed",
         ), 500
+    finally:
+        _PREDICTION_LOCK.release()
 
 
 @app.route("/predict/status/<job_id>", methods=["GET"])
-def prediction_status(job_id: str):
-    try:
-        job = get_prediction_job(job_id)
+def deprecated_prediction_status(job_id: str):
+    """Compatibility endpoint for stale browser tabs.
 
-        if job is None:
-            logger.error(
-                "PREDICTION STATUS NOT_FOUND | job_id=%s",
-                job_id,
-            )
-            return jsonify(
-                job_id=job_id,
-                status="not_found",
-                error="Prediction job not found or expired.",
-            ), 404
+    Job/polling mode has intentionally been removed. Returning 410 makes the
+    migration explicit instead of pretending a vanished job is an application
+    failure.
+    """
+    return jsonify(
+        job_id=job_id,
+        status="deprecated",
+        error="Prediction job polling has been removed. Start a new prediction with POST /predict.",
+    ), 410
 
-        status = job.get("status", "running")
-
-        if status == "completed":
-            return jsonify(
-                job_id=job_id,
-                status="completed",
-                elapsed_seconds=job.get("elapsed_seconds"),
-                result=_sanitize_for_json(job.get("result")),
-            ), 200
-
-        if status == "failed":
-            return jsonify(
-                job_id=job_id,
-                status="failed",
-                elapsed_seconds=job.get("elapsed_seconds"),
-                error=job.get("error") or "Prediction failed.",
-            ), 200
-
-        return jsonify(
-            job_id=job_id,
-            status=status,
-            elapsed_seconds=job.get("elapsed_seconds"),
-            running_seconds=job.get("running_seconds"),
-        ), 200
-
-    except Exception as exc:
-        logger.exception(
-            "Prediction status endpoint failed | job_id=%s",
-            job_id,
-        )
-        return jsonify(
-            job_id=job_id,
-            status="failed",
-            error=str(exc),
-        ), 200
 
 @app.route("/dataset/reset", methods=["POST"])
 @auth.require_auth

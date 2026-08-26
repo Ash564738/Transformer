@@ -16,12 +16,8 @@ const BACKEND_PREFIX = (
 
 const AUTH_TOKEN_KEY = "dga-auth-token";
 
-const PREDICTION_START_TIMEOUT_MS = 60_000;
+const PREDICTION_START_TIME_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
-const PREDICTION_POLL_INTERVAL_MS = 2_000;
-const PREDICTION_MAX_WAIT_MS = 30 * 60 * 1000;
-const PREDICTION_NETWORK_RETRY_LIMIT = 12;
-const PREDICTION_NOT_FOUND_RETRY_LIMIT = 30;
 
 export class ApiError extends Error {
   constructor(message: string) {
@@ -287,226 +283,17 @@ async function handlePredictResponse(
   return body as DgaPayload;
 }
 
-interface PredictionStartResponse {
-  job_id: string;
-  status: "queued";
-  poll_url?: string;
-}
-
-type PredictionJobStatus =
-  | "queued"
-  | "running"
-  | "completed"
-  | "failed"
-  | "not_found";
-
-interface PredictionStatusResponse {
-  job_id: string;
-  status: PredictionJobStatus;
-  result?: DgaPayload;
-  error?: string;
-  elapsed_seconds?: number;
-  running_seconds?: number;
-}
-
-function isRecord(
-  value: unknown
-): value is Record<string, unknown> {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value)
+async function startPrediction(init: RequestInit): Promise<DgaPayload> {
+  const response = await fetchWithTimeout(
+    `${BACKEND_PREFIX}/predict`,
+    init,
+    PREDICTION_START_TIME_TIMEOUT_MS
   );
+
+  return handlePredictResponse(response);
 }
 
-function isPredictionStatusResponse(
-  value: unknown
-): value is PredictionStatusResponse {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  const status = value.status;
-
-  return (
-    typeof value.job_id === "string" &&
-    (
-      status === "queued" ||
-      status === "running" ||
-      status === "completed" ||
-      status === "failed" ||
-      status === "not_found"
-    )
-  );
-}
-
-async function pollPredictionStatus(
-  jobId: string
-): Promise<DgaPayload> {
-  const deadline =
-    Date.now() + PREDICTION_MAX_WAIT_MS;
-
-  let consecutiveNetworkFailures = 0;
-  let consecutiveNotFound = 0;
-
-  while (Date.now() < deadline) {
-    await new Promise<void>((resolve) => {
-      window.setTimeout(
-        resolve,
-        PREDICTION_POLL_INTERVAL_MS
-      );
-    });
-
-    try {
-      const response = await fetchWithTimeout(
-        `${BACKEND_PREFIX}/predict/status/${encodeURIComponent(jobId)}`,
-        {
-          method: "GET",
-          // Status is intentionally a public, opaque-job-id endpoint.
-          // Do not send Authorization here; it forces a CORS preflight.
-          headers: {},
-          cache: "no-store",
-          mode: "cors",
-        },
-        DEFAULT_REQUEST_TIMEOUT_MS
-      );
-
-      const raw =
-        await response.json().catch(() => null);
-
-      if (
-        !raw ||
-        !isPredictionStatusResponse(raw)
-      ) {
-        consecutiveNetworkFailures += 1;
-
-        if (
-          consecutiveNetworkFailures >=
-          PREDICTION_NETWORK_RETRY_LIMIT
-        ) {
-          throw new ApiError(
-            `Backend returned an invalid prediction status response. URL: ${BACKEND_PREFIX}/predict/status/${jobId}`
-          );
-        }
-
-        continue;
-      }
-
-      consecutiveNetworkFailures = 0;
-
-      if (raw.status === "completed") {
-        if (!raw.result) {
-          throw new ApiError(
-            "Prediction completed but returned no result."
-          );
-        }
-
-        return raw.result;
-      }
-
-      if (raw.status === "failed") {
-        throw new ApiError(
-          raw.error ||
-            "Prediction worker failed."
-        );
-      }
-
-      if (raw.status === "not_found") {
-        consecutiveNotFound += 1;
-
-        // A transient restart/proxy race should not immediately kill a
-        // prediction that has already been accepted by the backend.
-        if (consecutiveNotFound < PREDICTION_NOT_FOUND_RETRY_LIMIT) {
-          continue;
-        }
-
-        throw new ApiError(
-          raw.error ||
-            "Prediction job not found or expired."
-        );
-      }
-
-      consecutiveNotFound = 0;
-    } catch (error) {
-      if (error instanceof ApiError) {
-        const message = error.message.toLowerCase();
-
-        if (
-          message.includes("not found or expired")
-        ) {
-          consecutiveNotFound += 1;
-          if (consecutiveNotFound >= PREDICTION_NOT_FOUND_RETRY_LIMIT) {
-            throw error;
-          }
-          continue;
-        }
-
-        consecutiveNetworkFailures += 1;
-
-        if (
-          consecutiveNetworkFailures >=
-          PREDICTION_NETWORK_RETRY_LIMIT
-        ) {
-          throw error;
-        }
-
-        continue;
-      }
-
-      consecutiveNetworkFailures += 1;
-
-      if (
-        consecutiveNetworkFailures >=
-        PREDICTION_NETWORK_RETRY_LIMIT
-      ) {
-        throw new ApiError(
-          `Unable to reach prediction status endpoint after ${consecutiveNetworkFailures} attempts. URL: ${BACKEND_PREFIX}/predict/status/${jobId}`
-        );
-      }
-    }
-  }
-
-  throw new ApiError(
-    "Prediction exceeded the 30-minute client wait limit."
-  );
-}
-
-async function startPrediction(
-  init: RequestInit
-): Promise<DgaPayload> {
-  const startResponse =
-    await fetchWithTimeout(
-      `${BACKEND_PREFIX}/predict`,
-      init,
-      PREDICTION_START_TIMEOUT_MS
-    );
-
-  if (startResponse.status !== 202) {
-    return handlePredictResponse(startResponse);
-  }
-
-  const raw =
-    await startResponse.json().catch(() => null);
-
-  if (
-    !raw ||
-    typeof raw !== "object" ||
-    Array.isArray(raw) ||
-    typeof (raw as PredictionStartResponse).job_id !== "string"
-  ) {
-    throw new ApiError(
-      "Backend returned an invalid prediction job response."
-    );
-  }
-
-  return pollPredictionStatus(
-    (raw as PredictionStartResponse).job_id
-  );
-}
-
-export async function runPredictionFromFile(
-  file: File
-): Promise<DgaPayload> {
+export async function runPredictionFromFile(file: File): Promise<DgaPayload> {
   const form = new FormData();
   form.append("file", file);
 
@@ -519,18 +306,14 @@ export async function runPredictionFromFile(
   });
 }
 
-export async function runPredictionFromJson(
-  rows: unknown[]
-): Promise<DgaPayload> {
+export async function runPredictionFromJson(rows: unknown[]): Promise<DgaPayload> {
   return startPrediction({
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...authHeaders(),
     },
-    body: JSON.stringify({
-      data: rows,
-    }),
+    body: JSON.stringify({ data: rows }),
     cache: "no-store",
     mode: "cors",
   });
