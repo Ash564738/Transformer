@@ -7,7 +7,6 @@
 #   [core]      : Flask API, xử lý dữ liệu, machine learning cơ bản
 #   [training]  : Huấn luyện model (LightGBM, XGBoost, CatBoost, Temporal)
 #   [optional]  : Snorkel (weak supervision), SHAP (giải thích model)
-# ============================================================
 
 flask
 flask-cors
@@ -33,3 +32,5 @@ xgboost
 lifelines
 shap
 snorkel
+
+attrs>=23.1.0
