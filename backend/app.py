@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import time
 from pathlib import Path
 from threading import Lock
@@ -14,7 +13,8 @@ matplotlib.use("Agg")
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
-from flask import Flask, jsonify, make_response, request
+from flask import Flask, jsonify, request
+from flask_cors import CORS
 
 load_dotenv()
 from logging_config import init_logging
@@ -31,52 +31,11 @@ _PREDICTION_LOCK = Lock()
 app = Flask(__name__)
 app.json.ensure_ascii = False
 
-# Cấu hình CORS: mặc định cho phép tất cả origin
-# Nếu muốn giới hạn, đặt biến môi trường CORS_ALLOWED_ORIGINS thành danh sách các origin (phân tách bằng dấu phẩy)
-# Ví dụ: CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
-# Nếu không đặt, mọi origin đều được phép (Access-Control-Allow-Origin: *)
-CORS_ALLOWED_ORIGINS_ENV = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
-if CORS_ALLOWED_ORIGINS_ENV:
-    ALLOWED_ORIGINS = {origin.strip().rstrip("/") for origin in CORS_ALLOWED_ORIGINS_ENV.split(",") if origin.strip()}
-else:
-    ALLOWED_ORIGINS = None  # None có nghĩa là cho phép tất cả
+# Bật CORS cho tất cả origin, mọi route
+CORS(app, resources={r"/*": {"origins": "*"}})
 
-def _apply_cors(response):
-    origin = request.headers.get("Origin")
-    if ALLOWED_ORIGINS is None:
-        # Cho phép tất cả origin
-        response.headers["Access-Control-Allow-Origin"] = "*"
-    else:
-        if origin and origin.strip().rstrip("/") in ALLOWED_ORIGINS:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Vary"] = "Origin"
-        else:
-            # Nếu origin không được phép, vẫn trả về header với giá trị '*' để tránh lỗi CORS
-            # Tuy nhiên, điều này có thể không an toàn, nhưng tạm thời chấp nhận
-            response.headers["Access-Control-Allow-Origin"] = "*"
+# Các route và logic khác giữ nguyên, nhưng bỏ các hàm _apply_cors, before_request, after_request
 
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    response.headers["Access-Control-Max-Age"] = "86400"
-    return response
-
-@app.before_request
-def handle_cors_preflight():
-    if request.method == "OPTIONS":
-        response = make_response("", 204)
-        return _apply_cors(response)
-    return None
-
-@app.after_request
-def add_cors_headers(response):
-    return _apply_cors(response)
-
-logger.info(
-    "CORS configured | allowed_origins=%s",
-    "ALL" if ALLOWED_ORIGINS is None else sorted(ALLOWED_ORIGINS)
-)
-
-# Phần còn lại giữ nguyên
 auth.init_db()
 
 @app.errorhandler(400)
