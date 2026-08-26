@@ -42,6 +42,7 @@ VERCEL_ORIGIN_PATTERN = re.compile(
 )
 
 configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+
 CONFIGURED_ORIGINS = {
     origin.strip().rstrip("/")
     for origin in configured_origins.split(",")
@@ -52,22 +53,32 @@ CONFIGURED_ORIGINS = {
 def _is_allowed_origin(origin: str | None) -> bool:
     if not origin:
         return False
-    origin = origin.strip().rstrip("/")
-    return (
-        origin in DEFAULT_ALLOWED_ORIGINS
-        or origin in CONFIGURED_ORIGINS
-        or bool(VERCEL_ORIGIN_PATTERN.fullmatch(origin))
-    )
+
+    normalized = origin.strip().rstrip("/")
+
+    if normalized in DEFAULT_ALLOWED_ORIGINS:
+        return True
+
+    if normalized in CONFIGURED_ORIGINS:
+        return True
+
+    return bool(VERCEL_ORIGIN_PATTERN.fullmatch(normalized))
 
 
 def _apply_cors(response):
     origin = request.headers.get("Origin")
+
     if _is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Vary"] = "Origin"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Methods"] = (
+            "GET, POST, OPTIONS"
+        )
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization"
+        )
         response.headers["Access-Control-Max-Age"] = "86400"
+        response.headers["Vary"] = "Origin"
+
     return response
 
 
@@ -76,6 +87,7 @@ def handle_cors_preflight():
     if request.method == "OPTIONS":
         response = make_response("", 204)
         return _apply_cors(response)
+
     return None
 
 

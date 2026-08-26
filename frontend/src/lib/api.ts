@@ -1,4 +1,3 @@
-// src/lib/api.ts
 import type { DgaPayload } from "@/types/dga";
 
 const DEFAULT_PRODUCTION_BACKEND =
@@ -16,8 +15,11 @@ const BACKEND_PREFIX = (
 
 const AUTH_TOKEN_KEY = "dga-auth-token";
 
-const PREDICTION_START_TIME_TIMEOUT_MS = 20 * 60 * 1000;
-const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+const PREDICTION_REQUEST_TIMEOUT_MS =
+  90 * 60 * 9000;
+
+const DEFAULT_REQUEST_TIMEOUT_MS =
+  60_000;
 
 export class ApiError extends Error {
   constructor(message: string) {
@@ -31,7 +33,9 @@ export function getAuthToken(): string | null {
     return null;
   }
 
-  return window.localStorage.getItem(AUTH_TOKEN_KEY);
+  return window.localStorage.getItem(
+    AUTH_TOKEN_KEY
+  );
 }
 
 function authHeaders(): Record<string, string> {
@@ -100,7 +104,9 @@ async function fetchWithTimeout(
         : String(error);
 
     throw new ApiError(
-      `Backend request failed: ${message}. URL: ${String(input)}`
+      `Backend request failed: ${message}. URL: ${String(
+        input
+      )}`
     );
   } finally {
     window.clearTimeout(timer);
@@ -124,7 +130,8 @@ async function handleAuthResponse(
   user: AuthUser;
   token: string;
 }> {
-  const body = await parseJsonResponse(res);
+  const body =
+    await parseJsonResponse(res);
 
   if (!res.ok) {
     const message =
@@ -197,7 +204,8 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
       return null;
     }
 
-    const body = await parseJsonResponse(res);
+    const body =
+      await parseJsonResponse(res);
 
     if (
       !body.user ||
@@ -261,20 +269,26 @@ export async function checkBackendHealth(): Promise<boolean> {
 async function handlePredictResponse(
   res: Response
 ): Promise<DgaPayload> {
-  const body = await res.json().catch(() => null);
+  const body =
+    await res.json().catch(() => null);
 
   if (!res.ok) {
     const message =
       body &&
       typeof body === "object" &&
-      typeof (body as { error?: unknown }).error === "string"
+      typeof (
+        body as { error?: unknown }
+      ).error === "string"
         ? (body as { error: string }).error
         : `Prediction request failed (${res.status}).`;
 
     throw new ApiError(message);
   }
 
-  if (!body || typeof body !== "object") {
+  if (
+    !body ||
+    typeof body !== "object"
+  ) {
     throw new ApiError(
       "Backend returned an invalid prediction response."
     );
@@ -283,18 +297,26 @@ async function handlePredictResponse(
   return body as DgaPayload;
 }
 
-async function startPrediction(init: RequestInit): Promise<DgaPayload> {
-  const response = await fetchWithTimeout(
-    `${BACKEND_PREFIX}/predict`,
-    init,
-    PREDICTION_START_TIME_TIMEOUT_MS
-  );
+async function startPrediction(
+  init: RequestInit
+): Promise<DgaPayload> {
+  const response =
+    await fetchWithTimeout(
+      `${BACKEND_PREFIX}/predict`,
+      init,
+      PREDICTION_REQUEST_TIMEOUT_MS
+    );
 
-  return handlePredictResponse(response);
+  return handlePredictResponse(
+    response
+  );
 }
 
-export async function runPredictionFromFile(file: File): Promise<DgaPayload> {
+export async function runPredictionFromFile(
+  file: File
+): Promise<DgaPayload> {
   const form = new FormData();
+
   form.append("file", file);
 
   return startPrediction({
@@ -306,14 +328,18 @@ export async function runPredictionFromFile(file: File): Promise<DgaPayload> {
   });
 }
 
-export async function runPredictionFromJson(rows: unknown[]): Promise<DgaPayload> {
+export async function runPredictionFromJson(
+  rows: unknown[]
+): Promise<DgaPayload> {
   return startPrediction({
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...authHeaders(),
     },
-    body: JSON.stringify({ data: rows }),
+    body: JSON.stringify({
+      data: rows,
+    }),
     cache: "no-store",
     mode: "cors",
   });
@@ -329,26 +355,28 @@ export async function askChatBackend(
   context: unknown,
   history?: ChatHistoryTurn[]
 ): Promise<string> {
-  const res = await fetchBackend(
-    `${BACKEND_PREFIX}/chat`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(),
-      },
-      body: JSON.stringify({
-        question,
-        context,
-        history,
-      }),
-      cache: "no-store",
-      mode: "cors",
-    }
-  );
+  const res =
+    await fetchBackend(
+      `${BACKEND_PREFIX}/chat`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders(),
+        },
+        body: JSON.stringify({
+          question,
+          context,
+          history,
+        }),
+        cache: "no-store",
+        mode: "cors",
+      }
+    );
 
   if (!res.ok) {
-    const body = await parseJsonResponse(res);
+    const body =
+      await parseJsonResponse(res);
 
     const message =
       typeof body.error === "string"
@@ -358,9 +386,12 @@ export async function askChatBackend(
     throw new ApiError(message);
   }
 
-  const body = await parseJsonResponse(res);
+  const body =
+    await parseJsonResponse(res);
 
-  if (typeof body.answer !== "string") {
+  if (
+    typeof body.answer !== "string"
+  ) {
     throw new ApiError(
       "Backend returned an invalid chat response."
     );
