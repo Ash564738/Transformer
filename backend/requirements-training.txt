@@ -1,0 +1,14 @@
+# requirements-training.txt
+
+-r requirements.txt
+
+catboost
+imbalanced-learn
+lightgbm
+torch
+xgboost
+
+lifelines
+shap
+seaborn
+snorkel

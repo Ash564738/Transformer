@@ -22,7 +22,7 @@ Thumbs.db
 
 # Project data (ignore toàn bộ nội dung bên trong)
 # backend/dataset/
-backend/models/
+# backend/models/
 # backend/reports/
 # backend/database/
 backend/logs/

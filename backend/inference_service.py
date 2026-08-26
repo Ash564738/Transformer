@@ -2781,30 +2781,20 @@ def process_dataframe(
     """
     Production inference only.
 
-    There is deliberately NO:
-      - model training
-      - weak-supervision fitting
-      - student training
-      - anomaly fitting
-      - supervised benchmark
-      - traditional benchmark
-      - weak-transfer benchmark
-      - hybrid benchmark
-      - Excel research report generation
+    IMPORTANT:
+    The uploaded dataframe is already parsed by Flask.
+    Do NOT convert it to XLSX and read it again.
+
+    This avoids the expensive:
+
+        DataFrame -> openpyxl -> XLSX -> read_excel -> DataFrame
+
+    round trip.
     """
 
     overall_started = time.perf_counter()
 
-    timings: dict[
-        str,
-        float,
-    ] = {}
-
-    tmp_dir = Path(
-        tempfile.mkdtemp(
-            prefix="dga_inference_"
-        )
-    )
+    timings: dict[str, float] = {}
 
     PROCESSED_DIR.mkdir(
         parents=True,
@@ -2816,46 +2806,83 @@ def process_dataframe(
         exist_ok=True,
     )
 
+    logger.info(
+        "\n%s\n"
+        "# PRODUCTION DGA INFERENCE START\n"
+        "# uploaded rows=%d\n"
+        "# uploaded columns=%d\n"
+        "%s",
+        "#" * 110,
+        len(uploaded_df),
+        len(uploaded_df.columns),
+        "#" * 110,
+    )
+
     try:
+        # ================================================================
+        # 1. Validate input
+        # ================================================================
+
+        if uploaded_df is None:
+            raise ValueError(
+                "Uploaded dataframe is None."
+            )
+
+        if uploaded_df.empty:
+            raise ValueError(
+                "Uploaded dataframe is empty."
+            )
+
+        # Work on a copy so the original request dataframe is never mutated.
+        input_df = uploaded_df.copy()
+
         logger.info(
-            "\n%s\n"
-            "# PRODUCTION DGA INFERENCE START\n"
-            "# uploaded rows=%d\n"
-            "%s",
-            "#" * 110,
-            len(uploaded_df),
-            "#" * 110,
+            "Input dataframe ready | rows=%d | columns=%d",
+            len(input_df),
+            len(input_df.columns),
         )
 
-        # --------------------------------------------------------------------
-        # 1. Temporary input
-        # --------------------------------------------------------------------
+        # ================================================================
+        # 2. Cleaning
+        # ================================================================
+        #
+        # The important change is that clean_dataset() receives the
+        # dataframe directly.
+        #
+        # No temporary XLSX is created.
+        # ================================================================
 
-        input_path = (
-            tmp_dir
-            / "uploaded_input.xlsx"
+        logger.info(
+            "[PIPELINE] Cleaning dataset directly from dataframe"
         )
 
-        _timed_call(
-            "write_temporary_excel",
-            timings,
-            uploaded_df.to_excel,
-            input_path,
-            index=False,
-            engine="openpyxl",
-        )
+        clean_started = time.perf_counter()
 
-        # --------------------------------------------------------------------
-        # 2. Clean
-        # --------------------------------------------------------------------
-
-        df_clean, _ = _timed_call(
-            "clean_dataset",
-            timings,
-            clean_dataset,
-            input_file=input_path,
+        df_clean, clean_summary = clean_dataset(
+            dataframe=input_df,
             output_dir=PROCESSED_DIR,
         )
+
+        clean_elapsed = (
+            time.perf_counter()
+            - clean_started
+        )
+
+        timings["clean_dataset"] = round(
+            clean_elapsed,
+            4,
+        )
+
+        logger.info(
+            "[TIMER] END clean_dataset | %.4f seconds",
+            clean_elapsed,
+        )
+
+        if clean_elapsed >= SLOW_STAGE_SECONDS:
+            logger.warning(
+                "[TIMER] SLOW STAGE clean_dataset | %.4f seconds",
+                clean_elapsed,
+            )
 
         if df_clean.empty:
             raise ValueError(
@@ -2863,25 +2890,19 @@ def process_dataframe(
             )
 
         logger.info(
-            "Cleaning complete | "
-            "rows=%d | transformers=%d | columns=%d",
+            "Cleaning complete | rows=%d | transformers=%d | columns=%d",
             len(df_clean),
             (
-                df_clean[
-                    "transformer_id"
-                ].nunique()
-                if "transformer_id"
-                in df_clean.columns
+                df_clean["transformer_id"].nunique()
+                if "transformer_id" in df_clean.columns
                 else 0
             ),
-            len(
-                df_clean.columns
-            ),
+            len(df_clean.columns),
         )
 
-        # --------------------------------------------------------------------
+        # ================================================================
         # 3. Feature engineering
-        # --------------------------------------------------------------------
+        # ================================================================
 
         df_features = _timed_call(
             "feature_engineering",
@@ -2896,15 +2917,14 @@ def process_dataframe(
             )
 
         logger.info(
-            "Feature engineering complete | "
-            "rows=%d | columns=%d",
+            "Feature engineering complete | rows=%d | columns=%d",
             len(df_features),
             len(df_features.columns),
         )
 
-        # --------------------------------------------------------------------
+        # ================================================================
         # 4. Traditional diagnostics
-        # --------------------------------------------------------------------
+        # ================================================================
 
         df_labeled = _timed_call(
             "traditional_consensus",
@@ -2921,14 +2941,16 @@ def process_dataframe(
                 "Traditional consensus distribution | %s",
                 df_labeled[
                     "consensus_fault"
-                ].value_counts(
+                ]
+                .value_counts(
                     dropna=False
-                ).to_dict(),
+                )
+                .to_dict(),
             )
 
-        # --------------------------------------------------------------------
-        # 5. Weak models
-        # --------------------------------------------------------------------
+        # ================================================================
+        # 5. Pretrained weak-label models
+        # ================================================================
 
         df_labeled, weak_metadata = (
             _timed_call(
@@ -2939,9 +2961,9 @@ def process_dataframe(
             )
         )
 
-        # --------------------------------------------------------------------
-        # 6. Student model
-        # --------------------------------------------------------------------
+        # ================================================================
+        # 6. Pretrained student model
+        # ================================================================
 
         artifact = _timed_call(
             "load_student_model",
@@ -2957,9 +2979,9 @@ def process_dataframe(
             artifact,
         )
 
-        # --------------------------------------------------------------------
-        # 7. Fusion
-        # --------------------------------------------------------------------
+        # ================================================================
+        # 7. Evidence fusion
+        # ================================================================
 
         df_labeled = _timed_call(
             "evidence_fusion",
@@ -2968,9 +2990,9 @@ def process_dataframe(
             df_labeled,
         )
 
-        # --------------------------------------------------------------------
-        # 8. Student comparison
-        # --------------------------------------------------------------------
+        # ================================================================
+        # 8. Student vs traditional comparison
+        # ================================================================
 
         comparison_df = _timed_call(
             "student_comparison",
@@ -2979,9 +3001,9 @@ def process_dataframe(
             df_labeled,
         )
 
-        # --------------------------------------------------------------------
+        # ================================================================
         # 9. Anomaly model
-        # --------------------------------------------------------------------
+        # ================================================================
 
         anomaly_scores = _timed_call(
             "anomaly_prediction",
@@ -3028,9 +3050,9 @@ def process_dataframe(
                 ),
             )
 
-        # --------------------------------------------------------------------
+        # ================================================================
         # 10. IEEE severity
-        # --------------------------------------------------------------------
+        # ================================================================
 
         df_labeled = _timed_call(
             "ieee_severity",
@@ -3064,14 +3086,17 @@ def process_dataframe(
             "IEEE severity distribution | %s",
             df_labeled[
                 "ieee_dga_status"
-            ].value_counts(
+            ]
+            .value_counts(
                 dropna=False
-            ).sort_index().to_dict(),
+            )
+            .sort_index()
+            .to_dict(),
         )
 
-        # --------------------------------------------------------------------
-        # 11. Ranking
-        # --------------------------------------------------------------------
+        # ================================================================
+        # 11. Transformer ranking
+        # ================================================================
 
         ranking_df = _timed_call(
             "transformer_ranking",
@@ -3092,11 +3117,12 @@ def process_dataframe(
                 top_n=20,
             )
 
-        # --------------------------------------------------------------------
-        # 12. Optional operational persistence
-        # --------------------------------------------------------------------
+        # ================================================================
+        # 12. Persist outputs
+        # ================================================================
 
         if PERSIST_OUTPUTS:
+
             if not comparison_df.empty:
                 _timed_call(
                     "save_student_comparison",
@@ -3107,6 +3133,7 @@ def process_dataframe(
                 )
 
             if not ranking_df.empty:
+
                 _timed_call(
                     "save_ranking_parquet",
                     timings,
@@ -3140,9 +3167,9 @@ def process_dataframe(
                 PROCESSED_OUTPUT_PATH,
             )
 
-        # --------------------------------------------------------------------
-        # 13. Create response payload
-        # --------------------------------------------------------------------
+        # ================================================================
+        # 13. Build API payload
+        # ================================================================
 
         payload = _timed_call(
             "create_payload",
@@ -3153,16 +3180,15 @@ def process_dataframe(
             comparison_df,
         )
 
-        # --------------------------------------------------------------------
-        # 14. Add pipeline metadata
-        # --------------------------------------------------------------------
+        # ================================================================
+        # 14. Pipeline metadata
+        # ================================================================
 
         elapsed = (
             time.perf_counter()
             - overall_started
         )
 
-        # Sort timing information by descending duration for easier debugging.
         timing_by_cost = dict(
             sorted(
                 timings.items(),
@@ -3171,9 +3197,7 @@ def process_dataframe(
             )
         )
 
-        payload[
-            "pipeline"
-        ] = {
+        payload["pipeline"] = {
             "status": "completed",
             "mode": "production_inference",
             "runtime_training": False,
@@ -3200,9 +3224,7 @@ def process_dataframe(
                 elapsed
             ),
             "timings": timings,
-            "timings_by_cost": (
-                timing_by_cost
-            ),
+            "timings_by_cost": timing_by_cost,
             "slowest_stage": (
                 next(
                     iter(
@@ -3219,8 +3241,10 @@ def process_dataframe(
                     None,
                 )
             ),
-            "weak_backend": weak_metadata.get(
-                "backend"
+            "weak_backend": (
+                weak_metadata.get(
+                    "backend"
+                )
             ),
             "models": {
                 "weak_coarse": "pretrained",
@@ -3232,60 +3256,18 @@ def process_dataframe(
                 "anomaly": "pretrained",
             },
             "research_benchmark": {
-                "status": (
-                    "precomputed_offline"
-                ),
+                "status": "precomputed_offline",
                 "executed_during_request": False,
             },
             "excel": {
-                "status": (
-                    "precomputed_offline"
-                ),
+                "status": "precomputed_offline",
                 "executed_during_request": False,
-            },
-            "files": {
-                "processed_parquet": str(
-                    PROCESSED_OUTPUT_PATH
-                )
-                if PERSIST_OUTPUTS
-                else None,
-                "ranking_parquet": str(
-                    RANKING_PATH
-                )
-                if PERSIST_OUTPUTS
-                else None,
-                "ranking_csv": str(
-                    REPORT_DIR
-                    / "transformer_ranking.csv"
-                )
-                if PERSIST_OUTPUTS
-                else None,
-                "student_comparison": str(
-                    STUDENT_COMPARISON_PATH
-                )
-                if (
-                    PERSIST_OUTPUTS
-                    and not comparison_df.empty
-                )
-                else None,
-                "weak_coarse_model": str(
-                    WEAK_COARSE_MODEL_PATH
-                ),
-                "weak_fine_model": str(
-                    WEAK_FINE_MODEL_PATH
-                ),
-                "student_model": str(
-                    STUDENT_MODEL_PATH
-                ),
-                "anomaly_model": str(
-                    ANOMALY_MODEL_PATH
-                ),
             },
         }
 
-        # --------------------------------------------------------------------
-        # 15. Metadata file
-        # --------------------------------------------------------------------
+        # ================================================================
+        # 15. Metadata
+        # ================================================================
 
         if PERSIST_OUTPUTS:
             _timed_call(
@@ -3299,12 +3281,14 @@ def process_dataframe(
                 timings,
             )
 
-        # --------------------------------------------------------------------
+        # ================================================================
         # 16. Database
-        # --------------------------------------------------------------------
+        # ================================================================
 
         if SAVE_DATABASE:
+
             try:
+
                 def _save_database():
                     from data_store import (
                         save_payload_to_db,
@@ -3321,34 +3305,18 @@ def process_dataframe(
                 )
 
             except Exception:
-                # Database persistence should not make a valid inference
-                # response fail.
                 logger.exception(
                     "Failed to save inference payload to database"
                 )
 
-        # --------------------------------------------------------------------
-        # Final timing update
-        # --------------------------------------------------------------------
+        # ================================================================
+        # Final timing
+        # ================================================================
 
         final_elapsed = (
             time.perf_counter()
             - overall_started
         )
-
-        payload[
-            "pipeline"
-        ][
-            "elapsed_seconds"
-        ] = float(
-            final_elapsed
-        )
-
-        payload[
-            "pipeline"
-        ][
-            "timings"
-        ] = timings
 
         timing_by_cost = dict(
             sorted(
@@ -3358,15 +3326,21 @@ def process_dataframe(
             )
         )
 
-        payload[
-            "pipeline"
-        ][
+        payload["pipeline"][
+            "elapsed_seconds"
+        ] = float(
+            final_elapsed
+        )
+
+        payload["pipeline"][
+            "timings"
+        ] = timings
+
+        payload["pipeline"][
             "timings_by_cost"
         ] = timing_by_cost
 
-        payload[
-            "pipeline"
-        ][
+        payload["pipeline"][
             "slowest_stage"
         ] = next(
             iter(
@@ -3375,9 +3349,7 @@ def process_dataframe(
             None,
         )
 
-        payload[
-            "pipeline"
-        ][
+        payload["pipeline"][
             "slowest_stage_seconds"
         ] = next(
             iter(
@@ -3426,7 +3398,9 @@ def process_dataframe(
             or 0.0,
         )
 
-        for name, seconds in timing_by_cost.items():
+        for name, seconds in (
+            timing_by_cost.items()
+        ):
             logger.info(
                 "[TIMING] %-32s %.4f seconds",
                 name,
@@ -3452,13 +3426,6 @@ def process_dataframe(
             "FATAL ERROR IN PRODUCTION DGA INFERENCE"
         )
         raise
-
-    finally:
-        shutil.rmtree(
-            tmp_dir,
-            ignore_errors=True,
-        )
-
 
 # ============================================================================
 # EXPORTS

@@ -11,26 +11,17 @@
 flask
 flask-cors
 gunicorn
+
 joblib
-matplotlib
 numpy
-openai
-openpyxl
 pandas
 pyarrow
+openpyxl
 python-dotenv
+
 scikit-learn
 scipy
-seaborn
 
-catboost
-imbalanced-learn
-lightgbm
-torch
-xgboost
+attrs
 
-lifelines
-shap
-snorkel
-
-attrs>=23.1.0
+matplotlib
