@@ -21,6 +21,7 @@ init_logging()
 import auth
 from config import DATASET_DIR, MODEL_DIR, REPORT_DIR, config as cfg
 from inference_service import process_dataframe
+from prediction_jobs import get_prediction_job, submit_prediction
 from text2sql_chat import answer_question
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ logger.info("CORS configured | origins=%s", CORS_ORIGINS)
 auth.init_db()
 
 @app.route("/predict", methods=["OPTIONS"])
+@app.route("/predict/status/<job_id>", methods=["OPTIONS"])
 @app.route("/chat", methods=["OPTIONS"])
 @app.route("/auth/login", methods=["OPTIONS"])
 @app.route("/auth/me", methods=["OPTIONS"])
@@ -165,27 +167,33 @@ def auth_logout():
 @app.route("/predict", methods=["POST"])
 @auth.require_auth
 def predict():
-    started = pd.Timestamp.utcnow()
     try:
         logger.info("UPLOAD REQUEST RECEIVED | origin=%s | content_type=%s", request.headers.get("Origin"), request.content_type)
         data = parse_request_data()
         logger.info("Uploaded dataset | rows=%d | columns=%d", len(data), len(data.columns))
         if data.empty:
             return jsonify(error="No data provided."), 400
-        result = process_dataframe(data)
-        clean_result = _sanitize_for_json(result)
-        elapsed = (pd.Timestamp.utcnow() - started).total_seconds()
-        logger.info("UPLOAD REQUEST COMPLETED | elapsed_seconds=%.2f", elapsed)
-        return jsonify(clean_result)
+        job_id = submit_prediction(data)
+        return jsonify(job_id=job_id, status="queued", poll_url=f"/predict/status/{job_id}", message="Prediction started. Poll the status endpoint for the result."), 202
     except ValueError as exc:
         logger.exception("Prediction validation error")
         return jsonify(error=str(exc), pipeline_status="failed"), 400
-    except FileNotFoundError as exc:
-        logger.exception("Prediction model artifact missing")
-        return jsonify(error=str(exc), pipeline_status="model_missing"), 503
     except Exception as exc:
-        logger.exception("Prediction request failed")
+        logger.exception("Failed to queue prediction request")
         return jsonify(error=str(exc), pipeline_status="failed"), 500
+
+@app.route("/predict/status/<job_id>", methods=["GET"])
+@auth.require_auth
+def prediction_status(job_id: str):
+    job = get_prediction_job(job_id)
+    if job is None:
+        return jsonify(error="Prediction job not found or expired."), 404
+    status = job.get("status")
+    if status == "completed":
+        return jsonify(job_id=job_id, status="completed", elapsed_seconds=job.get("elapsed_seconds"), result=_sanitize_for_json(job.get("result")))
+    if status == "failed":
+        return jsonify(job_id=job_id, status="failed", elapsed_seconds=job.get("elapsed_seconds"), error=job.get("error") or "Prediction failed.")
+    return jsonify(job_id=job_id, status=status or "running", elapsed_seconds=job.get("elapsed_seconds"), running_seconds=job.get("running_seconds"))
 
 @app.route("/dataset/reset", methods=["POST"])
 @auth.require_auth

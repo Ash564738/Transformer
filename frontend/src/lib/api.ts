@@ -16,8 +16,10 @@ const BACKEND_PREFIX = (
 
 const AUTH_TOKEN_KEY = "dga-auth-token";
 
-const PREDICTION_TIMEOUT_MS = 15 * 60 * 1000;
-const DEFAULT_REQUEST_TIMEOUT_MS = 60 * 1000;
+const PREDICTION_START_TIMEOUT_MS = 60_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+const PREDICTION_POLL_INTERVAL_MS = 2_000;
+const PREDICTION_MAX_WAIT_MS = 30 * 60 * 1000;
 
 export class ApiError extends Error {
   constructor(message: string) {
@@ -38,7 +40,9 @@ function authHeaders(): Record<string, string> {
   const token = getAuthToken();
 
   return token
-    ? { Authorization: `Bearer ${token}` }
+    ? {
+        Authorization: `Bearer ${token}`,
+      }
     : {};
 }
 
@@ -70,7 +74,10 @@ async function fetchWithTimeout(
   timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
 ): Promise<Response> {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  const timer = window.setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
 
   try {
     return await fetch(input, {
@@ -90,7 +97,9 @@ async function fetchWithTimeout(
     }
 
     const message =
-      error instanceof Error ? error.message : String(error);
+      error instanceof Error
+        ? error.message
+        : String(error);
 
     throw new ApiError(
       `Backend request failed: ${message}. URL: ${String(input)}`
@@ -113,7 +122,10 @@ async function fetchBackend(
 
 async function handleAuthResponse(
   res: Response
-): Promise<{ user: AuthUser; token: string }> {
+): Promise<{
+  user: AuthUser;
+  token: string;
+}> {
   const body = await parseJsonResponse(res);
 
   if (!res.ok) {
@@ -144,13 +156,21 @@ async function handleAuthResponse(
 export async function loginAccount(
   email: string,
   password: string
-): Promise<{ user: AuthUser; token: string }> {
+): Promise<{
+  user: AuthUser;
+  token: string;
+}> {
   const res = await fetchBackend(
     `${BACKEND_PREFIX}/auth/login`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email,
+        password,
+      }),
       cache: "no-store",
     }
   );
@@ -161,7 +181,9 @@ export async function loginAccount(
 export async function fetchCurrentUser(): Promise<AuthUser | null> {
   const token = getAuthToken();
 
-  if (!token) return null;
+  if (!token) {
+    return null;
+  }
 
   try {
     const res = await fetch(
@@ -173,11 +195,16 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
       }
     );
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      return null;
+    }
 
     const body = await parseJsonResponse(res);
 
-    if (!body.user || typeof body.user !== "object") {
+    if (
+      !body.user ||
+      typeof body.user !== "object"
+    ) {
       return null;
     }
 
@@ -258,44 +285,239 @@ async function handlePredictResponse(
   return body as DgaPayload;
 }
 
+interface PredictionStartResponse {
+  job_id: string;
+  status: "queued";
+  poll_url?: string;
+}
+
+type PredictionJobStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed";
+
+interface PredictionStatusResponse {
+  job_id: string;
+  status: PredictionJobStatus;
+  result?: DgaPayload;
+  error?: string;
+  elapsed_seconds?: number;
+  running_seconds?: number;
+}
+
+interface ErrorResponse {
+  error?: string;
+}
+
+function isRecord(
+  value: unknown
+): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+}
+
+function isErrorResponse(
+  value: unknown
+): value is ErrorResponse {
+  return (
+    isRecord(value) &&
+    (
+      value.error === undefined ||
+      typeof value.error === "string"
+    ) &&
+    !("status" in value)
+  );
+}
+
+function isPredictionStatusResponse(
+  value: unknown
+): value is PredictionStatusResponse {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const status = value.status;
+
+  return (
+    typeof value.job_id === "string" &&
+    (
+      status === "queued" ||
+      status === "running" ||
+      status === "completed" ||
+      status === "failed"
+    )
+  );
+}
+
+async function startPrediction(
+  init: RequestInit
+): Promise<DgaPayload> {
+  const startResponse = await fetchWithTimeout(
+    `${BACKEND_PREFIX}/predict`,
+    init,
+    PREDICTION_START_TIMEOUT_MS
+  );
+
+  /*
+   * Backward compatibility:
+   * If backend still returns the final prediction directly,
+   * handle it normally.
+   */
+  if (startResponse.status !== 202) {
+    return handlePredictResponse(startResponse);
+  }
+
+  const rawStarted =
+    await startResponse
+      .json()
+      .catch(() => null);
+
+  if (!isRecord(rawStarted)) {
+    throw new ApiError(
+      "Backend returned an invalid prediction job response."
+    );
+  }
+
+  const started =
+    rawStarted as Partial<PredictionStartResponse>;
+
+  if (typeof started.job_id !== "string") {
+    const errorMessage =
+      typeof rawStarted.error === "string"
+        ? rawStarted.error
+        : "Backend returned an invalid prediction job response.";
+
+    throw new ApiError(errorMessage);
+  }
+
+  const deadline =
+    Date.now() + PREDICTION_MAX_WAIT_MS;
+
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(
+        resolve,
+        PREDICTION_POLL_INTERVAL_MS
+      );
+    });
+
+    const statusUrl =
+      `${BACKEND_PREFIX}/predict/status/` +
+      encodeURIComponent(started.job_id);
+
+    const statusResponse =
+      await fetchWithTimeout(
+        statusUrl,
+        {
+          method: "GET",
+          headers: authHeaders(),
+          cache: "no-store",
+        },
+        DEFAULT_REQUEST_TIMEOUT_MS
+      );
+
+    const rawBody =
+      await statusResponse
+        .json()
+        .catch(() => null);
+
+    /*
+     * HTTP error from status endpoint.
+     */
+    if (!statusResponse.ok) {
+      if (isErrorResponse(rawBody)) {
+        throw new ApiError(
+          rawBody.error ||
+            `Prediction status request failed (${statusResponse.status}).`
+        );
+      }
+
+      throw new ApiError(
+        `Prediction status request failed (${statusResponse.status}).`
+      );
+    }
+
+    /*
+     * Valid prediction status response.
+     */
+    if (
+      !isPredictionStatusResponse(rawBody)
+    ) {
+      /*
+       * Do not immediately fail on a malformed polling response.
+       * A transient proxy/backend response can occur.
+       */
+      continue;
+    }
+
+    switch (rawBody.status) {
+      case "queued":
+        continue;
+
+      case "running":
+        continue;
+
+      case "completed": {
+        if (!rawBody.result) {
+          throw new ApiError(
+            "Prediction completed but backend returned no result."
+          );
+        }
+
+        return rawBody.result;
+      }
+
+      case "failed": {
+        throw new ApiError(
+          rawBody.error ||
+            "Backend prediction failed."
+        );
+      }
+
+      default:
+        continue;
+    }
+  }
+
+  throw new ApiError(
+    "Prediction exceeded the 30-minute client wait limit. " +
+      "Check Render logs; the backend job may still be running."
+  );
+}
+
 export async function runPredictionFromFile(
   file: File
 ): Promise<DgaPayload> {
   const form = new FormData();
+
   form.append("file", file);
 
-  const res = await fetchWithTimeout(
-    `${BACKEND_PREFIX}/predict`,
-    {
-      method: "POST",
-      headers: authHeaders(),
-      body: form,
-      cache: "no-store",
-    },
-    PREDICTION_TIMEOUT_MS
-  );
-
-  return handlePredictResponse(res);
+  return startPrediction({
+    method: "POST",
+    headers: authHeaders(),
+    body: form,
+    cache: "no-store",
+  });
 }
 
 export async function runPredictionFromJson(
   rows: unknown[]
 ): Promise<DgaPayload> {
-  const res = await fetchWithTimeout(
-    `${BACKEND_PREFIX}/predict`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(),
-      },
-      body: JSON.stringify({ data: rows }),
-      cache: "no-store",
+  return startPrediction({
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
     },
-    PREDICTION_TIMEOUT_MS
-  );
-
-  return handlePredictResponse(res);
+    body: JSON.stringify({
+      data: rows,
+    }),
+    cache: "no-store",
+  });
 }
 
 export interface ChatHistoryTurn {
@@ -316,17 +538,23 @@ export async function askChatBackend(
         "Content-Type": "application/json",
         ...authHeaders(),
       },
-      body: JSON.stringify({ question, context, history }),
+      body: JSON.stringify({
+        question,
+        context,
+        history,
+      }),
       cache: "no-store",
     }
   );
 
   if (!res.ok) {
     const body = await parseJsonResponse(res);
+
     const message =
       typeof body.error === "string"
         ? body.error
         : `Chat request failed (${res.status}).`;
+
     throw new ApiError(message);
   }
 
