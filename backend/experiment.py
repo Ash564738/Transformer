@@ -352,7 +352,7 @@ def _build_validation_sheets(wb, report_dir, processed_dir):
             fields = ["transformer_id", "sample_day", "ieee_dga_status", "ieee_dga_status_label", "ieee_dga_status_reason", "ieee_max_standardized_exceedance", "ieee_max_status3_standardized_exceedance", "ieee_standard_trigger_count", "ieee_confirmation_required", "ieee_delta_available", "ieee_rate_available", "ieee_rate_span_months", "ieee_table2_exceeding_gases", "ieee_table4_exceeding_gases"]
             fields = [x for x in fields if x in df.columns]
             sh = wb.worksheets.add("Severity_Records")
-            rows = [fields] + [list(r) for r in df[fields].tail(1000).itertuples(index=False, name=None)]
+            rows = [fields] + [list(r) for r in df[fields].itertuples(index=False, name=None)]
             write_table(sh, rows, max_width=34)
         except Exception as exc:
             logger.exception("Failed to process severity parquet: %s", exc)

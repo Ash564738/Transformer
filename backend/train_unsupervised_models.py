@@ -250,9 +250,42 @@ def load_unlabeled(path: Path = UNLABELED_PATH) -> pd.DataFrame:
     return result
 
 def prepare_unlabeled(df: pd.DataFrame) -> pd.DataFrame:
+    """Return canonical unlabeled data without re-engineering an already prepared frame.
+
+    The canonical parquet written by prepare_unlabeled_data.py already contains
+    feature-engineering and traditional-diagnostic columns. Re-running feature
+    engineering on that frame creates duplicate column names (e.g. mva_count,
+    h2_lag1, rate_span_days), which pyarrow correctly rejects when saving parquet.
+    """
     logger.debug("prepare_unlabeled: start shape=%s", df.shape)
-    out = build_training_features_from_clean(df.copy()); out["sample_day"] = pd.to_datetime(out["sample_day"], errors="coerce"); out = out.sort_values(["transformer_id", "sample_day"], kind="mergesort").reset_index(drop=True)
+    required_prepared = {
+        "transformer_id", "sample_day", "h2", "ch4", "c2h6", "c2h4", "c2h2",
+        "keygas_fault", "iec_fault", "rogers_fault", "doernenburg_fault",
+        "duval_triangle_fault", "consensus_fault", "diagnostic_confidence",
+    }
+    if required_prepared.issubset(set(df.columns)):
+        result = df.copy()
+        if result.columns.duplicated().any():
+            duplicated = result.columns[result.columns.duplicated()].tolist()
+            logger.warning("prepare_unlabeled: dropping duplicate columns from already-prepared data: %s", duplicated)
+            result = result.loc[:, ~result.columns.duplicated(keep="first")].copy()
+        result["sample_day"] = pd.to_datetime(result["sample_day"], errors="coerce")
+        result = result.dropna(subset=["transformer_id", "sample_day"]).sort_values(
+            ["transformer_id", "sample_day"], kind="mergesort"
+        ).reset_index(drop=True)
+        logger.debug("prepare_unlabeled: input already canonical; skipped feature engineering, shape=%s", result.shape)
+        return result
+
+    out = build_training_features_from_clean(df.copy())
+    out["sample_day"] = pd.to_datetime(out["sample_day"], errors="coerce")
+    out = out.sort_values(["transformer_id", "sample_day"], kind="mergesort").reset_index(drop=True)
     result = apply_consensus(out)
+    if result.columns.duplicated().any():
+        duplicated = result.columns[result.columns.duplicated()].tolist()
+        raise ValueError(
+            "Canonical unlabeled preparation produced duplicate columns: "
+            + ", ".join(map(str, duplicated))
+        )
     logger.debug("prepare_unlabeled: final shape=%s", result.shape)
     return result
 

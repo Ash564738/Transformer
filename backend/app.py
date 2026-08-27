@@ -585,6 +585,14 @@ def report_experiments():
         if not experiment_manifest:
             return False, "No current experiment run has been recorded."
 
+        run_status = str(experiment_manifest.get("status", "")).upper()
+        if run_status == "RUNNING":
+            return False, "An experiment run is currently in progress."
+        if run_status == "FAILED":
+            return False, experiment_manifest.get("error") or "The current experiment run failed."
+        if run_status != "COMPLETE":
+            return False, "No completed experiment run is currently published."
+
         required = experiment_manifest.get("required_artifacts", [])
         missing = []
         for rel in required:
@@ -605,6 +613,11 @@ def report_experiments():
         return jsonify({
             "available": False,
             "reason": experiment_unavailable_reason,
+            "run_id": experiment_manifest.get("run_id"),
+            "status": experiment_manifest.get("status"),
+            "failed_stage": experiment_manifest.get("failed_stage"),
+            "error": experiment_manifest.get("error"),
+            "stage_status": experiment_manifest.get("stage_status", {}),
             "metadata": {
                 "operational_data_is_unlabeled": True,
                 "standard": cfg.STANDARD,

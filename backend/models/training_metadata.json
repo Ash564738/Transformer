@@ -1,0 +1,27 @@
+{
+  "seed": 42,
+  "unlabeled_dataset": "E:\\Transformer\\backend\\dataset\\processed\\dga_unlabeled.parquet",
+  "weak_supervision": "Snorkel LabelModel or EM fallback",
+  "student_feature_modes": [
+    "gas_only",
+    "gas_plus_traditional"
+  ],
+  "student_model_count_coarse": 34,
+  "student_model_count_fine": 34,
+  "severity_source": "IEEE C57.104-2019",
+  "severity_is_weighted": false,
+  "severity_is_failure_probability": false,
+  "ranking_policy": [
+    "current IEEE DGA status (Status 3 > Status 2 > Status 1)",
+    "current standardized exceedance against applicable IEEE threshold evidence",
+    "number of independent current IEEE trigger tables",
+    "current Table-2 concentration exceedance count",
+    "current Table-4 rate exceedance count",
+    "current Table-3 delta exceedance count",
+    "historical maximum IEEE status before the current sample",
+    "historical maximum standardized IEEE exceedance before the current sample"
+  ],
+  "ranking_is_weighted": false,
+  "ranking_is_health_score": false,
+  "benchmark_policy": "Operational unlabeled data are used for weak labels and student training only; labeled benchmark is reserved for external evaluation and locked test reporting."
+}

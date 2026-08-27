@@ -1,0 +1,16 @@
+{
+  "run_id": "20260827T045744Z",
+  "completed_at_utc": "2026-08-27T04:57:44.641214+00:00",
+  "mode": "all",
+  "seed": 42,
+  "use_snorkel": false,
+  "required_artifacts": [
+    "reports/benchmark_split_manifest.csv",
+    "reports/traditional_individual_benchmark.csv",
+    "reports/traditional_combinations_benchmark.csv",
+    "models/fault_classifiers_coarse.joblib",
+    "models/fault_classifiers_fine.joblib",
+    "models/production_fault_selection.joblib",
+    "models/training_metadata.json"
+  ]
+}

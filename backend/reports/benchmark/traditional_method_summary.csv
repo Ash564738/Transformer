@@ -1,0 +1,8 @@
+﻿method,column,coverage_percent,active_count,abstain_count,unique_fine_labels,unique_coarse_groups
+keygas_fault,keygas_fault,24.53416149068323,79,243,4,3
+iec_fault,iec_fault,68.01242236024845,219,103,6,2
+rogers_fault,rogers_fault,53.105590062111794,171,151,6,3
+doernenburg_fault,doernenburg_fault,54.347826086956516,175,147,3,2
+duval_triangle_fault,duval_triangle_fault,100.0,322,0,7,3
+duval_pentagon_p1_fault,duval_pentagon_p1_fault,99.68944099378882,321,1,6,3
+duval_pentagon_p2_fault,duval_pentagon_p2_fault,99.68944099378882,321,1,6,4
