@@ -343,13 +343,21 @@ def _build_transformer_summary(transformer_id, group):
     history_status_values = [int(x) for x in previous if int(x) > 0]
 
     if len(statuses) >= 2:
-        history_worsening_slope = float(
-            np.polyfit(
-                np.arange(len(statuses)),
-                np.asarray(statuses, dtype=float),
-                1,
-            )[0]
-        )
+        time_days = (
+            pd.to_datetime(group["sample_day"], errors="coerce")
+            - pd.to_datetime(group["sample_day"], errors="coerce").iloc[0]
+        ).dt.total_seconds().to_numpy(dtype=float) / 86400.0
+        status_values = np.asarray(statuses, dtype=float)
+        valid = np.isfinite(time_days) & np.isfinite(status_values)
+        if valid.sum() >= 2 and np.ptp(time_days[valid]) > 0:
+            # Per-year slope is interpretable as change in the standardized
+            # IEEE status ordinal per elapsed calendar year. This is a
+            # descriptive trend only; it is not added as a hand-tuned weight.
+            history_worsening_slope = float(
+                np.polyfit(time_days[valid] / 365.25, status_values[valid], 1)[0]
+            )
+        else:
+            history_worsening_slope = np.nan
     else:
         history_worsening_slope = np.nan
 
@@ -377,7 +385,8 @@ def _build_transformer_summary(transformer_id, group):
         "history_mean_status_before_current": (
             float(np.mean(previous)) if previous else np.nan
         ),
-        "history_status_slope_per_observation": history_worsening_slope,
+        "history_status_slope_per_year": history_worsening_slope,
+        "history_status_slope_basis": "elapsed_calendar_years",
 
         "maintenance_priority": _priority_label(current_status),
         "maintenance_priority_ordinal": current_status,
@@ -581,6 +590,13 @@ def build_transformer_ranking(df):
         "exceedance ratio; current delta exceedance ratio; independent IEEE trigger-table "
         "count; per-table exceedance counts; historical maximum IEEE status; "
         "historical maximum concentration exceedance. No numeric weighting."
+    )
+    ranking["ranking_current_status_dominates"] = True
+    ranking["ranking_history_is_tie_break_context"] = True
+    ranking["transformer_overall_severity_score"] = ranking["transformer_overall_severity_level"].astype(float)
+    ranking["transformer_overall_severity_score_basis"] = (
+        "Current IEEE C57.104-2019 condition status only; historical evidence is retained "
+        "as explicit fields and used as lexicographic tie-break context, not as an arbitrary weighted sum."
     )
     ranking["ranking_is_weighted"] = False
     ranking["ranking_is_health_score"] = False

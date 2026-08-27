@@ -14,7 +14,8 @@ class DiagnosticConfig:
       * IEEE C57.104-2019 remains the primary DGA status engine.
       * No hand-assigned diagnostic or severity weights are used.
       * CRITICAL is an operational extreme-DGA extension, NOT IEEE Status 4.
-      * Transformer ranking uses an unweighted lexicographic evidence order: current IEEE status dominates; history breaks ties.
+      * Transformer ranking uses an unweighted lexicographic evidence order: current IEEE status dominates; historical evidence is retained as tie-break context.
+      * No continuous severity coefficient or arbitrary health-index weight is introduced.
       * Fault criticality is qualitative context only and never overrides IEEE status.
     """
 
@@ -120,6 +121,21 @@ class DiagnosticConfig:
     DIAGNOSTIC_METHOD_TO_COLUMN: ClassVar[Dict[str, str]] = {
         m: m for m in DIAGNOSTIC_METHODS
     }
+    # Research benchmark: all methods are evaluated independently and in all
+    # non-empty combinations. Key Gas remains a research baseline because the
+    # standard describes it qualitatively rather than as a universal numeric
+    # classifier. It is therefore not included in the default weak-label matrix.
+    WEAK_LABELING_METHODS: ClassVar[Tuple[str, ...]] = (
+        "iec_fault", "rogers_fault", "doernenburg_fault",
+        "duval_triangle_fault", "duval_pentagon_p1_fault",
+        "duval_pentagon_p2_fault",
+    )
+    WEAK_LABELING_METHOD_TO_COLUMN: ClassVar[Dict[str, str]] = {
+        m: m for m in WEAK_LABELING_METHODS
+    }
+    KEYGAS_AUTOMATION_STATUS: str = (
+        "RESEARCH_ONLY_QUALITATIVE_STANDARD_SURROGATE"
+    )
 
     COMMON_BENCHMARK_GASES: ClassVar[Tuple[str, ...]] = (
         "h2", "ch4", "c2h6", "c2h4", "c2h2",
@@ -241,7 +257,7 @@ class DiagnosticConfig:
         "sklearn_mlp",
     )
     STUDENT_FEATURE_MODES: ClassVar[Tuple[str, ...]] = (
-        "gas_only", "gas_plus_traditional",
+        "gas_only", "ratio_only", "gas_plus_ratio", "gas_plus_traditional",
     )
     PRIMARY_SELECTION_METRIC: str = "macro_f1"
     HYBRID_METHODS: ClassVar[Tuple[str, ...]] = (

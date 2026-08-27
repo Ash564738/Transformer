@@ -11,7 +11,6 @@
     "T3"
   ],
   "methods": [
-    "keygas_fault",
     "iec_fault",
     "rogers_fault",
     "doernenburg_fault",
@@ -20,54 +19,12 @@
     "duval_pentagon_p2_fault"
   ],
   "n_rows": 4561,
-  "n_lfs": 7,
-  "rows_with_at_least_one_lf": 4224,
-  "abstain_rate": 0.07388730541547907,
-  "mean_active_lf_count": 1.8623108967331725,
+  "n_lfs": 6,
+  "rows_with_at_least_one_lf": 4210,
+  "abstain_rate": 0.07695680771760578,
+  "mean_active_lf_count": 1.8535408901556676,
   "uses_manual_lf_weights": false,
   "pairwise": [
-    {
-      "method_a": "keygas_fault",
-      "method_b": "iec_fault",
-      "n_joint_active": 155,
-      "joint_coverage_percent": 3.3983775487831616,
-      "conditional_agreement_percent": 6.451612903225806
-    },
-    {
-      "method_a": "keygas_fault",
-      "method_b": "rogers_fault",
-      "n_joint_active": 74,
-      "joint_coverage_percent": 1.6224512168384126,
-      "conditional_agreement_percent": 10.81081081081081
-    },
-    {
-      "method_a": "keygas_fault",
-      "method_b": "doernenburg_fault",
-      "n_joint_active": 12,
-      "joint_coverage_percent": 0.263100197325148,
-      "conditional_agreement_percent": 58.333333333333336
-    },
-    {
-      "method_a": "keygas_fault",
-      "method_b": "duval_triangle_fault",
-      "n_joint_active": 2409,
-      "joint_coverage_percent": 52.81736461302346,
-      "conditional_agreement_percent": 0.9547530095475302
-    },
-    {
-      "method_a": "keygas_fault",
-      "method_b": "duval_pentagon_p1_fault",
-      "n_joint_active": 2403,
-      "joint_coverage_percent": 52.685814514360885,
-      "conditional_agreement_percent": 0.5409904286308781
-    },
-    {
-      "method_a": "keygas_fault",
-      "method_b": "duval_pentagon_p2_fault",
-      "n_joint_active": 2405,
-      "joint_coverage_percent": 52.72966454724841,
-      "conditional_agreement_percent": 7.0686070686070686
-    },
     {
       "method_a": "iec_fault",
       "method_b": "rogers_fault",

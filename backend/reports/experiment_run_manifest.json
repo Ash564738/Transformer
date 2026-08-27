@@ -1,12 +1,12 @@
 {
-  "run_id": "20260827T181842Z",
-  "completed_at_utc": "2026-08-27T18:23:36.575057+00:00",
+  "run_id": "20260827T194313Z",
+  "completed_at_utc": "2026-08-27T19:52:35.437322+00:00",
   "status": "COMPLETE",
   "mode": "all",
   "seed": 42,
   "use_snorkel": true,
   "operational_dataset_rows": 4593,
-  "operational_transformers": 627,
+  "operational_transformers": 628,
   "required_artifacts": [
     "reports/benchmark/benchmark_split_manifest.csv",
     "reports/benchmark/traditional_individual_benchmark.csv",

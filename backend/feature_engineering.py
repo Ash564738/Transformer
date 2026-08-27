@@ -7,6 +7,7 @@ import warnings
 import numpy as np
 import pandas as pd
 from config import DATASET_DIR
+from dga_features import FEATS as SCALE_INVARIANT_DGA_FEATURES, build_scale_invariant_features
 
 warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 logger = logging.getLogger(__name__)
@@ -230,6 +231,12 @@ def add_duval_input_features(df: pd.DataFrame) -> pd.DataFrame:
     out["duval_pent_sum"] = pent_sum
     for gas in pentagon_gases: out[f"duval_pent_pct_{gas}"] = safe_div(out[gas] * 100.0, pent_sum)
     return out
+
+def add_scale_invariant_dga_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Attach the canonical teammate-derived scale-invariant DGA representation."""
+    features = build_scale_invariant_features(df)
+    return _attach_feature_columns(df.copy(), {c: features[c] for c in features.columns})
+
 
 def add_calendar_and_sequence_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -469,6 +476,7 @@ def main():
     df = add_metadata_features(df)
     df = add_ratio_features(df)
     df = add_duval_input_features(df)
+    df = add_scale_invariant_dga_features(df)
     df = add_calendar_and_sequence_features(df)
     temporal_value_cols = [col for col in CORE_GASES + ["tdcg"] if col in df.columns]
     for col in ["water", "temp"]:
@@ -522,6 +530,7 @@ def build_training_features_from_clean(df: pd.DataFrame) -> pd.DataFrame:
     out = add_metadata_features(out)
     out = add_ratio_features(out)
     out = add_duval_input_features(out)
+    out = add_scale_invariant_dga_features(out)
     out = add_calendar_and_sequence_features(out)
     temporal_value_cols = [col for col in CORE_GASES + ["tdcg"] if col in out.columns]
     for col in ["water", "temp"]:

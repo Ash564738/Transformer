@@ -1,10 +1,4 @@
 ﻿method_a,method_b,n_joint_active,joint_coverage_percent,conditional_agreement_percent
-keygas_fault,iec_fault,155,3.3983775487831616,6.451612903225806
-keygas_fault,rogers_fault,74,1.6224512168384126,10.81081081081081
-keygas_fault,doernenburg_fault,12,0.263100197325148,58.333333333333336
-keygas_fault,duval_triangle_fault,2409,52.81736461302346,0.9547530095475302
-keygas_fault,duval_pentagon_p1_fault,2403,52.685814514360885,0.5409904286308781
-keygas_fault,duval_pentagon_p2_fault,2405,52.72966454724841,7.0686070686070686
 iec_fault,rogers_fault,148,3.2449024336768253,100.0
 iec_fault,doernenburg_fault,55,1.2058759044069283,100.0
 iec_fault,duval_triangle_fault,1412,30.958123218592412,70.89235127478753

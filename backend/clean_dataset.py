@@ -118,20 +118,56 @@ def fill_missing_ser(df: pd.DataFrame) -> pd.DataFrame:
     df["ser_is_synthetic"] = (df["ser"].astype(str).str.lower().str.startswith("xxxx").astype("int8"))
     return df
 def build_transformer_id(df: pd.DataFrame) -> pd.Series:
+    """Build the asset identity without collapsing distinct CODETX assets.
+
+    CODETX is the primary asset identifier in the operational source and is
+    therefore preferred over SER.  The raw dataset contains at least one
+    repeated SER value across different CODETX values; using SER first would
+    merge two physical assets into one longitudinal history.  SER is retained
+    as metadata and used only when CODETX is genuinely unavailable.
+    """
     index = df.index
-    ser = df["ser"].fillna("").astype(str).str.strip() if "ser" in df.columns else pd.Series("", index=index)
-    codetx = df["codetx"].fillna("").astype(str).str.strip() if "codetx" in df.columns else pd.Series("", index=index)
-    loc = df["loc"].fillna("").astype(str).str.strip() if "loc" in df.columns else pd.Series("", index=index)
-    name = df["name"].fillna("").astype(str).str.strip() if "name" in df.columns else pd.Series("", index=index)
-    synthetic = ser.str.lower().str.startswith("xxxx")
+    codetx = (
+        df["codetx"].fillna("").astype(str).str.strip()
+        if "codetx" in df.columns
+        else pd.Series("", index=index)
+    )
+    ser = (
+        df["ser"].fillna("").astype(str).str.strip()
+        if "ser" in df.columns
+        else pd.Series("", index=index)
+    )
+    loc = (
+        df["loc"].fillna("").astype(str).str.strip()
+        if "loc" in df.columns
+        else pd.Series("", index=index)
+    )
+    name = (
+        df["name"].fillna("").astype(str).str.strip()
+        if "name" in df.columns
+        else pd.Series("", index=index)
+    )
+
+    codetx = codetx.replace({"nan": "", "None": "", "NULL": ""})
+    real_ser = (
+        ser.where(~ser.str.lower().str.startswith("xxxx"), "")
+        .replace({"nan": "", "None": "", "NULL": ""})
+    )
+
     transformer_id = pd.Series(np.nan, index=index, dtype="object")
-    real_ser = ser.where(~synthetic, "").replace({"nan": "", "None": ""})
-    transformer_id = transformer_id.mask(real_ser.ne(""), real_ser)
-    transformer_id = transformer_id.mask(transformer_id.isna() & codetx.ne(""), codetx)
+    transformer_id = transformer_id.mask(codetx.ne(""), codetx)
+    transformer_id = transformer_id.mask(
+        transformer_id.isna() & real_ser.ne(""),
+        real_ser,
+    )
+
     fallback = (loc + " | " + name).str.strip()
     fallback = fallback.str.replace(r"^\|\s*", "", regex=True)
     fallback = fallback.str.replace(r"\s*\|$", "", regex=True)
-    transformer_id = transformer_id.mask(transformer_id.isna() & fallback.ne(""), fallback)
+    transformer_id = transformer_id.mask(
+        transformer_id.isna() & fallback.ne(""),
+        fallback,
+    )
     return transformer_id
 def report_missing(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame({"column": df.columns, "missing_count": df.isna().sum().values, "missing_ratio": (df.isna().mean() * 100).round(2).values, "dtype": [str(df[col].dtype) for col in df.columns]})
@@ -262,7 +298,9 @@ def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR, 
     extras = [col for col in df.columns if col not in existing]
     df = df[existing + extras].copy()
     missing_summary = report_missing(df)
-    summary = {"input_file": input_description, "sheet_name": sheet_name, "original_shape": list(original_shape), "clean_shape": list(df.shape), "original_columns": original_columns, "dropped_noise_columns": [], "clean_columns": df.columns.tolist(), "duplicate_rows_removed": int(duplicate_rows_removed), "n_unique_transformers": int(df["transformer_id"].nunique(dropna=True)), "date_min": None if df["sample_day"].dropna().empty else str(df["sample_day"].min()), "date_max": None if df["sample_day"].dropna().empty else str(df["sample_day"].max()), "rows_missing_transformer_id": int(df["transformer_id"].isna().sum()), "rows_missing_sample_day": int(df["sample_day"].isna().sum()), "rows_missing_year_energized": int(df["year_energized"].isna().sum()), "rows_missing_temp": int(df["temp"].isna().sum()), "rows_missing_water": int(df["water"].isna().sum()), "rows_with_tested_before_sample_swapped": int(n_swapped), "synthetic_ser_count": int(df["ser_is_synthetic"].sum()), "core_gases": CORE_GASES, "header_rows_removed": int(header_rows_removed), "notes": {"water_negative_values_rejected": True, "temp_water_not_imputed": True, "year_energized_not_globally_imputed": True, "tdcg_recalculated_from_six_combustible_gases": True, "raw_tdcg_preserved": True, "synthetic_ser_not_used_as_transformer_id": True, "deduplicate_exact_rows_only": True, "auto_header_detection": True, "supports_dataframe_input": True}}
+    summary = {"input_file": input_description, "sheet_name": sheet_name, "original_shape": list(original_shape), "clean_shape": list(df.shape), "original_columns": original_columns, "dropped_noise_columns": [], "clean_columns": df.columns.tolist(), "duplicate_rows_removed": int(duplicate_rows_removed), "n_unique_transformers": int(df["transformer_id"].nunique(dropna=True)), "date_min": None if df["sample_day"].dropna().empty else str(df["sample_day"].min()), "date_max": None if df["sample_day"].dropna().empty else str(df["sample_day"].max()), "rows_missing_transformer_id": int(df["transformer_id"].isna().sum()), "rows_missing_sample_day": int(df["sample_day"].isna().sum()), "rows_missing_year_energized": int(df["year_energized"].isna().sum()), "rows_missing_temp": int(df["temp"].isna().sum()), "rows_missing_water": int(df["water"].isna().sum()), "rows_with_tested_before_sample_swapped": int(n_swapped), "synthetic_ser_count": int(df["ser_is_synthetic"].sum()), "core_gases": CORE_GASES, "header_rows_removed": int(header_rows_removed), "notes": {"water_negative_values_rejected": True, "temp_water_not_imputed": True, "year_energized_not_globally_imputed": True, "tdcg_recalculated_from_six_combustible_gases": True, "raw_tdcg_preserved": True, "synthetic_ser_not_used_as_transformer_id": True,
+            "codetx_is_primary_transformer_id": True,
+            "ser_is_fallback_only": True, "deduplicate_exact_rows_only": True, "auto_header_detection": True, "supports_dataframe_input": True}}
     # Production API does not need artifact files on every request. Writing Parquet/CSV
     # here was pure overhead and also made pyarrow a hard runtime dependency.
     write_artifacts = os.getenv("DGA_WRITE_CLEAN_ARTIFACTS", "0").strip().lower() not in {"0", "false", "no", "off"}

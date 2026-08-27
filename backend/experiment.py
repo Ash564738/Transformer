@@ -16,6 +16,7 @@ REPORT_SHEETS = [
     ("Traditional_Individual", "traditional_individual_benchmark.csv"),
     ("Traditional_Combinations", "traditional_combinations_benchmark.csv"),
     ("Traditional_PPM", "traditional_ppm_coverage.csv"),
+    ("Traditional_PPM_Bins", "traditional_ppm_bins.csv"),
     ("Traditional_Class_Coverage", "traditional_fault_class_coverage.csv"),
     ("Traditional_Pairwise", "traditional_pairwise_agreement.csv"),
     ("Method_Summary", "traditional_method_summary.csv"),
@@ -168,7 +169,7 @@ def _build_summary_sheet(wb, report_dir, processed_dir):
     sheet.get_range("A1").values = [["DGA RESEARCH REPORT — UNLABELED OPERATIONAL DATA"]]
     rows = [
         ["Item", "Definition"],
-        ["Operational dataset", "4561-row unlabeled operational DGA dataset; traditional diagnostics are weak labeling functions and student models are trained only on operational weak labels."],
+        ["Operational dataset", "4,561-row unlabeled operational DGA dataset; traditional diagnostics are weak labeling functions and student models are trained only on operational weak labels."],
         ["External benchmark", "IEC TC10 (121) + DGA dataset (201), evaluated as an independent labeled benchmark."],
         ["Split protocol", "Train / Development / Locked Test. Development selects methods/models; locked test is never used for selection."],
         ["Primary metric", "Macro F1; accuracy, balanced accuracy, macro precision/recall, weighted F1, coverage and abstain-aware accuracy are also reported."],
@@ -177,9 +178,9 @@ def _build_summary_sheet(wb, report_dir, processed_dir):
         ["Student transfer", "Models trained on operational weak labels are applied unchanged to the external labeled benchmark."],
         ["Hybrid evaluation", "Agreement-only hybrid keeps a prediction only when student and unweighted traditional consensus agree exactly; disagreement becomes ABSTAIN. No numeric fusion weight."],
         ["Severity", "IEEE C57.104-2019 rule-derived Status 1/2/3. No invented Status 4 and no arbitrary weighted severity sum."],
-        ["Operational severity accuracy", "Not claimed: the operational dataset has no independently verified fault/severity ground truth. External labeled datasets validate fault taxonomy/diagnostic transfer, not operational severity accuracy."],
-        ["Transformer imbalance", "Weak-student training uses inverse transformer-record-count weighting when the estimator exposes sample_weight, so each transformer has equal total training weight rather than each record having equal influence."],
-        ["Fleet ranking", "One transformer row per asset. Current IEEE Status is the first lexicographic rank key; standardized current evidence and historical maximum IEEE evidence follow. No arbitrary numeric severity/ranking weights are used."],
+        ["Operational severity accuracy", "Not claimed: the operational dataset has no independently verified severity ground truth. External labeled datasets evaluate fault-type transfer and method agreement; IEEE Status remains a rule-derived condition class rather than a ground-truth severity label."],
+        ["Transformer imbalance", "Transformer identity is keyed by CODETX to avoid merging distinct assets that share a serial number. Weak-student fitting remains class-balanced; the research report separately records per-transformer record counts and single-record cases rather than treating record count as severity."],
+        ["Fleet ranking", "One transformer row per CODETX asset. Current IEEE Status is the dominant lexicographic key; current standardized evidence and historical maximum IEEE evidence follow. No arbitrary numeric severity/ranking weights are used."],
     ]
     write_table(sheet, rows, start_row=3, max_width=100)
 
@@ -197,7 +198,7 @@ def _build_protocol_sheet(wb, benchmark_dir):
         ["Final estimate", "Locked test only after development selection."],
         ["Operational training", "Unlabeled operational data only; external labels are not used to fit weak students."],
         ["Traditional benchmark", "Every individual LF plus all non-empty 1..7 method combinations."],
-        ["ML benchmark", "Gas-only, ratio-only, gas+ratio and gas+traditional feature modes across available ML/DL models. The ratio representations are included as a teammate-inspired scale-invariance ablation."],
+        ["ML benchmark", "Gas-only, canonical scale-invariant DGA representation, gas+ratio and gas+traditional feature modes across available ML/DL models. The 13-feature scale-invariant representation is a deterministic transform of DGA gas composition and ratio quantities."],
 
         ["Hybrid benchmark", "Student/traditional exact agreement gate; no hand-tuned numeric weight."],
         ["PPM coverage", "Empirical observed ppm range in labeled benchmark, not a claimed physical operating range."],
@@ -456,12 +457,11 @@ def _build_sources_sheet(wb):
     sheet = wb.worksheets.add("Research_Sources")
     rows = [
         ["Source", "Relevance", "URL"],
-        ["IEC 60599:2022", "DGA interpretation standard for mineral-oil transformers", "https://webstore.iec.ch/en/publication/66491"],
-        ["Guo & Guo (2022), Energy Reports", "Health Index combines operating history and test data into one comparative condition indicator", "https://doi.org/10.1016/j.egyr.2022.07.041"],
-        ["Azmi et al. (2017), Renewable and Sustainable Energy Reviews", "Review of transformer Health Index formulations and asset comparison", "https://doi.org/10.1016/j.rser.2017.03.094"],
-        ["Ali et al. (2023), Electric Power Systems Research", "Comparison/review of Key Gas, Duval, IEC, Rogers and Doernenburg conventional DGA methods", "https://doi.org/10.1016/j.epsr.2022.109064"],
-        ["Acikgoz et al. (2025), Elektronika ir Elektrotechnika", "Review of classical vs AI DGA diagnosis and dataset imbalance", "https://doi.org/10.5755/j02.eie.39824"],
-        ["Bohatyrewicz & Banaszak (2022), Energies", "Transformer population study of changes in Health Index values over time", "https://doi.org/10.3390/en15166078"],
+        ["IEC 60599:2022", "Interpretation of dissolved/free gases in mineral-oil electrical equipment; diagnostic results are guidance and not standalone ground truth", "https://webstore.iec.ch/en/publication/66491"],
+        ["Ali et al. (2023), Electric Power Systems Research", "Review/comparison of Key Gas, Duval Triangle/Pentagon, IEC, Rogers and Doernenburg conventional DGA methods", "https://doi.org/10.1016/j.epsr.2022.109064"],
+        ["Acikgoz et al. (2025), Elektronika ir Elektrotechnika", "Review of conventional vs AI DGA fault classification and the effect of class imbalance", "https://doi.org/10.5755/j02.eie.39824"],
+        ["Snorkel AI — Labeling Functions", "Weak supervision: labeling functions vote or abstain; LabelModel estimates source accuracies/correlations without ground-truth labels", "https://docs.snorkel.ai/docs/25.2/user-guide/data-dev/labeling-functions-lfs-overview/introduction-to-labeling-functions-lfs/"],
+        ["Snorkel AI — Good Labeling Functions", "LFs are noisy/incomplete, conflicts/overlaps are handled by the label model, and overfitting to dev data is a known risk", "https://docs.snorkel.ai/docs/25.1/user-guide/analysis/creating-good-labeling-functions"],
     ]
     write_table(sheet, rows, max_width=100)
     sheet.get_range("C2:C20").format.wrap_text = True

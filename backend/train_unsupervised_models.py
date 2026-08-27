@@ -37,6 +37,7 @@ from config import DATASET_DIR, MODEL_DIR, REPORT_DIR, config as cfg
 from consensus import ABSTAIN, apply_consensus, apply_consensus_from_existing_diagnostics, diagnostic_method_summary, evaluate_method_labels, normalize_fault, pairwise_label_agreement, unify_fault
 from evaluation import evaluate_ambiguous_fine_predictions, empirical_fault_class_coverage
 from feature_engineering import build_training_features_from_clean
+from dga_features import FEATS as SCALE_INVARIANT_DGA_FEATURES, build_scale_invariant_features
 from logging_config import init_logging
 from ranking import build_transformer_ranking, log_ranking_diagnostics
 from weak_supervision import DEFAULT_WEAK_METHODS, create_student_training_targets, load_weak_supervision_artifact, save_weak_supervision_artifacts, weak_supervision_pipeline
@@ -98,6 +99,44 @@ def _evaluate_method_labels_safely(y_true, y_pred, allowed_labels):
 def _can_stratify(y):
     counts = pd.Series(y).value_counts()
     return len(counts) >= 2 and counts.min() >= 2
+
+
+class CatBoostSklearnAdapter(BaseEstimator, ClassifierMixin):
+    """Small sklearn-compatible adapter for CatBoost versions whose native
+    estimator does not expose the current sklearn tag protocol.
+
+    The wrapper does not alter the CatBoost algorithm or hyperparameters; it
+    only makes fit/predict/predict_proba usable inside sklearn Pipeline.
+    """
+
+    def __init__(self, iterations=300, learning_rate=0.05, depth=6,
+                 random_seed=42, auto_class_weights="Balanced"):
+        self.iterations = iterations
+        self.learning_rate = learning_rate
+        self.depth = depth
+        self.random_seed = random_seed
+        self.auto_class_weights = auto_class_weights
+
+    def fit(self, X, y, **fit_params):
+        if CatBoostClassifier is None:
+            raise ImportError("catboost is not installed")
+        self.model_ = CatBoostClassifier(
+            iterations=self.iterations,
+            learning_rate=self.learning_rate,
+            depth=self.depth,
+            verbose=0,
+            random_seed=self.random_seed,
+            auto_class_weights=self.auto_class_weights,
+        )
+        self.model_.fit(X, y, **fit_params)
+        self.classes_ = np.unique(np.asarray(y))
+        return self
+
+    def predict(self, X):
+        return np.asarray(self.model_.predict(X)).reshape(-1)
+
+    def predict_proba(self, X):
+        return np.asarray(self.model_.predict_proba(X))
 
 
 class AdaptiveCalibratedSVC(BaseEstimator, ClassifierMixin):
@@ -381,17 +420,24 @@ def _traditional_feature_matrix(df: pd.DataFrame, granularity: str = "fine") -> 
 def _align_feature_frame(df: pd.DataFrame, feature_names, granularity: str = "fine") -> pd.DataFrame:
     """Rebuild the exact feature schema stored with a weak student artifact.
 
-    Artifacts are trained either on gas_only or gas_plus_traditional features.
-    The artifact's feature names are the source of truth for column order.
-    No feature is invented; missing columns are represented as NaN and are
-    handled by the model pipeline's imputer.
+    Feature mode is inferred from the artifact schema, including the merged
+    scale-invariant representation introduced from the teammate code. This is
+    essential: treating ratio features as traditional one-hot diagnostics would
+    silently change the model input at inference time.
     """
     names = [str(x) for x in feature_names]
     gas_names = set(MODEL_FEATURES)
+    ratio_names = set(SCALE_INVARIANT_DGA_FEATURES)
 
-    # Infer the feature mode from the stored schema rather than guessing from
-    # the labeled dataset's available columns.
-    feature_mode = "gas_plus_traditional" if any(name not in gas_names for name in names) else "gas_only"
+    if set(names).issubset(gas_names):
+        feature_mode = "gas_only"
+    elif set(names).issubset(ratio_names):
+        feature_mode = "ratio_only"
+    elif set(names).issubset(gas_names | ratio_names):
+        feature_mode = "gas_plus_ratio"
+    else:
+        feature_mode = "gas_plus_traditional"
+
     X = build_feature_frame(df, feature_mode, granularity)
 
     missing = [name for name in names if name not in X.columns]
@@ -404,36 +450,14 @@ def _align_feature_frame(df: pd.DataFrame, feature_names, granularity: str = "fi
 
 
 def _ratio_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
-    """Scale-invariant DGA features used for the teammate-inspired ablation.
+    """Canonical scale-invariant DGA representation (13 deterministic features).
 
-    These features are diagnostic representations only. They do not alter the
-    traditional rules, IEEE severity, or fleet-ranking policy.
+    This is the useful part of the teammate implementation: the model can
+    compare gas composition independently of absolute concentration scale.
+    It is an ablation/feature representation only; traditional diagnosis and
+    severity/ranking logic are unchanged.
     """
-    work = df.copy()
-    gases5 = ["h2", "c2h6", "ch4", "c2h4", "c2h2"]
-    numeric = {
-        gas: pd.to_numeric(work.get(gas, pd.Series(np.nan, index=work.index)), errors="coerce")
-        for gas in gases5
-    }
-
-    out = pd.DataFrame(index=work.index)
-    total5 = sum(numeric.values()).replace(0.0, np.nan)
-    for gas in gases5:
-        out[f"pct5_{gas}"] = numeric[gas] / total5 * 100.0
-
-    tri_total = (
-        numeric["ch4"] + numeric["c2h4"] + numeric["c2h2"]
-    ).replace(0.0, np.nan)
-    out["pct_ch4_tri"] = numeric["ch4"] / tri_total * 100.0
-    out["pct_c2h4_tri"] = numeric["c2h4"] / tri_total * 100.0
-    out["pct_c2h2_tri"] = numeric["c2h2"] / tri_total * 100.0
-
-    out["ratio_ch4_h2"] = numeric["ch4"] / (numeric["h2"] + 1e-6)
-    out["ratio_c2h2_c2h4"] = numeric["c2h2"] / (numeric["c2h4"] + 1e-6)
-    out["ratio_c2h4_c2h6"] = numeric["c2h4"] / (numeric["c2h6"] + 1e-6)
-
-    return out.replace([np.inf, -np.inf], np.nan)
-
+    return build_scale_invariant_features(df).reindex(columns=SCALE_INVARIANT_DGA_FEATURES)
 
 def build_feature_frame(df: pd.DataFrame, feature_mode: str, granularity: str = "fine") -> pd.DataFrame:
     gas = df.reindex(columns=MODEL_FEATURES).apply(pd.to_numeric, errors="coerce").astype(float)
@@ -508,7 +532,7 @@ def build_models(seed: int):
     }
     if lgb is not None: models["lightgbm"] = _build_pipeline(lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=31, random_state=seed, verbosity=-1))
     if xgb is not None: models["xgboost"] = _build_pipeline(xgb.XGBClassifier(n_estimators=300, learning_rate=0.03, max_depth=5, subsample=0.85, colsample_bytree=0.85, objective="multi:softprob", eval_metric="mlogloss", tree_method="hist", random_state=seed))
-    if CatBoostClassifier is not None: models["catboost"] = _build_pipeline(CatBoostClassifier(iterations=300, learning_rate=0.05, depth=6, verbose=0, random_seed=seed, auto_class_weights="Balanced"))
+    if CatBoostClassifier is not None: models["catboost"] = _build_pipeline(CatBoostSklearnAdapter(iterations=300, learning_rate=0.05, depth=6, random_seed=seed, auto_class_weights="Balanced"))
     if TorchMLPClassifier is not None: models["torch_mlp"] = _build_pipeline(TorchMLPClassifier(random_state=seed), True)
     return models
 
@@ -641,6 +665,35 @@ def benchmark_traditional_combinations(labeled_df, split=None):
     result.to_csv(BENCHMARK_DIR / "traditional_combinations_benchmark.csv", index=False, encoding="utf-8-sig")
     logger.debug("benchmark_traditional_combinations: generated %d rows", len(result))
     return result
+
+def benchmark_traditional_ppm_bins(labeled_df):
+    """Export empirical ppm-bin coverage for each diagnostic method.
+
+    The bins are descriptive reporting bins, not diagnostic thresholds and not
+    learned weights.  They make the requested "coverage over ppm" comparison
+    reproducible in Excel without claiming a physical operating range.
+    """
+    bins = [0.0, 1.0, 5.0, 10.0, 20.0, 50.0, 100.0, 250.0, 500.0, 1000.0, np.inf]
+    labels = ["0-<1", "1-<5", "5-<10", "10-<20", "20-<50", "50-<100", "100-<250", "250-<500", "500-<1000", "1000+"]
+    rows = []
+    for method, column in cfg.DIAGNOSTIC_METHOD_TO_COLUMN.items():
+        active = labeled_df.get(column, pd.Series(ABSTAIN, index=labeled_df.index)).map(normalize_fault) != ABSTAIN
+        for gas in cfg.COMMON_BENCHMARK_GASES:
+            x = pd.to_numeric(labeled_df[gas], errors="coerce")
+            valid = active & x.notna() & (x >= 0)
+            bucket = pd.cut(x.where(valid), bins=bins, labels=labels, right=False, include_lowest=True)
+            counts = bucket.value_counts(sort=False)
+            for bin_label, count in counts.items():
+                rows.append({
+                    "method": method, "gas": gas, "ppm_bin": str(bin_label),
+                    "active_count": int(count),
+                    "active_percent_of_all": float(count / max(len(labeled_df), 1) * 100.0),
+                    "active_percent_of_method_coverage": float(count / max(int(valid.sum()), 1) * 100.0),
+                })
+    result = pd.DataFrame(rows)
+    result.to_csv(BENCHMARK_DIR / "traditional_ppm_bins.csv", index=False, encoding="utf-8-sig")
+    return result
+
 
 def benchmark_traditional_ppm_coverage(labeled_df):
     logger.debug("benchmark_traditional_ppm_coverage: start rows=%d", len(labeled_df))
@@ -777,7 +830,7 @@ def _train_weak_students(df, granularity, seed):
         )
     )
 
-    for feature_mode in ("gas_only", "gas_plus_traditional"):
+    for feature_mode in cfg.STUDENT_FEATURE_MODES:
         Xdf = build_feature_frame(clean, feature_mode, granularity)
         models = build_models(seed)
 
@@ -1039,7 +1092,7 @@ def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
     ranking.to_parquet(processed / "transformer_ranking.parquet", index=False)
     ranking.to_csv(REPORT_DIR / "transformer_ranking.csv", index=False, encoding="utf-8-sig")
     if save_model:
-        MODEL_DIR.mkdir(parents=True, exist_ok=True); joblib.dump({"models": weak_students["coarse"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_COARSE_PATH); joblib.dump({"models": weak_students["fine"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_FINE_PATH); metadata = {"seed": seed, "unlabeled_dataset": str(UNLABELED_PATH), "weak_supervision": "Snorkel LabelModel", "student_feature_modes": ["gas_only", "gas_plus_traditional"], "student_model_count_coarse": len(weak_students["coarse"]), "student_model_count_fine": len(weak_students["fine"]), "severity_source": cfg.STANDARD, "severity_is_weighted": False, "severity_is_failure_probability": False, "ranking_policy": list(cfg.RANKING_POLICY), "ranking_is_weighted": False, "ranking_is_health_score": False, "benchmark_policy": "Operational unlabeled data are used for weak labels and student training only; labeled benchmark is reserved for external evaluation and locked test reporting."}; TRAINING_METADATA_PATH.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        MODEL_DIR.mkdir(parents=True, exist_ok=True); joblib.dump({"models": weak_students["coarse"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_COARSE_PATH); joblib.dump({"models": weak_students["fine"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_FINE_PATH); metadata = {"seed": seed, "unlabeled_dataset": str(UNLABELED_PATH), "weak_supervision": "Snorkel LabelModel", "weak_labeling_methods": list(cfg.WEAK_LABELING_METHODS), "student_feature_modes": list(cfg.STUDENT_FEATURE_MODES), "student_model_count_coarse": len(weak_students["coarse"]), "student_model_count_fine": len(weak_students["fine"]), "severity_source": cfg.STANDARD, "severity_is_weighted": False, "severity_is_failure_probability": False, "ranking_policy": list(cfg.RANKING_POLICY), "ranking_is_weighted": False, "ranking_is_health_score": False, "benchmark_policy": "Operational unlabeled data are used for weak labels and student training only; labeled benchmark is reserved for external evaluation and locked test reporting."}; TRAINING_METADATA_PATH.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.debug("run_unlabeled_pipeline: complete final df shape=%s", df.shape)
     return df, ranking, weak_students
 

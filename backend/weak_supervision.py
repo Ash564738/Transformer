@@ -18,7 +18,7 @@ try:
 except Exception as exc:
     logger.warning("Snorkel unavailable: %s", exc)
 
-DEFAULT_WEAK_METHODS = dict(cfg.DIAGNOSTIC_METHOD_TO_COLUMN)
+DEFAULT_WEAK_METHODS = dict(cfg.WEAK_LABELING_METHOD_TO_COLUMN)
 
 def _validate_groups(groups):
     groups = [str(value).strip().upper() for value in groups]

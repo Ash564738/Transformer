@@ -2,12 +2,22 @@
   "seed": 42,
   "unlabeled_dataset": "E:\\Transformer\\backend\\dataset\\processed\\dga_unlabeled.parquet",
   "weak_supervision": "Snorkel LabelModel",
+  "weak_labeling_methods": [
+    "iec_fault",
+    "rogers_fault",
+    "doernenburg_fault",
+    "duval_triangle_fault",
+    "duval_pentagon_p1_fault",
+    "duval_pentagon_p2_fault"
+  ],
   "student_feature_modes": [
     "gas_only",
+    "ratio_only",
+    "gas_plus_ratio",
     "gas_plus_traditional"
   ],
-  "student_model_count_coarse": 10,
-  "student_model_count_fine": 10,
+  "student_model_count_coarse": 20,
+  "student_model_count_fine": 20,
   "severity_source": "IEEE C57.104-2019",
   "severity_is_weighted": false,
   "severity_is_failure_probability": false,
