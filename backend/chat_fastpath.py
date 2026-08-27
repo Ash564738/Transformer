@@ -230,7 +230,7 @@ def _fast_count_critical(question: str, language: str) -> str | None:
 def _fast_most_critical(question: str, language: str) -> str | None:
     if not _contains_any(question, ["most critical transformer", "highest risk transformer", "highest priority transformer", "máy nào nghiêm trọng nhất", "máy biến áp nào nghiêm trọng nhất", "máy nào rủi ro cao nhất", "เครื่องไหนรุนแรงที่สุด", "หม้อแปลงตัวไหนเสี่ยงสูงสุด"]):
         return None
-    columns, rows = _query("SELECT transformer_id,loc,status,fault_type,priority_score,recommended_action FROM transformers ORDER BY priority_score DESC LIMIT 1")
+    columns, rows = _query("SELECT transformer_id,loc,status,fault_type,priority_score,rank,recommended_action FROM transformers ORDER BY rank ASC LIMIT 1")
     if not rows: return NO_DATA_REPLY[language]
     record = dict(zip(columns, rows[0]))
     if language == "vi":
@@ -244,7 +244,7 @@ def _fast_compare_transformers(question: str, language: str) -> str | None:
     ids = extract_transformer_ids(question)
     if len(ids) < 2: return None
     placeholders = ",".join("?" for _ in ids)
-    sql = f"SELECT transformer_id,loc,status,fault_type,priority_score,trend,recommended_action FROM transformers WHERE transformer_id IN ({placeholders}) ORDER BY priority_score DESC"
+    sql = f"SELECT transformer_id,loc,status,fault_type,priority_score,rank,trend,recommended_action FROM transformers WHERE transformer_id IN ({placeholders}) ORDER BY rank ASC"
     columns, rows = _query(sql, tuple(ids))
     if not rows: return NO_DATA_REPLY[language]
     records = [dict(zip(columns, row)) for row in rows]

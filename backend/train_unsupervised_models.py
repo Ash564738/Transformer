@@ -238,16 +238,96 @@ def load_labeled_csv_data() -> pd.DataFrame:
     return result
 
 def load_unlabeled(path: Path = UNLABELED_PATH) -> pd.DataFrame:
-    if not path.exists():
-        logger.error("load_unlabeled: path not found %s", path)
-        raise FileNotFoundError(path)
-    df = pd.read_parquet(path); required = {"transformer_id", "sample_day"}; missing = required - set(df.columns)
+    """Load canonical operational data, preparing it automatically when absent.
+
+    The offline research runner is self-contained: a fresh checkout can run
+    `python train_unsupervised_models.py --mode all` without first running a
+    separate preparation command.
+
+    A canonical parquet is treated as authoritative and is never passed through
+    feature engineering a second time.
+    """
+    if path.exists():
+        logger.info("Loading canonical unlabeled parquet: %s", path)
+        df = pd.read_parquet(path)
+    else:
+        source_candidates = [
+            DATASET_DIR / "DGA of Main Tank only KT 11022026_09062026.xlsx",
+            DATASET_DIR / "dga_unlabeled.xlsx",
+            DATASET_DIR / "dga_unlabeled.csv",
+        ]
+        source = next((candidate for candidate in source_candidates if candidate.exists()), None)
+        if source is None:
+            raise FileNotFoundError(
+                "Operational unlabeled dataset not found. Expected either "
+                f"{path} or one of: "
+                + ", ".join(str(x) for x in source_candidates)
+            )
+
+        logger.info("Canonical parquet missing; preparing from %s", source)
+
+        if source.suffix.lower() in {".xlsx", ".xls"}:
+            raw = pd.read_excel(source)
+        else:
+            raw = pd.read_csv(source, encoding="utf-8-sig")
+
+        raw.columns = [
+            str(c).strip().lower().replace("\ufeff", "").replace(" ", "_")
+            for c in raw.columns
+        ]
+
+        # Canonicalize raw operational columns first (LOC/NAME/CODETX/Sample Day
+        # -> transformer_id/sample_day), then build features exactly once.
+        from clean_dataset import clean_dataset
+        cleaned, _summary = clean_dataset(
+            dataframe=raw,
+            output_dir=DATASET_DIR / "processed",
+        )
+        df = prepare_unlabeled(cleaned)
+        _assert_unique_columns(df, "load_unlabeled prepared output")
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(path, index=False)
+
+        logger.info(
+            "Prepared canonical operational parquet: rows=%d transformers=%d columns=%d",
+            len(df),
+            df["transformer_id"].nunique() if "transformer_id" in df.columns else 0,
+            len(df.columns),
+        )
+
+    _assert_unique_columns(df, f"load_unlabeled input {path.name}")
+
+    required = {"transformer_id", "sample_day"}
+    missing = required - set(df.columns)
     if missing:
-        logger.error("load_unlabeled: missing required columns %s", sorted(missing))
         raise ValueError(f"{path.name} requires {sorted(missing)}")
-    df["sample_day"] = pd.to_datetime(df["sample_day"], errors="coerce"); result = df.dropna(subset=["transformer_id", "sample_day"]).reset_index(drop=True)
-    logger.debug("load_unlabeled: rows after cleaning=%d", len(result))
+
+    result = df.copy()
+    result["sample_day"] = pd.to_datetime(result["sample_day"], errors="coerce")
+    result = (
+        result.dropna(subset=["transformer_id", "sample_day"])
+        .sort_values(["transformer_id", "sample_day"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+
+    logger.info(
+        "load_unlabeled: rows=%d transformers=%d columns=%d",
+        len(result),
+        result["transformer_id"].nunique(),
+        len(result.columns),
+    )
     return result
+
+
+def _assert_unique_columns(df: pd.DataFrame, context: str) -> None:
+    if df.columns.duplicated().any():
+        duplicated = df.columns[df.columns.duplicated()].tolist()
+        raise ValueError(
+            f"{context} produced duplicate columns: "
+            + ", ".join(map(str, duplicated))
+        )
+
 
 def prepare_unlabeled(df: pd.DataFrame) -> pd.DataFrame:
     """Return canonical unlabeled data without re-engineering an already prepared frame.
@@ -269,6 +349,7 @@ def prepare_unlabeled(df: pd.DataFrame) -> pd.DataFrame:
             duplicated = result.columns[result.columns.duplicated()].tolist()
             logger.warning("prepare_unlabeled: dropping duplicate columns from already-prepared data: %s", duplicated)
             result = result.loc[:, ~result.columns.duplicated(keep="first")].copy()
+        _assert_unique_columns(result, "prepare_unlabeled canonical input")
         result["sample_day"] = pd.to_datetime(result["sample_day"], errors="coerce")
         result = result.dropna(subset=["transformer_id", "sample_day"]).sort_values(
             ["transformer_id", "sample_day"], kind="mergesort"
@@ -280,12 +361,7 @@ def prepare_unlabeled(df: pd.DataFrame) -> pd.DataFrame:
     out["sample_day"] = pd.to_datetime(out["sample_day"], errors="coerce")
     out = out.sort_values(["transformer_id", "sample_day"], kind="mergesort").reset_index(drop=True)
     result = apply_consensus(out)
-    if result.columns.duplicated().any():
-        duplicated = result.columns[result.columns.duplicated()].tolist()
-        raise ValueError(
-            "Canonical unlabeled preparation produced duplicate columns: "
-            + ", ".join(map(str, duplicated))
-        )
+    _assert_unique_columns(result, "prepare_unlabeled final output")
     logger.debug("prepare_unlabeled: final shape=%s", result.shape)
     return result
 
@@ -327,13 +403,54 @@ def _align_feature_frame(df: pd.DataFrame, feature_names, granularity: str = "fi
     return X.reindex(columns=names)
 
 
+def _ratio_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    """Scale-invariant DGA features used for the teammate-inspired ablation.
+
+    These features are diagnostic representations only. They do not alter the
+    traditional rules, IEEE severity, or fleet-ranking policy.
+    """
+    work = df.copy()
+    gases5 = ["h2", "c2h6", "ch4", "c2h4", "c2h2"]
+    numeric = {
+        gas: pd.to_numeric(work.get(gas, pd.Series(np.nan, index=work.index)), errors="coerce")
+        for gas in gases5
+    }
+
+    out = pd.DataFrame(index=work.index)
+    total5 = sum(numeric.values()).replace(0.0, np.nan)
+    for gas in gases5:
+        out[f"pct5_{gas}"] = numeric[gas] / total5 * 100.0
+
+    tri_total = (
+        numeric["ch4"] + numeric["c2h4"] + numeric["c2h2"]
+    ).replace(0.0, np.nan)
+    out["pct_ch4_tri"] = numeric["ch4"] / tri_total * 100.0
+    out["pct_c2h4_tri"] = numeric["c2h4"] / tri_total * 100.0
+    out["pct_c2h2_tri"] = numeric["c2h2"] / tri_total * 100.0
+
+    out["ratio_ch4_h2"] = numeric["ch4"] / (numeric["h2"] + 1e-6)
+    out["ratio_c2h2_c2h4"] = numeric["c2h2"] / (numeric["c2h4"] + 1e-6)
+    out["ratio_c2h4_c2h6"] = numeric["c2h4"] / (numeric["c2h6"] + 1e-6)
+
+    return out.replace([np.inf, -np.inf], np.nan)
+
+
 def build_feature_frame(df: pd.DataFrame, feature_mode: str, granularity: str = "fine") -> pd.DataFrame:
     gas = df.reindex(columns=MODEL_FEATURES).apply(pd.to_numeric, errors="coerce").astype(float)
+
     if feature_mode == "gas_only":
         return gas
+
+    if feature_mode == "ratio_only":
+        return _ratio_feature_matrix(df)
+
+    if feature_mode == "gas_plus_ratio":
+        return pd.concat([gas, _ratio_feature_matrix(df)], axis=1)
+
     if feature_mode == "gas_plus_traditional":
         trad = _traditional_feature_matrix(df, granularity)
         return pd.concat([gas, trad], axis=1)
+
     logger.error("build_feature_frame: unknown feature_mode %s", feature_mode)
     raise ValueError(f"Unknown feature_mode: {feature_mode}")
 
@@ -574,7 +691,7 @@ def _benchmark_supervised_feature_mode(labeled_df, seed, feature_mode, models=No
 def benchmark_supervised_models(labeled_df, seed):
     logger.debug("benchmark_supervised_models: start rows=%d", len(labeled_df))
     parts = []
-    for mode in ("gas_only", "gas_plus_traditional"):
+    for mode in ("gas_only", "ratio_only", "gas_plus_ratio", "gas_plus_traditional"):
         part = _benchmark_supervised_feature_mode(labeled_df, seed, mode)
         if not part.empty: parts.append(part)
     result = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
@@ -609,31 +726,130 @@ def _fit_student_model(model, Xdf, y, sample_weight):
 
 
 def _train_weak_students(df, granularity, seed):
-    logger.debug("_train_weak_students: granularity=%s", granularity)
-    target = f"weak_{granularity}_fault_group" if granularity == "coarse" else f"weak_{granularity}_fault"
+    """Train the operational weak-label student set.
+
+    The operational set is unlabeled, so this stage exists to learn from weak
+    targets. It intentionally uses a smaller, reproducible model set than the
+    broad external benchmark. The broad ML comparison remains in the labeled
+    benchmark stage.
+    """
+    logger.info("_train_weak_students: granularity=%s", granularity)
+
+    target = (
+        f"weak_{granularity}_fault_group"
+        if granularity == "coarse"
+        else f"weak_{granularity}_fault"
+    )
     abstain = f"weak_{granularity}_is_ABSTAIN"
-    groups = list(cfg.WEAK_COARSE_GROUPS if granularity == "coarse" else cfg.BENCHMARK_FINE_CLASSES)
-    clean, y, present = create_student_training_targets(df, target, abstain, groups)
+    groups = list(
+        cfg.WEAK_COARSE_GROUPS
+        if granularity == "coarse"
+        else cfg.BENCHMARK_FINE_CLASSES
+    )
+
+    clean, y, present = create_student_training_targets(
+        df,
+        target,
+        abstain,
+        groups,
+    )
+
+    if clean.empty:
+        raise ValueError(
+            f"No non-abstaining weak targets available for granularity={granularity}"
+        )
+
     sample_weight = _group_balanced_sample_weights(clean)
     artifacts = {}
+
+    # Deliberately smaller than the broad external benchmark.
+    weak_model_names = tuple(
+        getattr(
+            cfg,
+            "WEAK_STUDENT_MODELS",
+            (
+                "logistic_regression",
+                "random_forest",
+                "extra_trees",
+                "hist_gradient_boosting",
+                "sklearn_mlp",
+            ),
+        )
+    )
+
     for feature_mode in ("gas_only", "gas_plus_traditional"):
         Xdf = build_feature_frame(clean, feature_mode, granularity)
         models = build_models(seed)
-        for name, model in models.items():
+
+        for name in weak_model_names:
+            model = models.get(name)
+            if model is None:
+                logger.warning(
+                    "Weak student model unavailable | granularity=%s feature_mode=%s model=%s",
+                    granularity,
+                    feature_mode,
+                    name,
+                )
+                continue
+
             try:
-                used_weights = _fit_student_model(model, Xdf, y, sample_weight)
+                used_weights = _fit_student_model(
+                    model,
+                    Xdf,
+                    y,
+                    sample_weight,
+                )
+
                 artifacts[f"{feature_mode}__{name}"] = {
-                    "model": model, "feature_mode": feature_mode, "granularity": granularity,
-                    "features": list(Xdf.columns), "labels": list(present),
+                    "model": model,
+                    "feature_mode": feature_mode,
+                    "granularity": granularity,
+                    "features": list(Xdf.columns),
+                    "labels": list(present),
                     "n_training_rows": int(len(clean)),
-                    "n_training_transformers": int(clean["transformer_id"].nunique()) if "transformer_id" in clean.columns else None,
+                    "n_training_transformers": (
+                        int(clean["transformer_id"].nunique())
+                        if "transformer_id" in clean.columns
+                        else None
+                    ),
                     "cluster_weighting": "inverse_transformer_record_count",
                     "sample_weight_used": bool(used_weights),
-                    "class_counts": {str(k): int(v) for k, v in pd.Series(y).value_counts().to_dict().items()},
+                    "class_counts": {
+                        str(k): int(v)
+                        for k, v in pd.Series(y).value_counts().to_dict().items()
+                    },
+                    "model_source": "operational_unlabeled_weak_targets",
                 }
+
+                logger.info(
+                    "Weak student trained | granularity=%s feature_mode=%s model=%s rows=%d transformers=%d",
+                    granularity,
+                    feature_mode,
+                    name,
+                    len(clean),
+                    clean["transformer_id"].nunique()
+                    if "transformer_id" in clean.columns
+                    else 0,
+                )
             except Exception as exc:
-                logger.warning("Weak student training failed | %s | %s | %s", granularity, feature_mode, name, exc)
-    logger.debug("_train_weak_students: trained=%d artifacts", len(artifacts))
+                logger.exception(
+                    "Weak student training failed | granularity=%s feature_mode=%s model=%s | %s",
+                    granularity,
+                    feature_mode,
+                    name,
+                    exc,
+                )
+
+    if not artifacts:
+        raise RuntimeError(
+            f"No weak student model could be trained for granularity={granularity}"
+        )
+
+    logger.info(
+        "_train_weak_students: trained=%d artifacts | granularity=%s",
+        len(artifacts),
+        granularity,
+    )
     return artifacts
 
 def benchmark_weak_transfer(labeled_df, weak_students, seed):
@@ -676,8 +892,27 @@ def benchmark_weak_transfer(labeled_df, weak_students, seed):
     logger.debug("benchmark_weak_transfer: generated %d rows", len(result))
     return result
 
-def benchmark_weak_label_model_transfer(labeled_df, weak_models):
-    """Transfer the operationally fitted weak-label model directly to the labeled benchmark."""
+def benchmark_weak_label_model_transfer(labeled_df, weak_models=None):
+    """Transfer the operationally fitted weak-label models directly to the labeled benchmark.
+
+    The weak-label artifacts are persisted separately by save_weak_supervision_artifacts().
+    Earlier code accidentally passed the unlabeled prediction dataframe here and then
+    attempted payload["model"], causing KeyError("model").  This implementation accepts
+    the explicit artifact mapping; when omitted, it loads both persisted weak-label
+    model artifacts from MODEL_DIR.
+    """
+    if weak_models is None or not isinstance(weak_models, dict):
+        weak_models = {}
+        for granularity in ("coarse", "fine"):
+            try:
+                weak_models[granularity] = load_weak_supervision_artifact(granularity)
+            except FileNotFoundError:
+                logger.warning(
+                    "Missing persisted weak-label artifact for granularity=%s; "
+                    "direct transfer will skip this granularity.",
+                    granularity,
+                )
+
     fine_truth, coarse_truth = _prepare_truth(labeled_df)
     conflict = labeled_df.get("fine_label_conflict", pd.Series(False, index=labeled_df.index)).astype(bool)
     valid = (fine_truth != ABSTAIN) & ~conflict
@@ -780,10 +1015,31 @@ def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
                 except Exception:
                     logger.warning("Weak student confidence failed | %s | %s", granularity, key, exc_info=True)
     from severity import apply_severity
-    df = apply_severity(df, nei_reference=None); ranking = build_transformer_ranking(df); log_ranking_diagnostics(ranking, 20)
-    processed = DATASET_DIR / "processed"; processed.mkdir(parents=True, exist_ok=True); df.to_parquet(processed / "dga_unlabeled_processed.parquet", index=False); ranking.to_parquet(processed / "transformer_ranking.parquet", index=False); ranking.to_csv(REPORT_DIR / "transformer_ranking.csv", index=False, encoding="utf-8-sig")
+    df = apply_severity(df, nei_reference=None)
+    ranking = build_transformer_ranking(df)
+
+    # Add the latest TDCG as a descriptive baseline for research rank-correlation
+    # analysis. It is NOT used by the maintenance ranking itself.
+    latest_tdcg = (
+        df.sort_values(["transformer_id", "sample_day"], kind="mergesort")
+        .groupby("transformer_id", as_index=False)
+        .tail(1)[["transformer_id"] + [c for c in ["tdcg", "tdcg_raw", "tdcg_recalc"] if c in df.columns]]
+        .copy()
+    )
+    if not latest_tdcg.empty:
+        ranking = ranking.merge(latest_tdcg, on="transformer_id", how="left")
+
+    log_ranking_diagnostics(ranking, 20)
+
+    processed = DATASET_DIR / "processed"
+    processed.mkdir(parents=True, exist_ok=True)
+    _assert_unique_columns(df, "run_unlabeled_pipeline processed dataframe")
+    _assert_unique_columns(ranking, "run_unlabeled_pipeline ranking")
+    df.to_parquet(processed / "dga_unlabeled_processed.parquet", index=False)
+    ranking.to_parquet(processed / "transformer_ranking.parquet", index=False)
+    ranking.to_csv(REPORT_DIR / "transformer_ranking.csv", index=False, encoding="utf-8-sig")
     if save_model:
-        MODEL_DIR.mkdir(parents=True, exist_ok=True); joblib.dump({"models": weak_students["coarse"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_COARSE_PATH); joblib.dump({"models": weak_students["fine"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_FINE_PATH); metadata = {"seed": seed, "unlabeled_dataset": str(UNLABELED_PATH), "weak_supervision": "Snorkel LabelModel or EM fallback", "student_feature_modes": ["gas_only", "gas_plus_traditional"], "student_model_count_coarse": len(weak_students["coarse"]), "student_model_count_fine": len(weak_students["fine"]), "severity_source": cfg.STANDARD, "severity_is_weighted": False, "severity_is_failure_probability": False, "ranking_policy": list(cfg.RANKING_POLICY), "ranking_is_weighted": False, "ranking_is_health_score": False, "benchmark_policy": "Operational unlabeled data are used for weak labels and student training only; labeled benchmark is reserved for external evaluation and locked test reporting."}; TRAINING_METADATA_PATH.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        MODEL_DIR.mkdir(parents=True, exist_ok=True); joblib.dump({"models": weak_students["coarse"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_COARSE_PATH); joblib.dump({"models": weak_students["fine"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_FINE_PATH); metadata = {"seed": seed, "unlabeled_dataset": str(UNLABELED_PATH), "weak_supervision": "Snorkel LabelModel", "student_feature_modes": ["gas_only", "gas_plus_traditional"], "student_model_count_coarse": len(weak_students["coarse"]), "student_model_count_fine": len(weak_students["fine"]), "severity_source": cfg.STANDARD, "severity_is_weighted": False, "severity_is_failure_probability": False, "ranking_policy": list(cfg.RANKING_POLICY), "ranking_is_weighted": False, "ranking_is_health_score": False, "benchmark_policy": "Operational unlabeled data are used for weak labels and student training only; labeled benchmark is reserved for external evaluation and locked test reporting."}; TRAINING_METADATA_PATH.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.debug("run_unlabeled_pipeline: complete final df shape=%s", df.shape)
     return df, ranking, weak_students
 
@@ -881,87 +1137,594 @@ def _select_production_fault_pipeline(traditional_result: pd.DataFrame, weak_tra
         joblib.dump(selection, PRODUCTION_SELECTION_PATH)
     return selection
 
-def main(args=None):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["benchmark", "unlabeled", "transfer", "all"], default="all")
-    parser.add_argument("--use-snorkel", action="store_true")
+def _run_single_seed(args=None):
+    parser = argparse.ArgumentParser(
+        description="DGA offline research pipeline: weak supervision, ML comparison, transfer evaluation and Excel report."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["benchmark", "unlabeled", "transfer", "all"],
+        default="all",
+    )
+    parser.add_argument(
+        "--use-snorkel",
+        action="store_true",
+        default=True,
+        help="Use Snorkel LabelModel (the only supported weak-supervision backend).",
+    )
     parser.add_argument("--seed", type=int, default=cfg.RANDOM_STATE)
     parsed = parser.parse_args(args)
-    logger.debug("main: mode=%s seed=%d", parsed.mode, parsed.seed)
+
+    logger.info(
+        "DGA OFFLINE RESEARCH RUN START | mode=%s | seed=%d | snorkel=%s",
+        parsed.mode,
+        parsed.seed,
+        parsed.use_snorkel,
+    )
     set_global_seed(parsed.seed)
+
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    BENCHMARK_DIR.mkdir(parents=True, exist_ok=True)
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+    run_id = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc
+    ).strftime("%Y%m%dT%H%M%SZ")
+    manifest_path = REPORT_DIR / "experiment_run_manifest.json"
+    failed_manifest_path = REPORT_DIR / "experiment_run_failed.json"
+
+    # Never advertise an old completed run while a new run is executing.
+    if manifest_path.exists():
+        try:
+            manifest_path.unlink()
+        except OSError:
+            logger.warning("Could not remove previous experiment manifest.", exc_info=True)
+
+    stages = []
+
+    def stage(name, fn):
+        logger.info("Experiment stage START: %s", name)
+        try:
+            result = fn()
+            stages.append({"stage": name, "status": "COMPLETE"})
+            logger.info("Experiment stage COMPLETE: %s", name)
+            return result
+        except Exception as exc:
+            stages.append({
+                "stage": name,
+                "status": "FAILED",
+                "error": repr(exc),
+            })
+            logger.exception("Experiment stage FAILED: %s", name)
+
+            failed_manifest = {
+                "run_id": run_id,
+                "started_at_utc": run_id,
+                "finished_at_utc": __import__("datetime").datetime.now(
+                    __import__("datetime").timezone.utc
+                ).isoformat(),
+                "status": "FAILED",
+                "mode": parsed.mode,
+                "seed": int(parsed.seed),
+                "use_snorkel": bool(parsed.use_snorkel),
+                "failed_stage": name,
+                "stages": stages,
+            }
+            failed_manifest_path.write_text(
+                json.dumps(failed_manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            raise
 
     unlabeled_result = None
     benchmark = None
     weak_transfer = pd.DataFrame()
 
     if parsed.mode in {"unlabeled", "transfer", "all"}:
-        unlabeled_result = run_unlabeled_pipeline(parsed.seed, parsed.use_snorkel)
+        unlabeled_result = stage(
+            "unlabeled_weak_supervision_and_students",
+            lambda: run_unlabeled_pipeline(
+                parsed.seed,
+                parsed.use_snorkel,
+                save_model=True,
+            ),
+        )
 
     if parsed.mode in {"benchmark", "all"}:
-        benchmark = run_labeled_benchmark(parsed.seed)
-        print("\n=== Traditional individual ===")
-        print(benchmark["individual"].sort_values(["granularity", "macro_f1"], ascending=[True, False]).to_string(index=False))
-        print("\n=== Best traditional combinations on locked test ===")
-        print(benchmark["combinations"].query("split == 'locked_test'").sort_values(["granularity", "macro_f1"], ascending=[True, False]).groupby("granularity").head(10).to_string(index=False))
-        print("\n=== Supervised reference ===")
-        print(benchmark["supervised"].query("split == 'locked_test'").sort_values("macro_f1", ascending=False).head(20).to_string(index=False))
+        benchmark = stage(
+            "external_labeled_benchmark",
+            lambda: run_labeled_benchmark(parsed.seed),
+        )
 
     if parsed.mode in {"transfer", "all"}:
         if unlabeled_result is None:
-            unlabeled_result = run_unlabeled_pipeline(parsed.seed, parsed.use_snorkel)
-        labeled = apply_consensus(load_labeled_csv_data())
-        weak_transfer = benchmark_weak_transfer(labeled, unlabeled_result[2], parsed.seed)
-        benchmark_weak_traditional_hybrids(labeled, unlabeled_result[2], parsed.seed)
-        print("\n=== Weak-supervision transfer ===")
-        if not weak_transfer.empty:
-            print(weak_transfer.query("split == 'locked_test'").sort_values(["granularity", "macro_f1"], ascending=[True, False]).head(30).to_string(index=False))
+            unlabeled_result = stage(
+                "unlabeled_weak_supervision_and_students",
+                lambda: run_unlabeled_pipeline(
+                    parsed.seed,
+                    parsed.use_snorkel,
+                    save_model=True,
+                ),
+            )
 
-        # If the benchmark part was not requested, compute the traditional
-        # development results here because production selection requires a
-        # development-only comparison between traditional and student pipelines.
+        labeled = apply_consensus(load_labeled_csv_data())
+
+        weak_transfer = stage(
+            "weak_student_transfer_to_external_labels",
+            lambda: benchmark_weak_transfer(
+                labeled,
+                unlabeled_result[2],
+                parsed.seed,
+            ),
+        )
+
+        stage(
+            "weak_label_model_direct_transfer",
+            lambda: benchmark_weak_label_model_transfer(
+                labeled,
+                None,
+            ),
+        )
+
+        stage(
+            "weak_student_traditional_hybrid_comparison",
+            lambda: benchmark_weak_traditional_hybrids(
+                labeled,
+                unlabeled_result[2],
+                parsed.seed,
+            ),
+        )
+
         if benchmark is None:
-            traditional = benchmark_traditional_combinations(labeled, None)
+            traditional = benchmark_traditional_combinations(
+                labeled,
+                None,
+            )
         else:
             traditional = benchmark["combinations"]
-        _select_production_fault_pipeline(traditional, weak_transfer, unlabeled_result[2], parsed.seed)
 
-    try:
-        from experiment import build_excel_report
-        build_excel_report(REPORT_DIR, DATASET_DIR / "processed", REPORT_DIR / "dga_research_report.xlsx")
-        logger.debug("Excel report saved to %s", REPORT_DIR / "dga_research_report.xlsx")
-    except Exception:
-        logger.exception("Excel report generation failed")
+        stage(
+            "production_fault_pipeline_selection",
+            lambda: _select_production_fault_pipeline(
+                traditional,
+                weak_transfer,
+                unlabeled_result[2],
+                parsed.seed,
+            ),
+        )
 
-    # The web experiment page serves only artifacts belonging to a recorded
-    # experiment run. This prevents old CSVs from surviving a model reset.
-    try:
-        required_artifacts = [
-            "reports/benchmark_split_manifest.csv",
-            "reports/traditional_individual_benchmark.csv",
-            "reports/traditional_combinations_benchmark.csv",
-        ]
-        if parsed.mode in {"unlabeled", "transfer", "all"}:
-            required_artifacts.extend([
+    # Teammate-inspired but scientifically separated analyses.
+    #
+    # These analyses are descriptive/reporting layers only:
+    # - absolute concentration vs scale-invariant ratio/percentage domain gap
+    # - fleet rank correlation against TDCG and other independent evidence
+    if parsed.mode == "all":
+        from research_analysis import (
+            build_domain_gap_analysis,
+            build_rank_correlation_analysis,
+            cross_dataset_transfer_grid,
+        )
+
+        labeled_all = load_labeled_csv_data()
+        source_frames = []
+        for source_name, source_df in labeled_all.groupby(
+            "source_dataset",
+            sort=False,
+        ):
+            source_frames.append((source_name, source_df))
+
+        if len(source_frames) >= 2:
+            stage(
+                "domain_gap_absolute_vs_ratio_analysis",
+                lambda: build_domain_gap_analysis(
+                    source_frames[:2],
+                    BENCHMARK_DIR,
+                ),
+            )
+
+            stage(
+                "cross_dataset_transfer_grid",
+                lambda: cross_dataset_transfer_grid(
+                    source_frames[:2],
+                    build_feature_frame,
+                    build_models,
+                    BENCHMARK_DIR,
+                    parsed.seed,
+                ),
+            )
+
+        if unlabeled_result is not None:
+            stage(
+                "fleet_rank_correlation_baseline_analysis",
+                lambda: build_rank_correlation_analysis(
+                    unlabeled_result[1],
+                    BENCHMARK_DIR,
+                ),
+            )
+
+    # Build Excel only after all requested computational stages succeeded.
+    stage(
+        "excel_research_report",
+        lambda: __import__("experiment").build_excel_report(
+            REPORT_DIR,
+            DATASET_DIR / "processed",
+            REPORT_DIR / "dga_research_report.xlsx",
+        ),
+    )
+
+    # Compute the exact manifest requirements from the requested run mode.
+    required_artifacts = []
+
+    if parsed.mode in {"benchmark", "all"}:
+        required_artifacts.extend(
+            [
+                "reports/benchmark/benchmark_split_manifest.csv",
+                "reports/benchmark/traditional_individual_benchmark.csv",
+                "reports/benchmark/traditional_combinations_benchmark.csv",
+                "reports/benchmark/traditional_ppm_coverage.csv",
+                "reports/benchmark/traditional_fault_class_coverage.csv",
+                "reports/benchmark/traditional_pairwise_agreement.csv",
+                "reports/benchmark/traditional_method_summary.csv",
+                "reports/benchmark/supervised_fault_benchmark.csv",
+            ]
+        )
+
+    if parsed.mode in {"unlabeled", "transfer", "all"}:
+        required_artifacts.extend(
+            [
                 "models/fault_classifiers_coarse.joblib",
                 "models/fault_classifiers_fine.joblib",
-                "models/production_fault_selection.joblib",
                 "models/training_metadata.json",
-            ])
-        manifest = {
-            "run_id": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
-            "completed_at_utc": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                "reports/transformer_ranking.csv",
+                "dataset/processed/dga_unlabeled_processed.parquet",
+                "dataset/processed/transformer_ranking.parquet",
+            ]
+        )
+
+    if parsed.mode in {"transfer", "all"}:
+        required_artifacts.extend(
+            [
+                "reports/benchmark/weak_transfer_fault_benchmark.csv",
+                "reports/benchmark/weak_label_model_transfer_fault_benchmark.csv",
+                "reports/benchmark/weak_traditional_hybrid_benchmark.csv",
+                "models/production_fault_selection.joblib",
+            ]
+        )
+
+    if parsed.mode == "all":
+        required_artifacts.extend(
+            [
+                "reports/benchmark/domain_gap_absolute_vs_ratio.csv",
+                "reports/benchmark/domain_gap_representation_summary.csv",
+                "reports/benchmark/rank_correlation_spearman.csv",
+                "reports/benchmark/rank_correlation_kendall.csv",
+                "reports/benchmark/cross_dataset_transfer_grid.csv",
+            ]
+        )
+
+    required_artifacts.append("reports/dga_research_report.xlsx")
+
+    missing = [
+        rel
+        for rel in required_artifacts
+        if not (cfg.BACKEND_ROOT / rel).exists()
+    ]
+    if missing:
+        error = (
+            "Experiment stages completed but required artifacts are missing: "
+            + ", ".join(missing)
+        )
+        failed_manifest = {
+            "run_id": run_id,
+            "status": "FAILED",
             "mode": parsed.mode,
-            "seed": parsed.seed,
+            "seed": int(parsed.seed),
             "use_snorkel": bool(parsed.use_snorkel),
-            "required_artifacts": required_artifacts,
+            "failed_stage": "artifact_verification",
+            "error": error,
+            "stages": stages,
         }
-        REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        (REPORT_DIR / "experiment_run_manifest.json").write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2),
+        failed_manifest_path.write_text(
+            json.dumps(failed_manifest, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    except Exception:
-        logger.exception("Failed to write experiment run manifest")
+        raise RuntimeError(error)
+
+    completed_at = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc
+    ).isoformat()
+
+    manifest = {
+        "run_id": run_id,
+        "completed_at_utc": completed_at,
+        "status": "COMPLETE",
+        "mode": parsed.mode,
+        "seed": int(parsed.seed),
+        "use_snorkel": bool(parsed.use_snorkel),
+        "operational_dataset_rows": (
+            int(len(unlabeled_result[0]))
+            if unlabeled_result is not None
+            else None
+        ),
+        "operational_transformers": (
+            int(unlabeled_result[0]["transformer_id"].nunique())
+            if unlabeled_result is not None
+            else None
+        ),
+        "required_artifacts": required_artifacts,
+        "stages": stages,
+        "methodology": {
+            "operational_training_is_unlabeled": True,
+            "external_labels_are_used_for_evaluation_only": True,
+            "development_selects_candidates": True,
+            "locked_test_is_not_used_for_selection": True,
+            "ranking_is_weighted": False,
+            "ranking_is_health_score": False,
+            "severity_is_weighted": False,
+            "severity_is_failure_probability": False,
+            "teammate_inspired_domain_gap_analysis": "descriptive_only",
+            "teammate_inspired_rank_correlation": "descriptive_only",
+        },
+    }
+
+    # Atomic publish: the web sees a COMPLETE manifest only after every
+    # required artifact exists.
+    temporary_manifest = REPORT_DIR / f".experiment_run_manifest.{run_id}.tmp"
+    temporary_manifest.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_manifest.replace(manifest_path)
+
+    if failed_manifest_path.exists():
+        try:
+            failed_manifest_path.unlink()
+        except OSError:
+            pass
+
+    logger.info(
+        "DGA OFFLINE RESEARCH RUN COMPLETE | run_id=%s | mode=%s",
+        run_id,
+        parsed.mode,
+    )
+
+
+DEFAULT_EVALUATION_SEEDS = (42, 43, 44, 45, 46)
+
+
+def _snapshot_seed_outputs(seed: int):
+    """Copy current run outputs into an immutable per-seed archive."""
+    import shutil
+
+    seed_root = REPORT_DIR / "seeds" / f"seed_{int(seed)}"
+    seed_benchmark = seed_root / "benchmark"
+    seed_models = seed_root / "models"
+    seed_processed = seed_root / "processed"
+    for directory in (seed_benchmark, seed_models, seed_processed):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    for source_dir, destination_dir in (
+        (BENCHMARK_DIR, seed_benchmark),
+        (MODEL_DIR, seed_models),
+        (DATASET_DIR / "processed", seed_processed),
+    ):
+        if not source_dir.exists():
+            continue
+        for source in source_dir.iterdir():
+            if source.is_file():
+                shutil.copy2(source, destination_dir / source.name)
+
+    for source in (
+        REPORT_DIR / "transformer_ranking.csv",
+        REPORT_DIR / "experiment_run_manifest.json",
+    ):
+        if source.exists():
+            shutil.copy2(source, seed_root / source.name)
+
+    logger.info("Seed outputs archived: seed=%d path=%s", int(seed), seed_root)
+    return seed_root
+
+
+def _aggregate_seed_csvs(seed_roots):
+    """Create long-form and mean/std summaries from archived seed CSVs."""
+    import re
+
+    aggregate_root = BENCHMARK_DIR / "multiseed"
+    aggregate_root.mkdir(parents=True, exist_ok=True)
+    collected = {}
+    completed_seeds = []
+
+    for root in seed_roots:
+        match = re.search(r"seed_(\d+)$", str(root))
+        if not match:
+            continue
+        seed = int(match.group(1))
+        completed_seeds.append(seed)
+        bench = root / "benchmark"
+        if not bench.exists():
+            continue
+        for path in bench.glob("*.csv"):
+            try:
+                frame = pd.read_csv(path)
+            except Exception as exc:
+                logger.warning("Could not read seed CSV %s: %s", path, exc)
+                continue
+            frame.insert(0, "seed", seed)
+            collected.setdefault(path.name, []).append(frame)
+
+    long_form_paths = []
+    for filename, frames in collected.items():
+        combined = pd.concat(frames, ignore_index=True, sort=False)
+        target = aggregate_root / filename
+        combined.to_csv(target, index=False, encoding="utf-8-sig")
+        long_form_paths.append(target)
+
+    metric_targets = []
+    preferred = {
+        "traditional_individual_benchmark.csv",
+        "traditional_combinations_benchmark.csv",
+        "supervised_fault_benchmark.csv",
+        "weak_transfer_fault_benchmark.csv",
+        "weak_label_model_transfer_fault_benchmark.csv",
+        "weak_traditional_hybrid_benchmark.csv",
+    }
+    metric_cols_all = [
+        "accuracy", "balanced_accuracy", "macro_f1", "weighted_f1",
+        "precision", "recall", "coverage", "abstention_rate",
+    ]
+    key_cols_all = [
+        "model", "feature_mode", "methods", "granularity", "split", "dataset",
+    ]
+
+    for filename in preferred:
+        path = aggregate_root / filename
+        if not path.exists():
+            continue
+        frame = pd.read_csv(path)
+        metric_cols = [c for c in metric_cols_all if c in frame.columns]
+        key_cols = [c for c in key_cols_all if c in frame.columns]
+        if "seed" not in frame.columns or not metric_cols or not key_cols:
+            continue
+        aggregate = (
+            frame.groupby(key_cols, dropna=False)[metric_cols]
+            .agg(["mean", "std", "count"])
+            .reset_index()
+        )
+        aggregate.columns = [
+            "_".join(str(part) for part in col if str(part) not in {"", "None"}).rstrip("_")
+            if isinstance(col, tuple) else str(col)
+            for col in aggregate.columns
+        ]
+        out = aggregate_root / f"multiseed_summary_{Path(filename).stem}.csv"
+        aggregate.to_csv(out, index=False, encoding="utf-8-sig")
+        metric_targets.append(out)
+
+    manifest = {
+        "seed_count": len(completed_seeds),
+        "seeds": sorted(set(completed_seeds)),
+        "long_form_csv_count": len(long_form_paths),
+        "metric_summary_csvs": [str(p.relative_to(REPORT_DIR)) for p in metric_targets],
+        "severity_accuracy_note": (
+            "Not computed: supplied labeled datasets contain fault labels but no independent severity ground truth."
+        ),
+    }
+    (aggregate_root / "multiseed_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return aggregate_root, long_form_paths, metric_targets
+
+
+def main(args=None):
+    """Run one seed or an explicit repeated-seed evaluation grid."""
+    parser = argparse.ArgumentParser(
+        description="DGA offline research pipeline with optional multi-seed evaluation."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["benchmark", "unlabeled", "transfer", "all"],
+        default="all",
+    )
+    parser.add_argument(
+        "--use-snorkel",
+        action="store_true",
+        default=True,
+        help="Use Snorkel LabelModel (the only supported weak-supervision backend).",
+    )
+    parser.add_argument("--seed", type=int, default=cfg.RANDOM_STATE)
+    parser.add_argument(
+        "--seeds",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Explicit seed list, e.g. --seeds 42 43 44 45 46. Overrides --seed.",
+    )
+    parser.add_argument(
+        "--all-seeds",
+        action="store_true",
+        help="Run the predefined evaluation grid: 42 43 44 45 46.",
+    )
+    parsed = parser.parse_args(args)
+
+    if parsed.all_seeds and parsed.seeds:
+        parser.error("Use either --all-seeds or --seeds, not both.")
+
+    if parsed.all_seeds:
+        seeds = list(DEFAULT_EVALUATION_SEEDS)
+    elif parsed.seeds:
+        seeds = list(dict.fromkeys(int(seed) for seed in parsed.seeds))
+    else:
+        seeds = [int(parsed.seed)]
+
+    logger.info(
+        "DGA OFFLINE RESEARCH REQUEST | mode=%s | seeds=%s | snorkel=%s",
+        parsed.mode,
+        seeds,
+        parsed.use_snorkel,
+    )
+
+    if len(seeds) == 1:
+        single_args = ["--mode", parsed.mode, "--seed", str(seeds[0])]
+        if parsed.use_snorkel:
+            single_args.append("--use-snorkel")
+        return _run_single_seed(single_args)
+
+    seed_roots = []
+    failures = []
+    for seed in seeds:
+        logger.info("MULTI-SEED RUN START | seed=%d", seed)
+        single_args = ["--mode", parsed.mode, "--seed", str(seed)]
+        if parsed.use_snorkel:
+            single_args.append("--use-snorkel")
+        try:
+            _run_single_seed(single_args)
+            seed_roots.append(_snapshot_seed_outputs(seed))
+            logger.info("MULTI-SEED RUN COMPLETE | seed=%d", seed)
+        except Exception as exc:
+            failures.append({"seed": int(seed), "error": repr(exc)})
+            logger.exception("MULTI-SEED RUN FAILED | seed=%d", seed)
+
+    aggregate_root, _, metric_targets = _aggregate_seed_csvs(seed_roots)
+    manifest = {
+        "status": "COMPLETE" if not failures else "PARTIAL",
+        "mode": parsed.mode,
+        "seeds_requested": seeds,
+        "seeds_completed": sorted(int(seed) for seed in [
+            int(item.name.replace("seed_", "")) for item in seed_roots
+        ]),
+        "failures": failures,
+        "aggregate_root": str(aggregate_root),
+        "metric_summary_csvs": [str(p) for p in metric_targets],
+        "severity_accuracy": (
+            "NOT_COMPUTED: independent severity ground truth is absent from the supplied labeled datasets."
+        ),
+        "methodology": {
+            "operational_data_used_for_training": True,
+            "external_labeled_data_used_for_evaluation": True,
+            "locked_test_used_for_selection": False,
+            "manual_lf_weights": False,
+            "arbitrary_severity_weights": False,
+        },
+    }
+    multi_manifest = REPORT_DIR / "multiseed_experiment_manifest.json"
+    multi_manifest.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    if failures:
+        raise RuntimeError(
+            "Multi-seed run completed with failures: "
+            + ", ".join(f"seed {item['seed']}" for item in failures)
+        )
+
+    logger.info(
+        "MULTI-SEED RUN COMPLETE | seeds=%s | aggregate=%s",
+        seeds,
+        aggregate_root,
+    )
+    return manifest
+
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,11 @@
+﻿metric_a,metric_b,n,kendall_tau
+Fleet rank (lower = higher priority),Current concentration evidence,627,-0.8396285686127611
+Fleet rank (lower = higher priority),Current rate evidence,627,0.05201592204489571
+Fleet rank (lower = higher priority),Current delta evidence,627,-0.4037007378168439
+Fleet rank (lower = higher priority),TDCG baseline,627,-0.3378594740726442
+Current concentration evidence,Current rate evidence,627,-0.3416127086765325
+Current concentration evidence,Current delta evidence,627,0.4380979393683515
+Current concentration evidence,TDCG baseline,627,0.3049314152980656
+Current rate evidence,Current delta evidence,627,-0.21940332440973048
+Current rate evidence,TDCG baseline,627,-0.09872931424028555
+Current delta evidence,TDCG baseline,627,0.13441319008337377

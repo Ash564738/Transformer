@@ -25,6 +25,13 @@ REPORT_SHEETS = [
     ("Weak_Traditional_Hybrid", "weak_traditional_hybrid_benchmark.csv"),
     ("Split_Manifest", "benchmark_split_manifest.csv"),
     ("Label_Conflicts", "external_benchmark_label_conflicts.csv"),
+    ("Domain_Gap", "domain_gap_absolute_vs_ratio.csv"),
+    ("Domain_Gap_Summary", "domain_gap_representation_summary.csv"),
+    ("Rank_Correlation_Spearman", "rank_correlation_spearman.csv"),
+    ("Rank_Correlation_Kendall", "rank_correlation_kendall.csv"),
+    ("Cross_Dataset_Transfer", "cross_dataset_transfer_grid.csv"),
+    ("Weak_Supervision_Comparison", "weak_supervision_comparison.csv"),
+    ("Weak_Supervision_Timing", "weak_supervision_timing.csv"),
 ]
 
 
@@ -190,7 +197,8 @@ def _build_protocol_sheet(wb, benchmark_dir):
         ["Final estimate", "Locked test only after development selection."],
         ["Operational training", "Unlabeled operational data only; external labels are not used to fit weak students."],
         ["Traditional benchmark", "Every individual LF plus all non-empty 1..7 method combinations."],
-        ["ML benchmark", "Gas-only and gas+traditional feature modes across available ML/DL models."],
+        ["ML benchmark", "Gas-only, ratio-only, gas+ratio and gas+traditional feature modes across available ML/DL models. The ratio representations are included as a teammate-inspired scale-invariance ablation."],
+
         ["Hybrid benchmark", "Student/traditional exact agreement gate; no hand-tuned numeric weight."],
         ["PPM coverage", "Empirical observed ppm range in labeled benchmark, not a claimed physical operating range."],
         ["Class coverage", "LF activation rate within each labeled fault class."],
@@ -319,6 +327,88 @@ def _build_ranking_chart(wb, report_dir):
     _add_chart(sheet, f"A1:C{len(table)}", "Top 20 transformer fleet priority", ("E2", "M28"), "bar")
 
 
+
+def _build_domain_gap_chart(wb, benchmark_dir):
+    rows = read_csv_file(benchmark_dir / "domain_gap_representation_summary.csv")
+    data, idx = _lookup(rows)
+    if not data or not {"representation", "mean_ks", "median_ks"}.issubset(idx):
+        return
+
+    sheet = wb.worksheets.add("Chart_Domain_Gap")
+    table = [["Representation", "Features", "Mean KS", "Median KS", "Max KS"]]
+    for r in data:
+        table.append([
+            r[idx["representation"]],
+            int(float(r[idx["features_evaluated"]])) if "features_evaluated" in idx else None,
+            _float(r[idx["mean_ks"]]),
+            _float(r[idx["median_ks"]]),
+            _float(r[idx["max_ks"]]) if "max_ks" in idx else None,
+        ])
+    write_table(sheet, table, max_width=34)
+    _add_chart(
+        sheet,
+        f"A1:E{len(table)}",
+        "Domain gap: absolute concentration vs scale-invariant representations",
+        ("G2", "O26"),
+        "bar",
+    )
+
+
+def _build_rank_correlation_chart(wb, benchmark_dir):
+    rows = read_csv_file(benchmark_dir / "rank_correlation_spearman.csv")
+    data, idx = _lookup(rows)
+    if not data or not {"metric_a", "metric_b", "spearman_rho"}.issubset(idx):
+        return
+
+    # A compact long-form table is safer across spreadsheet engines than
+    # relying on a heatmap implementation.
+    sheet = wb.worksheets.add("Chart_Rank_Correlation")
+    table = [["Metric A", "Metric B", "N", "Spearman rho"]]
+    for r in data:
+        table.append([
+            r[idx["metric_a"]],
+            r[idx["metric_b"]],
+            int(float(r[idx["n"]])) if "n" in idx else None,
+            _float(r[idx["spearman_rho"]]),
+        ])
+    write_table(sheet, table, max_width=42)
+
+
+def _build_cross_transfer_chart(wb, benchmark_dir):
+    rows = read_csv_file(benchmark_dir / "cross_dataset_transfer_grid.csv")
+    data, idx = _lookup(rows)
+    if not data or not {"train_dataset", "test_dataset", "feature_mode", "model", "macro_f1"}.issubset(idx):
+        return
+
+    # Keep the chart table compact: for each transfer direction and feature mode,
+    # show the best locked evaluation model. This is a reporting view only.
+    grouped = {}
+    for r in data:
+        key = (r[idx["train_dataset"]], r[idx["test_dataset"]], r[idx["feature_mode"]])
+        score = _float(r[idx["macro_f1"]], -1)
+        if key not in grouped or score > grouped[key][0]:
+            grouped[key] = (
+                score,
+                r[idx["model"]],
+                _float(r[idx["accuracy"]]) if "accuracy" in idx else None,
+                _float(r[idx["balanced_accuracy"]]) if "balanced_accuracy" in idx else None,
+            )
+
+    sheet = wb.worksheets.add("Chart_Cross_Transfer")
+    table = [["Train Dataset", "Test Dataset", "Feature Mode", "Best Model", "Macro F1", "Accuracy", "Balanced Accuracy"]]
+    for key in sorted(grouped):
+        score, model, acc, bal = grouped[key]
+        table.append([key[0], key[1], key[2], model, score, acc, bal])
+
+    write_table(sheet, table, max_width=30)
+    _add_chart(
+        sheet,
+        f"A1:G{len(table)}",
+        "Cross-dataset transfer — best model by feature representation",
+        ("I2", "Q30"),
+        "bar",
+    )
+
 def _build_validation_sheets(wb, report_dir, processed_dir):
     logger.debug("Building validation sheets")
     severity_file = processed_dir / "dga_unlabeled_processed.parquet"
@@ -344,6 +434,10 @@ def _build_validation_sheets(wb, report_dir, processed_dir):
         ["Temporal information", "Current status and IEEE delta/rate evidence are evaluated per sample; historical maximum status/exceedance are retained for fleet ordering, while recurrence/trend descriptors remain audit fields rather than hand-weighted severity inputs."],
         ["Ranking", "Current IEEE Status is dominant. The remaining ordering keys are standard-derived current threshold evidence and historical maximum standard-derived evidence. No hand-assigned health weights are used."],
         ["PPM coverage", "Observed empirical benchmark coverage/range only; it is not interpreted as a physical validity domain beyond the benchmark sample."],
+        ["Cross-dataset transfer", "Train on one labeled dataset and transfer unchanged to the other dataset in both directions. Target labels are not used for model selection."],
+        ["Domain-gap analysis", "KS statistics compare absolute log-concentrations against scale-invariant ratio/percentage representations. This is descriptive evidence only."],
+        ["Rank correlation", "Spearman/Kendall correlations compare the documented fleet order against TDCG and separate IEEE evidence channels. The TDCG baseline is not a ranking input."],
+
         ["Hybrid", "Student + traditional agreement gate; disagreement abstains, so no numeric fusion weight is introduced."],
     ], max_width=100)
     if severity_file.exists():
@@ -402,6 +496,9 @@ def build_excel_report(report_dir, processed_dir, output_path):
     _build_ppm_chart(wb, benchmark_dir)
     _build_class_coverage_chart(wb, benchmark_dir)
     _build_ranking_chart(wb, report_dir)
+    _build_domain_gap_chart(wb, benchmark_dir)
+    _build_rank_correlation_chart(wb, benchmark_dir)
+    _build_cross_transfer_chart(wb, benchmark_dir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     logger.debug("Exporting Excel to %s", output_path)
     SpreadsheetFile.export_xlsx(wb).save(output_path)

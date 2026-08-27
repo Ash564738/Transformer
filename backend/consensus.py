@@ -291,14 +291,39 @@ def get_fine_vote_matrix(df, methods=None):
 
 def evaluate_method_labels(y_true, predicted_labels, allowed_labels):
     from sklearn.metrics import (accuracy_score, confusion_matrix, f1_score, precision_score, recall_score)
-    truth = pd.Series(y_true).reset_index(drop=True).map(normalize_fault)
-    pred = pd.Series(predicted_labels).reset_index(drop=True).map(normalize_fault)
+
+    # Always construct both vectors with a fresh RangeIndex and validate their
+    # lengths before masking.  The evaluator is called from several pipelines
+    # where predictions may originate from NumPy arrays, pandas Series, or
+    # filtered DataFrames.  Using a pandas boolean Series as an indexer can
+    # silently preserve a non-matching index and then raise:
+    #   pandas.errors.IndexingError: Unalignable boolean Series...
+    #
+    # A NumPy boolean mask is positional, which is exactly what this metric
+    # evaluator needs: sample i in y_true must be compared with sample i in
+    # predicted_labels.
+    truth = pd.Series(list(y_true), dtype=object).reset_index(drop=True).map(normalize_fault)
+    pred = pd.Series(list(predicted_labels), dtype=object).reset_index(drop=True).map(normalize_fault)
+
+    if len(truth) != len(pred):
+        raise ValueError(
+            f"evaluate_method_labels length mismatch: y_true={len(truth)} "
+            f"predicted_labels={len(pred)}"
+        )
+
     allowed = set(normalize_fault(label) for label in allowed_labels)
-    logger.debug("evaluate_method_labels: truth=%d pred=%d allowed=%s", len(truth), len(pred), sorted(allowed))
-    valid_truth = truth.isin(allowed)
-    truth = truth[valid_truth].reset_index(drop=True)
-    pred = pred[valid_truth].reset_index(drop=True)
-    active = pred.isin(allowed)
+    logger.debug(
+        "evaluate_method_labels: truth=%d pred=%d allowed=%s",
+        len(truth),
+        len(pred),
+        sorted(allowed),
+    )
+
+    # Positional mask: no pandas index alignment is involved.
+    valid_truth = truth.isin(allowed).to_numpy(dtype=bool)
+    truth = truth.iloc[valid_truth].reset_index(drop=True)
+    pred = pred.iloc[valid_truth].reset_index(drop=True)
+    active = pred.isin(allowed).to_numpy(dtype=bool)
     n_truth = len(truth)
     n_eval = int(active.sum())
     coverage = n_eval / max(n_truth, 1)

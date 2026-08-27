@@ -1,0 +1,11 @@
+﻿metric_a,metric_b,n,spearman_rho
+Fleet rank (lower = higher priority),Current concentration evidence,627,-0.9096163537986832
+Fleet rank (lower = higher priority),Current rate evidence,627,0.0745402500327341
+Fleet rank (lower = higher priority),Current delta evidence,627,-0.5398528616472521
+Fleet rank (lower = higher priority),TDCG baseline,627,-0.468642512367899
+Current concentration evidence,Current rate evidence,627,-0.4151942767635389
+Current concentration evidence,Current delta evidence,627,0.5727652839334804
+Current concentration evidence,TDCG baseline,627,0.41967245167662115
+Current rate evidence,Current delta evidence,627,-0.26401576024228374
+Current rate evidence,TDCG baseline,627,-0.12487305657836793
+Current delta evidence,TDCG baseline,627,0.1886874988818236

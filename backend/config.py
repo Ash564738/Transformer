@@ -209,13 +209,13 @@ class DiagnosticConfig:
 
     RANKING_POLICY: ClassVar[Tuple[str, ...]] = (
         "current IEEE DGA status (Status 3 > Status 2 > Status 1)",
-        "current standardized exceedance against applicable IEEE threshold evidence",
+        "current concentration exceedance ratio against the applicable IEEE concentration threshold",
+        "current rate exceedance ratio against the applicable IEEE rate threshold (when available)",
+        "current delta exceedance ratio against the applicable IEEE delta threshold (when available)",
         "number of independent current IEEE trigger tables",
-        "current Table-2 concentration exceedance count",
-        "current Table-4 rate exceedance count",
-        "current Table-3 delta exceedance count",
+        "current per-table exceedance counts",
         "historical maximum IEEE status before the current sample",
-        "historical maximum standardized IEEE exceedance before the current sample",
+        "historical maximum concentration exceedance before the current sample",
     )
     RANKING_TIE_POLICY: str = (
         "Identical evidence vectors receive the same rank; missing history never lowers current priority. No hand-assigned numeric weights are used."
@@ -230,6 +230,15 @@ class DiagnosticConfig:
     CLASSICAL_ML_MODELS: ClassVar[Tuple[str, ...]] = (
         "logistic_regression", "random_forest", "extra_trees",
         "svm_rbf", "hist_gradient_boosting", "knn", "sklearn_mlp",
+    )
+    # Operational weak-student training is intentionally smaller than the
+    # external benchmark grid. The latter remains broad for research comparison.
+    WEAK_STUDENT_MODELS: ClassVar[Tuple[str, ...]] = (
+        "logistic_regression",
+        "random_forest",
+        "extra_trees",
+        "hist_gradient_boosting",
+        "sklearn_mlp",
     )
     STUDENT_FEATURE_MODES: ClassVar[Tuple[str, ...]] = (
         "gas_only", "gas_plus_traditional",

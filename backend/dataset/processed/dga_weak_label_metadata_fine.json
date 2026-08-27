@@ -1,5 +1,5 @@
 {
-  "backend": "em",
+  "backend": "snorkel",
   "granularity": "fine",
   "groups": [
     "NORMAL",

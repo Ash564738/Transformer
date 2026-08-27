@@ -531,6 +531,14 @@ def build_training_features_from_clean(df: pd.DataFrame) -> pd.DataFrame:
     out = add_ewm_features(out, temporal_value_cols)
     out = add_cross_gas_trend_features(out)
     out = add_quality_flags(out)
+    if out.columns.duplicated().any():
+        duplicated = out.columns[out.columns.duplicated()].tolist()
+        logger.warning(
+            "Canonical feature engineering encountered duplicate columns; "
+            "keeping first occurrence: %s",
+            duplicated,
+        )
+        out = out.loc[:, ~out.columns.duplicated(keep="first")].copy()
     out = out.sort_values(["transformer_id", "sample_day"], kind="mergesort").reset_index(drop=True)
     logger.info("Canonical feature engineering complete: %d rows x %d columns.", len(out), len(out.columns))
     return out

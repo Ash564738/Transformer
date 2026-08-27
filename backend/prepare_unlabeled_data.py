@@ -48,7 +48,17 @@ def build_features_and_consensus(df: pd.DataFrame) -> pd.DataFrame:
     logger.info("Consensus complete.")
     return df
 
+def _assert_unique_columns(df: pd.DataFrame, context: str) -> None:
+    if df.columns.duplicated().any():
+        duplicated = df.columns[df.columns.duplicated()].tolist()
+        raise ValueError(
+            f"{context} produced duplicate columns: "
+            + ", ".join(map(str, duplicated))
+        )
+
+
 def validate_output(df: pd.DataFrame) -> None:
+    _assert_unique_columns(df, "Prepared unlabeled dataset")
     required_columns = [
         "transformer_id", "sample_day",
         "h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2",

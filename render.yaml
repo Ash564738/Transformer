@@ -8,22 +8,18 @@ services:
     envVars:
       - key: DGA_FAST_MODE
         value: "1"
-      - key: DGA_MAX_ROWS
-        value: "2200"
-      - key: DGA_MAX_ROWS_PER_TRANSFORMER
-        value: "12"
       - key: DGA_SAVE_DATABASE
         value: "1"
       - key: DGA_PERSIST_OUTPUTS
         value: "0"
       - key: DGA_WRITE_CLEAN_ARTIFACTS
         value: "0"
-      - key: DGA_MAX_UPLOAD_MB
-        value: "10"
       - key: DGA_PREDICTION_CACHE_TTL
-        value: "600"
-      - key: DGA_PREDICTION_WAIT_SECONDS
-        value: "105"
+        value: "0"
+      - key: DGA_PREDICTION_WORKERS
+        value: "1"
+      - key: DGA_PREDICTION_JOB_TTL
+        value: "7200"
       - key: DGA_CORS_ORIGINS
         value: "*"
       - key: DGA_AUTH_SECRET

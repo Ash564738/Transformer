@@ -206,15 +206,22 @@ def _evidence_key(row):
     historical_max_status = int(_to_float(row.get("history_max_status_before_current", 0)) or 0)
     historical_exceedance = _to_float(row.get("historical_max_standardized_exceedance", 1.0))
     historical_exceedance = historical_exceedance if np.isfinite(historical_exceedance) else 1.0
+    # Do not let the number of exceeded gases outrank the magnitude of the
+    # applicable evidence.  An observation with a larger standardized
+    # concentration exceedance must not lose solely because another observation
+    # exceeded one more gas.  The ranking remains lexicographic and unweighted.
+    #
+    # The evidence channels are kept separate.  Concentration is compared only
+    # with concentration, delta only with delta, and rate only with rate.
     return (
         status,
-        table2,                 # current Table-2 concentration exceedance
-        table4,                 # current Table-4 rate exceedance
-        table3,                 # current Table-3 delta exceedance
-        triggers,
-        concentration_ratio,    # concentration evidence only
-        delta_ratio,            # separate delta evidence
-        rate_ratio,             # separate rate evidence
+        concentration_ratio,    # current concentration evidence
+        rate_ratio,             # current rate evidence
+        delta_ratio,            # current delta evidence
+        triggers,                # number of independent IEEE trigger tables
+        table2,
+        table4,
+        table3,
         historical_max_status,
         historical_exceedance,
     )
@@ -570,10 +577,10 @@ def build_transformer_ranking(df):
         axis=1,
     )
     ranking["ranking_policy"] = (
-        "current IEEE status; current Table-2 concentration evidence; current Table-4 "
-        "rate evidence; current Table-3 delta evidence; current trigger-table count; "
-        "separate concentration/delta/rate ratios; historical maximum status; "
-        "historical maximum concentration exceedance"
+        "current IEEE status; current concentration exceedance ratio; current rate "
+        "exceedance ratio; current delta exceedance ratio; independent IEEE trigger-table "
+        "count; per-table exceedance counts; historical maximum IEEE status; "
+        "historical maximum concentration exceedance. No numeric weighting."
     )
     ranking["ranking_is_weighted"] = False
     ranking["ranking_is_health_score"] = False

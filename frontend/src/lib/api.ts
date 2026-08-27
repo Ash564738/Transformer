@@ -1,30 +1,15 @@
 // src/lib/api.ts
 import type { DgaPayload } from "@/types/dga";
 
+const DEFAULT_LOCAL_BACKEND = "http://127.0.0.1:5000";
 const DEFAULT_PRODUCTION_BACKEND =
   "https://transformer-kgen.onrender.com";
-
-const configuredBackend = process.env.NEXT_PUBLIC_BACKEND_URL?.trim();
-
-const BACKEND_PREFIX = (
-  configuredBackend ||
-  (process.env.NODE_ENV === "production"
-    ? DEFAULT_PRODUCTION_BACKEND
-    : "http://127.0.0.1:5000")
-).replace(/\/+$/, "");
 
 const AUTH_TOKEN_KEY = "dga-auth-token";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const HEALTH_REQUEST_TIMEOUT_MS = 15_000;
 
-/*
- * This is only the timeout for uploading the source file and receiving the
- * initial job acknowledgement. It is NOT the prediction timeout.
- *
- * The actual inference runs in the backend background executor and is polled
- * via /predict/status/<job_id>.
- */
 const PREDICTION_UPLOAD_TIMEOUT_MS = 15 * 60_000;
 
 const PREDICTION_POLL_INTERVAL_MS = 1_000;
@@ -32,6 +17,84 @@ const PREDICTION_POLL_SLOW_INTERVAL_MS = 2_000;
 
 const RETRYABLE_STATUS = new Set([502, 503, 504]);
 const MAX_NETWORK_RETRIES = 2;
+
+/**
+ * Local development:
+ *
+ * NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:5000
+ * NEXT_PUBLIC_USE_LOCAL_BACKEND=true
+ *
+ * Production:
+ *
+ * NEXT_PUBLIC_BACKEND_URL=https://transformer-kgen.onrender.com
+ * NEXT_PUBLIC_USE_LOCAL_BACKEND=false
+ */
+
+const configuredBackend =
+  process.env.NEXT_PUBLIC_BACKEND_URL?.trim() || "";
+
+const useLocalBackend =
+  String(process.env.NEXT_PUBLIC_USE_LOCAL_BACKEND || "")
+    .trim()
+    .toLowerCase() === "true";
+
+function stripTrailingSlashes(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "[::1]"
+  );
+}
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    return isLoopbackHost(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function resolveBackendPrefix(): string {
+  const configured = stripTrailingSlashes(configuredBackend);
+
+  /*
+   * Local test mode is explicit.
+   *
+   * This is the mode you should use right now.
+   */
+  if (useLocalBackend) {
+    if (configured && isLoopbackUrl(configured)) {
+      return configured;
+    }
+
+    return DEFAULT_LOCAL_BACKEND;
+  }
+
+  /*
+   * Production / normal mode.
+   */
+  if (configured && !isLoopbackUrl(configured)) {
+    return configured;
+  }
+
+  /*
+   * Never silently use localhost when local mode was not enabled.
+   */
+  if (configured && isLoopbackUrl(configured)) {
+    return DEFAULT_PRODUCTION_BACKEND;
+  }
+
+  return DEFAULT_PRODUCTION_BACKEND;
+}
+
+const BACKEND_PREFIX = resolveBackendPrefix();
 
 export class ApiError extends Error {
   constructor(message: string) {
@@ -62,25 +125,32 @@ interface PredictionJobResponse {
 
   result?: DgaPayload;
 
-  /*
-   * Compatibility with the old synchronous backend.
-   * If an older Render deployment returns the prediction payload directly,
-   * the frontend must accept it instead of reporting "missing job id".
-   */
   predictions?: unknown;
   rows?: unknown;
+  preview_rows?: unknown;
   transformer_summary?: unknown;
+  transformer_timeseries?: unknown;
   dataset_summary?: unknown;
+  student_traditional_comparison?: unknown;
+  chat_context_payload?: unknown;
 }
 
 export function getAuthToken(): string | null {
-  if (typeof window === "undefined") return null;
+  if (typeof window === "undefined") {
+    return null;
+  }
+
   return window.localStorage.getItem(AUTH_TOKEN_KEY);
 }
 
 function authHeaders(): Record<string, string> {
   const token = getAuthToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+
+  return token
+    ? {
+        Authorization: `Bearer ${token}`,
+      }
+    : {};
 }
 
 async function parseJsonResponse(
@@ -96,7 +166,40 @@ async function parseJsonResponse(
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function requestErrorMessage(
+  error: unknown,
+  url: string,
+): string {
+  const message =
+    error instanceof Error
+      ? error.message
+      : String(error);
+
+  if (
+    /failed to fetch|networkerror|load failed|connection refused/i.test(
+      message,
+    )
+  ) {
+    return [
+      `Backend request failed: ${message}.`,
+      `Attempted URL: ${url}.`,
+      `Resolved backend: ${BACKEND_PREFIX}.`,
+      useLocalBackend
+        ? "Local backend mode is enabled."
+        : "Local backend mode is disabled.",
+      "Make sure the backend is running and listening on port 5000.",
+    ].join(" ");
+  }
+
+  return [
+    `Backend request failed: ${message}.`,
+    `URL: ${url}.`,
+  ].join(" ");
 }
 
 async function fetchWithTimeout(
@@ -106,10 +209,14 @@ async function fetchWithTimeout(
 ): Promise<Response> {
   const controller = new AbortController();
 
-  const timer = window.setTimeout(
-    () => controller.abort(),
-    timeoutMs,
-  );
+  const timer = window.setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  const attemptedUrl =
+    input instanceof URL
+      ? input.toString()
+      : String(input);
 
   try {
     return await fetch(input, {
@@ -124,17 +231,12 @@ async function fetchWithTimeout(
       throw new ApiError(
         `Backend request timed out after ${Math.round(
           timeoutMs / 1000,
-        )} seconds.`,
+        )} seconds. URL: ${attemptedUrl}.`,
       );
     }
 
-    const message =
-      error instanceof Error
-        ? error.message
-        : String(error);
-
     throw new ApiError(
-      `Backend request failed: ${message}.`,
+      requestErrorMessage(error, attemptedUrl),
     );
   } finally {
     window.clearTimeout(timer);
@@ -205,6 +307,7 @@ async function handleAuthResponse(
   if (
     !body.user ||
     typeof body.user !== "object" ||
+    Array.isArray(body.user) ||
     typeof body.token !== "string"
   ) {
     throw new ApiError(
@@ -212,8 +315,20 @@ async function handleAuthResponse(
     );
   }
 
+  const user = body.user as Partial<AuthUser>;
+
+  if (
+    typeof user.id !== "number" ||
+    typeof user.email !== "string" ||
+    typeof user.name !== "string"
+  ) {
+    throw new ApiError(
+      "Backend returned an invalid authenticated user.",
+    );
+  }
+
   return {
-    user: body.user as AuthUser,
+    user: user as AuthUser,
     token: body.token,
   };
 }
@@ -225,12 +340,15 @@ export async function loginAccount(
   user: AuthUser;
   token: string;
 }> {
+  const url = `${BACKEND_PREFIX}/auth/login`;
+
   const res = await fetchBackend(
-    `${BACKEND_PREFIX}/auth/login`,
+    url,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Accept: "application/json",
       },
       body: JSON.stringify({
         email,
@@ -239,7 +357,7 @@ export async function loginAccount(
       cache: "no-store",
       mode: "cors",
     },
-    30_000,
+    DEFAULT_REQUEST_TIMEOUT_MS,
   );
 
   return handleAuthResponse(res);
@@ -257,23 +375,37 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
       `${BACKEND_PREFIX}/auth/me`,
       {
         method: "GET",
-        headers: authHeaders(),
+        headers: {
+          ...authHeaders(),
+          Accept: "application/json",
+        },
         cache: "no-store",
         mode: "cors",
       },
       20_000,
     );
 
+    if (res.status === 401) {
+      window.localStorage.removeItem(AUTH_TOKEN_KEY);
+      return null;
+    }
+
     if (!res.ok) {
       return null;
     }
 
     const body = await parseJsonResponse(res);
+    const user = body.user;
 
-    return body.user &&
-      typeof body.user === "object"
-      ? (body.user as AuthUser)
-      : null;
+    if (
+      !user ||
+      typeof user !== "object" ||
+      Array.isArray(user)
+    ) {
+      return null;
+    }
+
+    return user as AuthUser;
   } catch {
     return null;
   }
@@ -285,7 +417,10 @@ export async function logoutAccount(): Promise<void> {
       `${BACKEND_PREFIX}/auth/logout`,
       {
         method: "POST",
-        headers: authHeaders(),
+        headers: {
+          ...authHeaders(),
+          Accept: "application/json",
+        },
         cache: "no-store",
         mode: "cors",
       },
@@ -293,6 +428,10 @@ export async function logoutAccount(): Promise<void> {
     );
   } catch {
     // Best effort.
+  } finally {
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(AUTH_TOKEN_KEY);
+    }
   }
 }
 
@@ -301,7 +440,10 @@ export async function resetDataset(): Promise<void> {
     `${BACKEND_PREFIX}/dataset/reset`,
     {
       method: "POST",
-      headers: authHeaders(),
+      headers: {
+        ...authHeaders(),
+        Accept: "application/json",
+      },
       cache: "no-store",
       mode: "cors",
     },
@@ -325,6 +467,9 @@ export async function checkBackendHealth(): Promise<boolean> {
       `${BACKEND_PREFIX}/health`,
       {
         method: "GET",
+        headers: {
+          Accept: "application/json",
+        },
         cache: "no-store",
         mode: "cors",
       },
@@ -337,17 +482,6 @@ export async function checkBackendHealth(): Promise<boolean> {
   }
 }
 
-/**
- * The new backend returns a job identifier.
- *
- * We also accept:
- *   - prediction_job_id
- *   - jobId
- *   - a complete legacy DgaPayload
- *
- * The last case is important during a rolling Render deployment or when the
- * frontend is newer than the currently running backend.
- */
 function extractPredictionResult(
   body: PredictionJobResponse,
 ): DgaPayload | null {
@@ -362,6 +496,7 @@ function extractPredictionResult(
     Array.isArray(body.predictions) &&
     Array.isArray(body.rows) &&
     Array.isArray(body.transformer_summary) &&
+    Array.isArray(body.preview_rows) &&
     body.dataset_summary &&
     typeof body.dataset_summary === "object"
   ) {
@@ -397,10 +532,6 @@ async function parsePredictionJobResponse(
 ): Promise<PredictionJobResponse> {
   const body = await parseJsonResponse(res);
 
-  /*
-   * Some valid acknowledgement responses are 202; normal status endpoints
-   * are 200. Any other non-2xx response is an API failure.
-   */
   if (!res.ok) {
     throw new ApiError(
       typeof body.error === "string"
@@ -419,22 +550,35 @@ async function waitForPredictionJob(
 
   for (;;) {
     const res = await fetchBackend(
-      `${BACKEND_PREFIX}/predict/status/${encodeURIComponent(jobId)}`,
+      `${BACKEND_PREFIX}/predict/status/${encodeURIComponent(
+        jobId,
+      )}`,
       {
         method: "GET",
-        headers: authHeaders(),
+        headers: {
+          ...authHeaders(),
+          Accept: "application/json",
+        },
         cache: "no-store",
         mode: "cors",
       },
       DEFAULT_REQUEST_TIMEOUT_MS,
     );
 
-    const body = await parsePredictionJobResponse(res);
+    if (res.status === 404) {
+      throw new ApiError(
+        "Prediction job was not found or has expired.",
+      );
+    }
+
+    const body =
+      await parsePredictionJobResponse(res);
 
     const status = body.status;
 
     if (status === "completed") {
-      const result = extractPredictionResult(body);
+      const result =
+        extractPredictionResult(body);
 
       if (!result) {
         throw new ApiError(
@@ -448,16 +592,6 @@ async function waitForPredictionJob(
     if (status === "failed") {
       throw new ApiError(
         body.error || "Prediction job failed.",
-      );
-    }
-
-    /*
-     * 404 is checked after parsing because it is a terminal API response and
-     * must not be treated as a transient polling state.
-     */
-    if (res.status === 404) {
-      throw new ApiError(
-        "Prediction job was not found or has expired.",
       );
     }
 
@@ -491,13 +625,11 @@ async function startPredictionJob(
     PREDICTION_UPLOAD_TIMEOUT_MS,
   );
 
-  const body = await parsePredictionJobResponse(response);
+  const body =
+    await parsePredictionJobResponse(response);
 
-  /*
-   * Case 1:
-   * New async backend already completed the request.
-   */
-  const immediateResult = extractPredictionResult(body);
+  const immediateResult =
+    extractPredictionResult(body);
 
   if (
     body.status === "completed" &&
@@ -506,33 +638,20 @@ async function startPredictionJob(
     return immediateResult;
   }
 
-  /*
-   * Case 2:
-   * New async backend returned queued/running with a job id.
-   */
-  const jobId = extractPredictionJobId(body);
+  const jobId =
+    extractPredictionJobId(body);
 
   if (jobId) {
     return waitForPredictionJob(jobId);
   }
 
-  /*
-   * Case 3:
-   * Very old backend returned the DgaPayload directly without any async job
-   * wrapper. Accept it instead of producing the misleading:
-   * "Backend did not return a prediction job id."
-   */
-  const legacyResult = extractPredictionResult(body);
+  const legacyResult =
+    extractPredictionResult(body);
 
   if (legacyResult) {
     return legacyResult;
   }
 
-  /*
-   * At this point the backend genuinely returned a malformed prediction
-   * response. Include the status and visible response shape to make diagnosis
-   * deterministic rather than guessing.
-   */
   const keys = Object.keys(body);
 
   throw new ApiError(
@@ -546,7 +665,9 @@ async function startPredictionJob(
   );
 }
 
-let predictionInFlight: Promise<DgaPayload> | null = null;
+let predictionInFlight:
+  | Promise<DgaPayload>
+  | null = null;
 
 export async function runPredictionFromFile(
   file: File,
@@ -556,11 +677,14 @@ export async function runPredictionFromFile(
   }
 
   const form = new FormData();
+
   form.append("file", file);
 
   predictionInFlight = startPredictionJob({
     method: "POST",
-    headers: authHeaders(),
+    headers: {
+      ...authHeaders(),
+    },
     body: form,
     cache: "no-store",
     mode: "cors",
@@ -582,6 +706,7 @@ export async function runPredictionFromJson(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Accept: "application/json",
       ...authHeaders(),
     },
     body: JSON.stringify({
@@ -607,6 +732,7 @@ export async function askChatBackend(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Accept: "application/json",
         ...authHeaders(),
       },
       body: JSON.stringify({
@@ -643,4 +769,15 @@ export async function askChatBackend(
 
 export function getBackendUrl(): string {
   return BACKEND_PREFIX;
+}
+
+export function isUsingProductionBackend(): boolean {
+  return (
+    BACKEND_PREFIX ===
+    DEFAULT_PRODUCTION_BACKEND
+  );
+}
+
+export function isUsingLocalBackend(): boolean {
+  return isLoopbackUrl(BACKEND_PREFIX);
 }

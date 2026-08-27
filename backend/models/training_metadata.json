@@ -1,25 +1,25 @@
 {
   "seed": 42,
   "unlabeled_dataset": "E:\\Transformer\\backend\\dataset\\processed\\dga_unlabeled.parquet",
-  "weak_supervision": "Snorkel LabelModel or EM fallback",
+  "weak_supervision": "Snorkel LabelModel",
   "student_feature_modes": [
     "gas_only",
     "gas_plus_traditional"
   ],
-  "student_model_count_coarse": 34,
-  "student_model_count_fine": 34,
+  "student_model_count_coarse": 10,
+  "student_model_count_fine": 10,
   "severity_source": "IEEE C57.104-2019",
   "severity_is_weighted": false,
   "severity_is_failure_probability": false,
   "ranking_policy": [
     "current IEEE DGA status (Status 3 > Status 2 > Status 1)",
-    "current standardized exceedance against applicable IEEE threshold evidence",
+    "current concentration exceedance ratio against the applicable IEEE concentration threshold",
+    "current rate exceedance ratio against the applicable IEEE rate threshold (when available)",
+    "current delta exceedance ratio against the applicable IEEE delta threshold (when available)",
     "number of independent current IEEE trigger tables",
-    "current Table-2 concentration exceedance count",
-    "current Table-4 rate exceedance count",
-    "current Table-3 delta exceedance count",
+    "current per-table exceedance counts",
     "historical maximum IEEE status before the current sample",
-    "historical maximum standardized IEEE exceedance before the current sample"
+    "historical maximum concentration exceedance before the current sample"
   ],
   "ranking_is_weighted": false,
   "ranking_is_health_score": false,

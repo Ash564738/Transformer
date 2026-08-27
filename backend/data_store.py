@@ -106,7 +106,15 @@ def save_payload_to_db(payload: dict) -> None:
                 "ieee_status": item.get("ieee_status", breakdown.get("current_status")),
                 "status": item.get("status") or _resolve_status(item),
                 "severity": item.get("severity"), "fault_type": item.get("fault_type"),
-                "priority_score": item.get("priority_score"), "recommended_action": item.get("recommended_action"),
+                # Legacy priority_score column is retained for schema compatibility.
+                # It stores the inverse ordinal fleet position, not a health probability
+                # or a weighted severity score.
+                "priority_score": (
+                    float(len(payload.get("transformer_summary", [])) - int(item.get("rank") or len(payload.get("transformer_summary", []))) + 1)
+                    if item.get("rank") is not None and payload.get("transformer_summary")
+                    else item.get("priority_score")
+                ),
+                "recommended_action": item.get("recommended_action"),
                 "ieee_dga_status": item.get("ieee_status", breakdown.get("current_status")),
                 "ieee_dga_status_label": item.get("ieee_dga_status_label", breakdown.get("current_status_label")),
                 "diagnostic_confidence": item.get("diagnostic_confidence", breakdown.get("diagnostic_confidence")),

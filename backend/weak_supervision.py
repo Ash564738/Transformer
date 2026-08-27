@@ -68,116 +68,93 @@ def build_label_matrix(df, label_columns=None, groups=None, granularity="coarse"
     logger.debug("build_label_matrix: L shape=%s non-abstain rate=%.3f", L.shape, (L != ABSTAIN).mean())
     return L, list(methods.keys()), groups_list
 
-class EMLabelModel:
-    def __init__(self, cardinality, random_state=42, max_iter=500, tol=1e-7, smoothing=1e-3):
-        self.cardinality = int(cardinality)
-        self.random_state = int(random_state)
-        self.max_iter = int(max_iter)
-        self.tol = float(tol)
-        self.smoothing = float(smoothing)
-        self.class_prior_ = None
-        self.confusion_ = None
-        self.n_iter_ = 0
-        self.fitted_ = False
+def fit_label_model_backend(
+    L,
+    cardinality,
+    backend="snorkel",
+    random_state=42,
+    snorkel_epochs=500,
+):
+    """Fit the Snorkel LabelModel used by the weak-supervision pipeline.
 
-    def _initialize(self, L):
-        n, m = L.shape
-        k = self.cardinality
-        rng = np.random.default_rng(self.random_state)
-        counts = np.array([(L == class_id).sum() for class_id in range(k)], dtype=float)
-        prior = counts + self.smoothing
-        self.class_prior_ = prior / prior.sum()
-        self.confusion_ = np.full((m, k, k + 1), self.smoothing, dtype=float)
-        for j in range(m):
-            for latent in range(k):
-                self.confusion_[j, latent, latent] += 1.0
-        self.confusion_[:, :, k] += 0.25
-        self.confusion_ += rng.uniform(0.0, 1e-9, size=self.confusion_.shape)
-        self.confusion_ /= self.confusion_.sum(axis=2, keepdims=True)
+    The project intentionally has one weak-supervision backend: Snorkel.
+    A silent EM fallback is not used because backend changes would alter the
+    research method while making the run metadata look identical.
+    """
+    if not SNORKEL_AVAILABLE or LabelModel is None:
+        raise RuntimeError(
+            "Snorkel is required for weak supervision but is not available in "
+            "the active Python environment. Install a compatible snorkel "
+            "package in .venv before running the unlabeled experiment."
+        )
 
-    def _log_joint(self, L):
-        n, m = L.shape
-        k = self.cardinality
-        result = np.tile(np.log(np.clip(self.class_prior_, 1e-12, None)), (n, 1))
-        for j in range(m):
-            for latent in range(k):
-                for observed in range(k + 1):
-                    observed_value = ABSTAIN if observed == k else observed
-                    mask = L[:, j] == observed_value
-                    if not np.any(mask):
-                        continue
-                    result[mask, latent] += np.log(np.clip(self.confusion_[j, latent, observed], 1e-12, None))
-        return result
+    requested = str(backend or "snorkel").strip().lower()
+    if requested not in {"snorkel", "snorkel_only"}:
+        raise ValueError(
+            "Only the Snorkel weak-supervision backend is supported. "
+            f"Received backend={backend!r}."
+        )
 
-    @staticmethod
-    def _softmax(z):
-        z = z - np.max(z, axis=1, keepdims=True)
-        exp = np.exp(z)
-        return exp / np.clip(exp.sum(axis=1, keepdims=True), 1e-12, None)
+    L = np.asarray(L, dtype=np.int64)
+    if L.ndim != 2 or len(L) == 0 or L.shape[1] == 0:
+        raise ValueError("Label matrix L must be a non-empty 2D array.")
+    if int(cardinality) < 2:
+        raise ValueError("Snorkel LabelModel cardinality must be at least 2.")
 
-    def fit(self, L):
-        L = np.asarray(L, dtype=np.int64)
-        if L.ndim != 2 or len(L) == 0 or L.shape[1] == 0:
-            logger.error("EMLabelModel.fit: invalid L")
-            raise ValueError("L must be a non-empty 2D array.")
-        self._initialize(L)
-        previous = None
-        for iteration in range(self.max_iter):
-            posterior = self._softmax(self._log_joint(L))
-            prior = np.clip(posterior.mean(axis=0), self.smoothing, None)
-            prior /= prior.sum()
-            k = self.cardinality
-            confusion = np.full_like(self.confusion_, self.smoothing)
-            for j in range(L.shape[1]):
-                for latent in range(k):
-                    for observed in range(k):
-                        mask = L[:, j] == observed
-                        if np.any(mask):
-                            confusion[j, latent, observed] += posterior[mask, latent].sum()
-                    abstain_mask = L[:, j] == ABSTAIN
-                    if np.any(abstain_mask):
-                        confusion[j, latent, k] += posterior[abstain_mask, latent].sum()
-            confusion /= confusion.sum(axis=2, keepdims=True)
-            self.class_prior_ = prior
-            self.confusion_ = confusion
-            log_joint = self._log_joint(L)
-            maximum = log_joint.max(axis=1)
-            objective = float(np.mean(np.log(np.clip(np.exp(log_joint - maximum[:, None]).sum(axis=1), 1e-12, None)) + maximum))
-            self.n_iter_ = iteration + 1
-            if previous is not None and abs(objective - previous) < self.tol:
-                break
-            previous = objective
-        self.fitted_ = True
-        logger.debug("EMLabelModel.fit: complete, n_iter=%d", self.n_iter_)
-        return self
+    logger.info(
+        "Weak supervision backend START: Snorkel LabelModel "
+        "| epochs=%d | rows=%d | LFs=%d | seed=%d",
+        int(snorkel_epochs),
+        len(L),
+        L.shape[1],
+        int(random_state),
+    )
 
-    def predict_proba(self, L):
-        if not self.fitted_:
-            raise RuntimeError("Model is not fitted.")
-        return self._softmax(self._log_joint(np.asarray(L, dtype=np.int64)))
+    # IMPORTANT: current Snorkel exposes LabelModel from snorkel.labeling.model.
+    # Keep the import above; newer Snorkel versions expose LabelModel in the
+    # `snorkel.labeling.model` module rather than the package root.
+    label_model = LabelModel(
+        cardinality=int(cardinality),
+        verbose=False,
+    )
+    # Snorkel requires log_freq > 0.  Zero reaches the internal logger as
+    # `unit_count % log_freq` and raises ZeroDivisionError in current releases.
+    # Logging frequency is a runtime/logging parameter; it does not alter the
+    # LabelModel objective or learned parameters.
+    epochs = int(snorkel_epochs)
+    if epochs < 1:
+        raise ValueError("snorkel_epochs must be >= 1.")
+    log_freq = max(1, min(100, epochs))
 
-    def predict(self, L):
-        return self.predict_proba(L).argmax(axis=1)
+    label_model.fit(
+        L_train=L,
+        n_epochs=epochs,
+        seed=int(random_state),
+        log_freq=log_freq,
+    )
+    probabilities = label_model.predict_proba(L=L)
+
+    return label_model, probabilities, "snorkel"
+
 
 def fit_label_model(L, cardinality, use_snorkel=True, random_state=42):
-    L = np.asarray(L, dtype=np.int64)
-    if L.ndim != 2 or L.shape[1] == 0:
-        logger.error("fit_label_model: L must be non-empty 2D")
-        raise ValueError("L must be a non-empty 2D matrix.")
-    if use_snorkel and SNORKEL_AVAILABLE:
-        try:
-            logger.debug("Weak supervision backend: Snorkel LabelModel")
-            model = LabelModel(cardinality=cardinality, verbose=False)
-            model.fit(L_train=L, n_epochs=500, log_freq=100, seed=random_state)
-            proba = model.predict_proba(L)
-            return model, proba, "snorkel"
-        except Exception as exc:
-            logger.warning("Snorkel failed; using EM fallback: %s", exc)
-    logger.debug("Weak supervision backend: EM fallback")
-    model = EMLabelModel(cardinality=cardinality, random_state=random_state)
-    model.fit(L)
-    proba = model.predict_proba(L)
-    return model, proba, "em"
+    """Compatibility wrapper used by the existing training pipeline.
+
+    There is deliberately no EM fallback. The unlabeled research experiment
+    must record exactly which weak-supervision method produced its labels.
+    """
+    if not use_snorkel:
+        raise RuntimeError(
+            "This research pipeline requires Snorkel LabelModel. "
+            "Run with --use-snorkel. An EM fallback is intentionally disabled."
+        )
+    return fit_label_model_backend(
+        L,
+        cardinality,
+        backend="snorkel",
+        random_state=random_state,
+    )
+
 
 def predict_from_label_model(model, df, methods, groups, granularity):
     method_mapping = {method: cfg.DIAGNOSTIC_METHOD_TO_COLUMN[method] for method in methods}
@@ -239,7 +216,12 @@ def weak_supervision_pipeline(df, label_columns=None, groups=None, use_snorkel=T
     groups = list(groups or default_groups)
     logger.debug("Weak supervision START | granularity=%s | rows=%d | LFs=%d", granularity, len(df), len(label_columns or DEFAULT_WEAK_METHODS))
     L, methods, groups = build_label_matrix(df, label_columns, groups, granularity)
-    model, probabilities, backend = fit_label_model(L, len(groups), use_snorkel=use_snorkel, random_state=seed)
+    model, probabilities, backend = fit_label_model(
+        L,
+        len(groups),
+        use_snorkel=use_snorkel,
+        random_state=seed,
+    )
     out = predict_from_label_model(model, df, methods, groups, granularity)
     pairwise = pairwise_label_agreement(df, methods)
     active_count = (L != ABSTAIN).sum(axis=1)
@@ -263,6 +245,18 @@ def save_weak_supervision_artifacts(df, model, groups, metadata, output_path=Non
     output_path = Path(output_path or DATASET_DIR / "processed" / f"dga_weak_labels_{granularity}.parquet")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path = output_path.parent / f"dga_weak_label_metadata_{granularity}.json"
+    if df.columns.duplicated().any():
+        duplicated = df.columns[df.columns.duplicated()].tolist()
+        logger.warning(
+            "save_weak_supervision_artifacts: duplicate columns detected; "
+            "keeping first occurrence: %s",
+            duplicated,
+        )
+        df = df.loc[:, ~df.columns.duplicated(keep="first")].copy()
+    if df.empty:
+        raise ValueError(
+            f"Cannot save empty weak-supervision output for granularity={granularity}"
+        )
     df.to_parquet(output_path, index=False)
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     MODEL_DIR.mkdir(parents=True, exist_ok=True)

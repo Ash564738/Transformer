@@ -595,13 +595,11 @@ def report_experiments():
 
         required = experiment_manifest.get("required_artifacts", [])
         missing = []
+        backend_root = Path(__file__).resolve().parent
         for rel in required:
             path = Path(rel)
             if not path.is_absolute():
-                path = Path(path)
-                # Manifest paths are stored relative to the backend root.
-                if not path.is_absolute():
-                    path = Path(__file__).resolve().parent / path
+                path = backend_root / path
             if not path.exists():
                 missing.append(str(path))
         if missing:
@@ -636,6 +634,8 @@ def report_experiments():
             "severity_records": [],
             "transformer_ranking": [],
             "ranking_stability": [],
+            "cross_dataset_transfer": [],
+            "rank_correlation_spearman": [],
         }), 200
 
     def read_csv(filename, benchmark=True):
@@ -680,8 +680,12 @@ def report_experiments():
                 "ieee_rate_span_months"
             ]
             fields = [c for c in fields if c in frame.columns]
-            return (frame[fields].replace([np.inf, -np.inf], np.nan).tail(1000)
-                    .where(lambda x: pd.notna(x), None).to_dict(orient="records"))
+            return (
+                frame[fields]
+                .replace([np.inf, -np.inf], np.nan)
+                .where(lambda x: pd.notna(x), None)
+                .to_dict(orient="records")
+            )
         except Exception:
             logger.exception("Failed to read severity records")
             return []
@@ -706,6 +710,10 @@ def report_experiments():
     combinations = read_csv("traditional_combinations_benchmark.csv")
     supervised = read_csv("supervised_fault_benchmark.csv")
     weak_transfer = read_csv("weak_transfer_fault_benchmark.csv")
+    weak_label_transfer = read_csv("weak_label_model_transfer_fault_benchmark.csv")
+    hybrid_transfer = read_csv("weak_traditional_hybrid_benchmark.csv")
+    cross_dataset_transfer = read_csv("cross_dataset_transfer_grid.csv")
+    rank_correlation_spearman = read_csv("rank_correlation_spearman.csv")
     ranking = read_csv("transformer_ranking.csv", benchmark=False)
     inference_metadata = read_json(processed_dir / "dga_inference_metadata.json")
     training_metadata = read_json(MODEL_DIR / "training_metadata.json")
@@ -760,6 +768,10 @@ def report_experiments():
         "supervised_ml": supervised,
         "weak_label_model": weak_metadata,
         "weak_ml_transfer": weak_transfer,
+        "weak_label_model_transfer": weak_label_transfer,
+        "weak_traditional_hybrid": hybrid_transfer,
+        "cross_dataset_transfer": cross_dataset_transfer,
+        "rank_correlation_spearman": rank_correlation_spearman,
         "severity_records": read_severity(),
         "transformer_ranking": ranking,
         "ranking_stability": ranking
