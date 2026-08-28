@@ -5,30 +5,43 @@ services:
     plan: free
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
+
     envVars:
       - key: DGA_FAST_MODE
         value: "1"
+
       - key: DGA_SAVE_DATABASE
         value: "1"
+
       - key: DGA_PERSIST_OUTPUTS
         value: "0"
+
       - key: DGA_WRITE_CLEAN_ARTIFACTS
         value: "0"
+
       - key: DGA_PREDICTION_CACHE_TTL
         value: "0"
+
       - key: DGA_PREDICTION_WORKERS
         value: "1"
+
       - key: DGA_PREDICTION_JOB_TTL
         value: "7200"
+
       - key: DGA_CORS_ORIGINS
         value: "*"
+
       - key: DGA_AUTH_SECRET
         generateValue: true
+
       - key: DGA_ADMIN_EMAIL
         sync: false
+
       - key: DGA_ADMIN_PASSWORD
         sync: false
+
       - key: DGA_ADMIN_NAME
         value: "Administrator"
+
       - key: DGA_SESSION_HOURS
         value: "24"

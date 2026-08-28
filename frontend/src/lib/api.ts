@@ -1,8 +1,13 @@
 // src/lib/api.ts
 import type { DgaPayload } from "@/types/dga";
 
-const DEFAULT_LOCAL_BACKEND = "http://127.0.0.1:5000";
-const DEFAULT_PRODUCTION_BACKEND =
+/**
+ * Production backend ONLY.
+ *
+ * Do not add localhost / 127.0.0.1 fallbacks here.
+ * The frontend is intentionally locked to the deployed Render backend.
+ */
+const BACKEND_PREFIX =
   "https://transformer-kgen.onrender.com";
 
 const AUTH_TOKEN_KEY = "dga-auth-token";
@@ -17,84 +22,6 @@ const PREDICTION_POLL_SLOW_INTERVAL_MS = 2_000;
 
 const RETRYABLE_STATUS = new Set([502, 503, 504]);
 const MAX_NETWORK_RETRIES = 2;
-
-/**
- * Local development:
- *
- * NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:5000
- * NEXT_PUBLIC_USE_LOCAL_BACKEND=true
- *
- * Production:
- *
- * NEXT_PUBLIC_BACKEND_URL=https://transformer-kgen.onrender.com
- * NEXT_PUBLIC_USE_LOCAL_BACKEND=false
- */
-
-const configuredBackend =
-  process.env.NEXT_PUBLIC_BACKEND_URL?.trim() || "";
-
-const useLocalBackend =
-  String(process.env.NEXT_PUBLIC_USE_LOCAL_BACKEND || "")
-    .trim()
-    .toLowerCase() === "true";
-
-function stripTrailingSlashes(value: string): string {
-  return value.replace(/\/+$/, "");
-}
-
-function isLoopbackHost(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-
-  return (
-    normalized === "localhost" ||
-    normalized === "127.0.0.1" ||
-    normalized === "::1" ||
-    normalized === "[::1]"
-  );
-}
-
-function isLoopbackUrl(value: string): boolean {
-  try {
-    return isLoopbackHost(new URL(value).hostname);
-  } catch {
-    return false;
-  }
-}
-
-function resolveBackendPrefix(): string {
-  const configured = stripTrailingSlashes(configuredBackend);
-
-  /*
-   * Local test mode is explicit.
-   *
-   * This is the mode you should use right now.
-   */
-  if (useLocalBackend) {
-    if (configured && isLoopbackUrl(configured)) {
-      return configured;
-    }
-
-    return DEFAULT_LOCAL_BACKEND;
-  }
-
-  /*
-   * Production / normal mode.
-   */
-  if (configured && !isLoopbackUrl(configured)) {
-    return configured;
-  }
-
-  /*
-   * Never silently use localhost when local mode was not enabled.
-   */
-  if (configured && isLoopbackUrl(configured)) {
-    return DEFAULT_PRODUCTION_BACKEND;
-  }
-
-  return DEFAULT_PRODUCTION_BACKEND;
-}
-
-const BACKEND_PREFIX = resolveBackendPrefix();
 
 export class ApiError extends Error {
   constructor(message: string) {
@@ -133,6 +60,8 @@ interface PredictionJobResponse {
   dataset_summary?: unknown;
   student_traditional_comparison?: unknown;
   chat_context_payload?: unknown;
+
+  [key: string]: unknown;
 }
 
 export function getAuthToken(): string | null {
@@ -146,11 +75,13 @@ export function getAuthToken(): string | null {
 function authHeaders(): Record<string, string> {
   const token = getAuthToken();
 
-  return token
-    ? {
-        Authorization: `Bearer ${token}`,
-      }
-    : {};
+  if (!token) {
+    return {};
+  }
+
+  return {
+    Authorization: `Bearer ${token}`,
+  };
 }
 
 async function parseJsonResponse(
@@ -167,7 +98,7 @@ async function parseJsonResponse(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+    window.setTimeout(resolve, ms);
   });
 }
 
@@ -186,13 +117,11 @@ function requestErrorMessage(
     )
   ) {
     return [
-      `Backend request failed: ${message}.`,
+      `Production backend request failed: ${message}.`,
       `Attempted URL: ${url}.`,
-      `Resolved backend: ${BACKEND_PREFIX}.`,
-      useLocalBackend
-        ? "Local backend mode is enabled."
-        : "Local backend mode is disabled.",
-      "Make sure the backend is running and listening on port 5000.",
+      `Backend: ${BACKEND_PREFIX}.`,
+      "The frontend is configured for production-only backend access.",
+      "Verify that the Render backend is running and that its CORS configuration allows this frontend origin.",
     ].join(" ");
   }
 
@@ -229,7 +158,7 @@ async function fetchWithTimeout(
       error.name === "AbortError"
     ) {
       throw new ApiError(
-        `Backend request timed out after ${Math.round(
+        `Production backend request timed out after ${Math.round(
           timeoutMs / 1000,
         )} seconds. URL: ${attemptedUrl}.`,
       );
@@ -284,7 +213,9 @@ async function fetchBackend(
 
   throw lastError instanceof Error
     ? lastError
-    : new ApiError("Backend request failed.");
+    : new ApiError(
+        "Production backend request failed.",
+      );
 }
 
 async function handleAuthResponse(
@@ -311,7 +242,7 @@ async function handleAuthResponse(
     typeof body.token !== "string"
   ) {
     throw new ApiError(
-      "Backend returned an invalid authentication response.",
+      "Production backend returned an invalid authentication response.",
     );
   }
 
@@ -323,7 +254,7 @@ async function handleAuthResponse(
     typeof user.name !== "string"
   ) {
     throw new ApiError(
-      "Backend returned an invalid authenticated user.",
+      "Production backend returned an invalid authenticated user.",
     );
   }
 
@@ -386,7 +317,10 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
     );
 
     if (res.status === 401) {
-      window.localStorage.removeItem(AUTH_TOKEN_KEY);
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem(AUTH_TOKEN_KEY);
+      }
+
       return null;
     }
 
@@ -427,7 +361,7 @@ export async function logoutAccount(): Promise<void> {
       15_000,
     );
   } catch {
-    // Best effort.
+    // Logout is best-effort.
   } finally {
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(AUTH_TOKEN_KEY);
@@ -536,7 +470,7 @@ async function parsePredictionJobResponse(
     throw new ApiError(
       typeof body.error === "string"
         ? body.error
-        : `Prediction request failed (${res.status}).`,
+        : `Production prediction request failed (${res.status}).`,
     );
   }
 
@@ -567,7 +501,7 @@ async function waitForPredictionJob(
 
     if (res.status === 404) {
       throw new ApiError(
-        "Prediction job was not found or has expired.",
+        "Production prediction job was not found or has expired.",
       );
     }
 
@@ -582,7 +516,7 @@ async function waitForPredictionJob(
 
       if (!result) {
         throw new ApiError(
-          "Prediction job completed but backend returned no prediction result.",
+          "Prediction job completed but production backend returned no prediction result.",
         );
       }
 
@@ -591,7 +525,7 @@ async function waitForPredictionJob(
 
     if (status === "failed") {
       throw new ApiError(
-        body.error || "Prediction job failed.",
+        body.error || "Production prediction job failed.",
       );
     }
 
@@ -600,7 +534,7 @@ async function waitForPredictionJob(
       status !== "running"
     ) {
       throw new ApiError(
-        `Backend returned an invalid prediction job status: ${String(
+        `Production backend returned an invalid prediction job status: ${String(
           status ?? "undefined",
         )}.`,
       );
@@ -656,7 +590,7 @@ async function startPredictionJob(
 
   throw new ApiError(
     [
-      "Backend returned neither a prediction job id nor a prediction payload.",
+      "Production backend returned neither a prediction job id nor a prediction payload.",
       `HTTP ${response.status}.`,
       keys.length
         ? `Response fields: ${keys.join(", ")}.`
@@ -760,7 +694,7 @@ export async function askChatBackend(
 
   if (typeof body.answer !== "string") {
     throw new ApiError(
-      "Backend returned an invalid chat response.",
+      "Production backend returned an invalid chat response.",
     );
   }
 
@@ -772,12 +706,9 @@ export function getBackendUrl(): string {
 }
 
 export function isUsingProductionBackend(): boolean {
-  return (
-    BACKEND_PREFIX ===
-    DEFAULT_PRODUCTION_BACKEND
-  );
+  return true;
 }
 
 export function isUsingLocalBackend(): boolean {
-  return isLoopbackUrl(BACKEND_PREFIX);
+  return false;
 }

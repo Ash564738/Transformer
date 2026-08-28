@@ -20,25 +20,55 @@ const BACKEND_PREFIX = getBackendUrl();
 
 type Row = Record<string, unknown>;
 
+interface ExperimentReportMetadata {
+  operational_data_is_unlabeled?: boolean;
+  standard?: string;
+  severity_is_weighted?: boolean;
+  ranking_is_weighted?: boolean;
+  pipeline?: Row;
+  training?: Row;
+  [key: string]: unknown;
+}
+
 interface ExperimentsReport {
   available?: boolean;
   reason?: string;
-  metadata?: Row;
+
+  run_id?: string;
+  status?: string;
+  failed_stage?: string | null;
+  error?: string | null;
+  stage_status?: Row;
+
+  metadata?: ExperimentReportMetadata | Row;
+
   executive_summary?: Row[];
+
   traditional_methods?: Row[];
   traditional_per_class?: Row[];
   traditional_combinations?: Row[];
+
   method_coverage?: Row[];
   method_gas_range?: Row[];
+
   supervised_ml?: Row[];
+
   weak_label_model?: Row[];
   weak_ml_transfer?: Row[];
+  weak_label_model_transfer?: Row[];
   weak_transfer?: Row[];
+
+  weak_traditional_hybrid?: Row[];
+
   severity_records?: Row[];
+
   transformer_ranking?: Row[];
   ranking_stability?: Row[];
+
   cross_dataset_transfer?: Row[];
+
   rank_correlation_spearman?: Row[];
+  rank_correlation_kendall?: Row[];
 }
 
 function Section({
@@ -53,6 +83,7 @@ function Section({
       <div className="border-b border-cream-300 px-5 py-3">
         <h2 className="text-lg font-bold text-teal-900">{title}</h2>
       </div>
+
       <div className="p-4">{children}</div>
     </div>
   );
@@ -101,6 +132,7 @@ function DataTable({
               ))}
             </tr>
           </thead>
+
           <tbody>
             {shown.map((row, index) => (
               <tr
@@ -140,6 +172,7 @@ function DataTable({
       {rows.length > maxRows && (
         <div className="mt-2 text-center">
           <button
+            type="button"
             onClick={() => setExpanded((value) => !value)}
             className="rounded-lg border border-teal-200 px-3 py-1 text-xs font-semibold text-teal-600 hover:bg-cream-50"
           >
@@ -151,8 +184,14 @@ function DataTable({
   );
 }
 
-function MetadataCard({ metadata }: { metadata: Row }) {
-  if (!metadata || !Object.keys(metadata).length) return null;
+function MetadataCard({
+  metadata,
+}: {
+  metadata: ExperimentReportMetadata | Row;
+}) {
+  if (!metadata || !Object.keys(metadata).length) {
+    return null;
+  }
 
   return (
     <Section title="Experiment Metadata">
@@ -162,6 +201,7 @@ function MetadataCard({ metadata }: { metadata: Row }) {
             <div className="text-xs font-semibold uppercase text-teal-400">
               {key}
             </div>
+
             <div className="mt-1 break-words text-sm text-teal-900">
               {typeof value === "object"
                 ? JSON.stringify(value)
@@ -195,18 +235,22 @@ function MetricChart({
         row[xKey] !== null &&
         row[xKey] !== undefined &&
         row[yKey] !== null &&
-        row[yKey] !== undefined
+        row[yKey] !== undefined &&
+        Number.isFinite(Number(row[yKey]))
     )
     .map((row) => ({
       [xKey]: String(row[xKey]),
       [yKey]: Number(row[yKey]),
     }));
 
-  if (!data.length) return null;
+  if (!data.length) {
+    return null;
+  }
 
   return (
     <div>
       <h3 className="mb-3 text-sm font-semibold text-teal-900">{title}</h3>
+
       <ResponsiveContainer width="100%" height={height}>
         {kind === "line" ? (
           <LineChart data={data}>
@@ -215,6 +259,7 @@ function MetricChart({
             <YAxis />
             <Tooltip />
             <Legend />
+
             <Line
               type="monotone"
               dataKey={yKey}
@@ -225,6 +270,7 @@ function MetricChart({
         ) : (
           <BarChart data={data}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} />
+
             <XAxis
               dataKey={xKey}
               interval={0}
@@ -232,9 +278,11 @@ function MetricChart({
               textAnchor="end"
               height={80}
             />
+
             <YAxis />
             <Tooltip />
             <Legend />
+
             <Bar dataKey={yKey} fill="#184843" />
           </BarChart>
         )}
@@ -244,15 +292,24 @@ function MetricChart({
 }
 
 function RankingPriorityCard({ rows }: { rows: Row[] }) {
-  if (!rows.length) return null;
+  if (!rows.length) {
+    return null;
+  }
 
-  const top = rows[0];
+  const sortedRows = [...rows].sort(
+    (a, b) => Number(a.rank ?? 0) - Number(b.rank ?? 0)
+  );
+
+  const top = sortedRows[0];
+
   const status3 = rows.filter(
     (row) => Number(row.transformer_overall_severity_level) === 3
   ).length;
+
   const status2 = rows.filter(
     (row) => Number(row.transformer_overall_severity_level) === 2
   ).length;
+
   const status1 = rows.filter(
     (row) => Number(row.transformer_overall_severity_level) === 1
   ).length;
@@ -260,46 +317,53 @@ function RankingPriorityCard({ rows }: { rows: Row[] }) {
   return (
     <Section title="Fleet Maintenance Priority">
       <div className="rounded-xl border border-cream-300 bg-cream-50 p-5">
-        <p className="text-sm text-teal-700">
-          IEEE condition status and maintenance priority are separate. Ranking
-          is an unweighted lexicographic evidence order. Concentration, delta,
-          and rate evidence remain separate and are never summed into an
-          invented health score.
+        <p className="text-sm leading-6 text-teal-700">
+          IEEE condition status and maintenance priority are separate.
+          Maintenance ordering is an unweighted lexicographic evidence order.
+          Concentration, delta, rate, and historical evidence remain separate
+          channels and are not summed into an invented health score.
         </p>
 
         <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
           <div className="rounded-lg bg-white p-4">
             <div className="text-xs uppercase text-teal-400">Status 3</div>
+
             <div className="mt-1 text-2xl font-bold text-status-critical">
               {status3}
             </div>
           </div>
+
           <div className="rounded-lg bg-white p-4">
             <div className="text-xs uppercase text-teal-400">Status 2</div>
+
             <div className="mt-1 text-2xl font-bold text-teal-800">
               {status2}
             </div>
           </div>
+
           <div className="rounded-lg bg-white p-4">
             <div className="text-xs uppercase text-teal-400">Status 1</div>
+
             <div className="mt-1 text-2xl font-bold text-teal-800">
               {status1}
             </div>
           </div>
+
           <div className="rounded-lg bg-white p-4">
             <div className="text-xs uppercase text-teal-400">
               First priority
             </div>
+
             <div className="mt-1 text-xl font-bold text-teal-900">
               #{Number(top.rank ?? 1)} {String(top.transformer_id ?? "")}
             </div>
           </div>
         </div>
 
-        <div className="mt-4 text-sm text-teal-700">
+        <div className="mt-4 text-sm leading-6 text-teal-700">
           <strong>Why first:</strong>{" "}
-          {String(top.maintenance_priority_reason ?? "")} Current concentration
-          exceedance ={" "}
+          {String(top.maintenance_priority_reason ?? "Not reported")}
+          {" Current concentration exceedance = "}
           <strong>
             {String(
               top.current_concentration_exceedance_ratio ??
@@ -308,11 +372,11 @@ function RankingPriorityCard({ rows }: { rows: Row[] }) {
             )}
             ×
           </strong>
-          , rate exceedance ={" "}
+          {", rate exceedance = "}
           <strong>
             {String(top.current_rate_exceedance_ratio ?? "N/A")}×
           </strong>
-          , delta exceedance ={" "}
+          {", delta exceedance = "}
           <strong>
             {String(top.current_delta_exceedance_ratio ?? "N/A")}×
           </strong>
@@ -334,16 +398,20 @@ export default function ExperimentsPage() {
     setError(null);
 
     const token = getAuthToken();
+
     const headers: Record<string, string> = {
-      "Content-Type": "application/json",
+      Accept: "application/json",
     };
 
-    if (token) headers.Authorization = `Bearer ${token}`;
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
 
     try {
       const response = await fetch(`${BACKEND_PREFIX}/report/experiments`, {
         headers,
         cache: "no-store",
+        mode: "cors",
       });
 
       const body = await response.json().catch(() => ({}));
@@ -352,7 +420,7 @@ export default function ExperimentsPage() {
         throw new Error(
           typeof body.error === "string"
             ? body.error
-            : "Failed to load experiments report."
+            : `Failed to load experiments report (${response.status}).`
         );
       }
 
@@ -368,10 +436,15 @@ export default function ExperimentsPage() {
   useEffect(() => {
     fetchReport();
 
-    const handler = () => fetchReport();
+    const handler = () => {
+      fetchReport();
+    };
+
     window.addEventListener("experiments-refresh", handler);
 
-    return () => window.removeEventListener("experiments-refresh", handler);
+    return () => {
+      window.removeEventListener("experiments-refresh", handler);
+    };
   }, [fetchReport]);
 
   const tabs = useMemo(
@@ -380,27 +453,34 @@ export default function ExperimentsPage() {
       ["traditional", "Traditional Methods"],
       ["combinations", "Combinations"],
       ["coverage", "Coverage / Range"],
-      ["features", "Feature Ablation"],
+      ["features", "Feature Representation"],
       ["cross", "Cross-Dataset Transfer"],
       ["ml", "Supervised ML"],
       ["weak", "Weak Supervision"],
+      ["hybrid", "Weak + Traditional Hybrid"],
       ["severity", "Severity Records"],
       ["ranking", "Transformer Ranking"],
-      ["stability", "History / Stability Evidence"],
+      ["stability", "History / Stability"],
       ["correlation", "Rank Correlation"],
     ],
     []
   );
 
   if (loading) {
-    return <div className="p-8 text-center text-teal-500">Loading...</div>;
+    return (
+      <div className="p-8 text-center text-teal-500">
+        Loading experiment report...
+      </div>
+    );
   }
 
   if (error) {
     return (
       <div className="p-8 text-center">
         <p className="text-status-critical">{error}</p>
+
         <button
+          type="button"
           onClick={fetchReport}
           className="mt-4 rounded-lg border border-teal-200 px-4 py-2 text-sm font-semibold text-teal-700"
         >
@@ -424,15 +504,31 @@ export default function ExperimentsPage() {
         <h1 className="text-xl font-bold text-teal-900">
           No current experiment results
         </h1>
+
         <p className="mt-3 text-sm text-teal-600">
           {report.reason ??
             "The previous experiment artifacts are no longer available."}
         </p>
+
+        {report.status && (
+          <p className="mt-2 text-xs text-teal-400">
+            Backend experiment status: {report.status}
+          </p>
+        )}
+
+        {report.failed_stage && (
+          <p className="mt-1 text-xs text-status-critical">
+            Failed stage: {report.failed_stage}
+          </p>
+        )}
+
         <p className="mt-2 text-xs text-teal-400">
           Run the offline experiment pipeline again to publish a new research
           report.
         </p>
+
         <button
+          type="button"
           onClick={fetchReport}
           className="mt-5 rounded-lg border border-teal-200 px-4 py-2 text-sm font-semibold text-teal-700"
         >
@@ -444,16 +540,49 @@ export default function ExperimentsPage() {
 
   const ranking = report.transformer_ranking ?? [];
   const supervised = report.supervised_ml ?? [];
+  const weakTransfer =
+    report.weak_ml_transfer ??
+    report.weak_transfer ??
+    [];
+  const weakLabelTransfer = report.weak_label_model_transfer ?? [];
+  const hybrid = report.weak_traditional_hybrid ?? [];
+  const traditional = report.traditional_methods ?? [];
+
+  const lockedSupervisedFine = supervised.filter(
+    (row) =>
+      row.split === "locked_test" &&
+      row.granularity === "fine"
+  );
+
+  const lockedTraditionalFine = traditional.filter(
+    (row) =>
+      row.split === "locked_test" &&
+      row.granularity === "fine"
+  );
+
+  const lockedWeakFine = weakTransfer.filter(
+    (row) =>
+      row.split === "locked_test" &&
+      row.granularity === "fine"
+  );
+
+  const lockedHybridFine = hybrid.filter(
+    (row) =>
+      row.split === "locked_test" &&
+      row.granularity === "fine"
+  );
 
   return (
     <div className="space-y-6">
       <MetadataCard metadata={report.metadata ?? {}} />
+
       <RankingPriorityCard rows={ranking} />
 
       <div className="flex flex-wrap gap-2">
         {tabs.map(([id, label]) => (
           <button
             key={id}
+            type="button"
             onClick={() => setActiveTab(id)}
             className={`rounded-lg px-4 py-2 text-sm font-semibold ${
               activeTab === id
@@ -471,20 +600,40 @@ export default function ExperimentsPage() {
           <Section title="Executive Summary">
             <DataTable rows={report.executive_summary ?? []} />
           </Section>
+
           <Section title="Traditional Diagnostic Benchmark">
             <MetricChart
-              rows={report.traditional_methods ?? []}
+              rows={traditional}
               xKey="method"
               yKey="macro_f1"
               title="Traditional methods — Macro F1"
             />
           </Section>
-          <Section title="Supervised ML — Locked Test">
+
+          <Section title="Supervised ML — Locked Fine Test">
             <MetricChart
-              rows={supervised.filter((row) => row.split === "locked_test")}
+              rows={lockedSupervisedFine}
               xKey="model"
               yKey="macro_f1"
-              title="Supervised ML — Locked Test Macro F1"
+              title="Supervised ML — Locked-Test Macro F1"
+            />
+          </Section>
+
+          <Section title="Weak-Supervision Transfer — Locked Fine Test">
+            <MetricChart
+              rows={lockedWeakFine}
+              xKey="model"
+              yKey="macro_f1"
+              title="Weak-supervision transfer — Locked-Test Macro F1"
+            />
+          </Section>
+
+          <Section title="Weak + Traditional Hybrid — Locked Fine Test">
+            <MetricChart
+              rows={lockedHybridFine}
+              xKey="model"
+              yKey="macro_f1"
+              title="Hybrid benchmark — Locked-Test Macro F1"
             />
           </Section>
         </>
@@ -493,11 +642,24 @@ export default function ExperimentsPage() {
       {activeTab === "traditional" && (
         <>
           <Section title="Traditional Methods">
-            <DataTable rows={report.traditional_methods ?? []} />
+            <DataTable rows={traditional} maxRows={100} />
           </Section>
-          <Section title="Per-Class Performance">
-            <DataTable rows={report.traditional_per_class ?? []} />
-          </Section>
+
+          {report.traditional_per_class?.length ? (
+            <Section title="Per-Class Performance">
+              <DataTable
+                rows={report.traditional_per_class}
+                maxRows={200}
+              />
+            </Section>
+          ) : (
+            <Section title="Per-Class Performance">
+              <p className="text-sm text-teal-500">
+                The current backend report does not publish a separate
+                traditional per-class table.
+              </p>
+            </Section>
+          )}
         </>
       )}
 
@@ -506,25 +668,29 @@ export default function ExperimentsPage() {
           <Section title="Traditional Combinations">
             <DataTable
               rows={report.traditional_combinations ?? []}
-              maxRows={100}
+              maxRows={200}
             />
           </Section>
+
           <Section title="Best Locked-Test Combinations">
             <MetricChart
-              rows={(report.traditional_combinations ?? [])
+              rows={[...(report.traditional_combinations ?? [])]
                 .filter(
                   (row) =>
                     row.split === "locked_test" &&
-                    row.granularity === "fine"
+                    row.granularity === "fine" &&
+                    row.macro_f1 != null
                 )
                 .sort(
                   (a, b) =>
-                    Number(b.macro_f1 ?? 0) - Number(a.macro_f1 ?? 0)
+                    Number(b.macro_f1 ?? 0) -
+                    Number(a.macro_f1 ?? 0)
                 )
                 .slice(0, 15)}
               xKey="methods"
               yKey="macro_f1"
               title="Top traditional combinations"
+              height={340}
             />
           </Section>
         </>
@@ -533,10 +699,17 @@ export default function ExperimentsPage() {
       {activeTab === "coverage" && (
         <>
           <Section title="Method Coverage">
-            <DataTable rows={report.method_coverage ?? []} />
+            <DataTable
+              rows={report.method_coverage ?? []}
+              maxRows={200}
+            />
           </Section>
-          <Section title="Gas Range by Method">
-            <DataTable rows={report.method_gas_range ?? []} />
+
+          <Section title="Gas / PPM Range by Method">
+            <DataTable
+              rows={report.method_gas_range ?? []}
+              maxRows={200}
+            />
           </Section>
         </>
       )}
@@ -550,23 +723,31 @@ export default function ExperimentsPage() {
                 "model",
                 "feature_mode",
                 "split",
+                "granularity",
                 "macro_f1",
                 "balanced_accuracy",
                 "accuracy",
               ]}
-              maxRows={100}
+              maxRows={200}
             />
           </Section>
+
           <MetricChart
-            rows={supervised
-              .filter((row) => row.split === "locked_test")
+            rows={[...supervised]
+              .filter(
+                (row) =>
+                  row.split === "locked_test" &&
+                  row.macro_f1 != null
+              )
               .sort(
                 (a, b) =>
-                  Number(b.macro_f1 ?? 0) - Number(a.macro_f1 ?? 0)
+                  Number(b.macro_f1 ?? 0) -
+                  Number(a.macro_f1 ?? 0)
               )}
             xKey="feature_mode"
             yKey="macro_f1"
             title="Locked-test Macro F1 by feature representation"
+            height={320}
           />
         </>
       )}
@@ -581,28 +762,34 @@ export default function ExperimentsPage() {
                 "test_dataset",
                 "feature_mode",
                 "model",
+                "granularity",
                 "n_train",
                 "n_test",
                 "macro_f1",
                 "accuracy",
                 "balanced_accuracy",
               ]}
-              maxRows={100}
+              maxRows={200}
             />
           </Section>
+
           <MetricChart
-            rows={(report.cross_dataset_transfer ?? [])
+            rows={[...(report.cross_dataset_transfer ?? [])]
+              .filter((row) => row.macro_f1 != null)
               .sort(
                 (a, b) =>
-                  Number(b.macro_f1 ?? 0) - Number(a.macro_f1 ?? 0)
+                  Number(b.macro_f1 ?? 0) -
+                  Number(a.macro_f1 ?? 0)
               )
               .slice(0, 20)}
             xKey="model"
             yKey="macro_f1"
             title="Cross-dataset transfer — top Macro F1 results"
+            height={340}
           />
-          <p className="px-1 text-xs text-teal-400">
-            Cross-dataset transfer is evaluation evidence only and is not used
+
+          <p className="px-1 text-xs leading-5 text-teal-400">
+            Cross-dataset transfer is evaluation evidence only. It is not used
             to select the production weak student.
           </p>
         </>
@@ -611,16 +798,20 @@ export default function ExperimentsPage() {
       {activeTab === "ml" && (
         <>
           <Section title="Supervised ML Benchmark">
-            <DataTable rows={supervised} maxRows={100} />
+            <DataTable rows={supervised} maxRows={200} />
           </Section>
+
           <Section title="Locked-Test Comparison">
             <MetricChart
-              rows={supervised.filter(
-                (row) => row.split === "locked_test"
+              rows={[...lockedSupervisedFine].sort(
+                (a, b) =>
+                  Number(b.macro_f1 ?? 0) -
+                  Number(a.macro_f1 ?? 0)
               )}
               xKey="model"
               yKey="macro_f1"
-              title="Supervised models — locked test"
+              title="Supervised models — locked fine test"
+              height={340}
             />
           </Section>
         </>
@@ -629,38 +820,85 @@ export default function ExperimentsPage() {
       {activeTab === "weak" && (
         <>
           <Section title="Weak Label Model">
-            <DataTable rows={report.weak_label_model ?? []} />
-          </Section>
-          <Section title="Weak ML Transfer">
             <DataTable
-              rows={report.weak_ml_transfer ?? report.weak_transfer ?? []}
+              rows={report.weak_label_model ?? []}
               maxRows={100}
             />
           </Section>
+
+          <Section title="Weak ML Transfer">
+            <DataTable
+              rows={weakTransfer}
+              maxRows={200}
+            />
+          </Section>
+
+          {weakLabelTransfer.length > 0 && (
+            <Section title="Weak Label Model Transfer">
+              <DataTable
+                rows={weakLabelTransfer}
+                maxRows={200}
+              />
+            </Section>
+          )}
+
           <Section title="Weak ML Locked-Test Comparison">
             <MetricChart
-              rows={(report.weak_ml_transfer ?? report.weak_transfer ?? [])
-                .filter(
-                  (row) =>
-                    row.split === "locked_test" &&
-                    row.granularity === "fine"
-                )
+              rows={[...lockedWeakFine]
                 .sort(
                   (a, b) =>
-                    Number(b.macro_f1 ?? 0) - Number(a.macro_f1 ?? 0)
+                    Number(b.macro_f1 ?? 0) -
+                    Number(a.macro_f1 ?? 0)
                 )
                 .slice(0, 20)}
               xKey="model"
               yKey="macro_f1"
-              title="Weak-supervision transfer — locked test"
+              title="Weak-supervision transfer — locked fine test"
+              height={340}
             />
           </Section>
         </>
       )}
 
+      {activeTab === "hybrid" && (
+        <>
+          <Section title="Weak + Traditional Hybrid Benchmark">
+            <DataTable
+              rows={hybrid}
+              maxRows={200}
+            />
+          </Section>
+
+          <Section title="Hybrid Locked-Test Comparison">
+            <MetricChart
+              rows={[...lockedHybridFine]
+                .sort(
+                  (a, b) =>
+                    Number(b.macro_f1 ?? 0) -
+                    Number(a.macro_f1 ?? 0)
+                )
+                .slice(0, 20)}
+              xKey="model"
+              yKey="macro_f1"
+              title="Weak + Traditional Hybrid — locked fine test"
+              height={340}
+            />
+          </Section>
+
+          <p className="px-1 text-xs leading-5 text-teal-400">
+            Hybrid benchmark results are evaluation evidence against the
+            external labeled datasets. They do not imply that the production
+            inference path uses an arbitrary frontend fusion weight.
+          </p>
+        </>
+      )}
+
       {activeTab === "severity" && (
         <Section title="Severity Records">
-          <DataTable rows={report.severity_records ?? []} maxRows={100} />
+          <DataTable
+            rows={report.severity_records ?? []}
+            maxRows={200}
+          />
         </Section>
       )}
 
@@ -671,23 +909,34 @@ export default function ExperimentsPage() {
               rows={ranking}
               columns={[
                 "rank",
+                "maintenance_priority",
                 "transformer_id",
+                "transformer_overall_severity_level",
                 "transformer_overall_severity_label",
+                "current_standardized_exceedance",
                 "current_concentration_exceedance_ratio",
                 "current_delta_exceedance_ratio",
                 "current_rate_exceedance_ratio",
+                "current_status3_standardized_exceedance",
                 "current_standard_trigger_count",
+                "table1_exceed_count",
                 "table2_exceed_count",
-                "table4_exceed_count",
                 "table3_exceed_count",
-                "history_max_status_before_current",
+                "table4_exceed_count",
                 "historical_max_standardized_exceedance",
+                "history_max_status_before_current",
+                "history_record_count",
+                "history_abnormal_record_ratio",
+                "history_critical_record_ratio",
                 "history_current_fault_recurrence_fraction",
                 "history_worsening_transition_ratio",
+                "history_improving_transition_ratio",
                 "current_fault",
+                "current_fault_group",
+                "fault_criticality_class",
                 "recommended_action",
               ]}
-              maxRows={100}
+              maxRows={150}
             />
           </Section>
 
@@ -700,6 +949,7 @@ export default function ExperimentsPage() {
               xKey="transformer_id"
               yKey="rank"
               title="Top 20 fleet positions — lower rank = higher priority"
+              height={340}
             />
           </Section>
         </>
@@ -707,29 +957,53 @@ export default function ExperimentsPage() {
 
       {activeTab === "stability" && (
         <Section title="History / Stability Evidence">
-          <p className="mb-4 text-sm text-teal-600">
+          <p className="mb-4 text-sm leading-6 text-teal-600">
             Historical fields describe record count, observation span,
-            recurrence, worsening/improving transitions, and history
-            sufficiency. They are not converted into an arbitrary weighted
-            health score.
+            abnormal-record frequency, recurrence, worsening/improving
+            transitions, and data sufficiency. They are not converted into an
+            arbitrary weighted health score.
           </p>
-          <DataTable rows={report.ranking_stability ?? []} maxRows={100} />
+
+          <DataTable
+            rows={report.ranking_stability ?? ranking}
+            maxRows={150}
+          />
         </Section>
       )}
 
       {activeTab === "correlation" && (
-        <Section title="Rank Correlation — Descriptive Baselines">
-          <p className="mb-4 text-sm text-teal-600">
-            Spearman/Kendall correlations compare the documented fleet order
-            with separate DGA evidence channels and TDCG. They are diagnostics
-            only; no correlated baseline is fed back into ranking.
-          </p>
-          <DataTable
-            rows={report.rank_correlation_spearman ?? []}
-            columns={["metric_a", "metric_b", "n", "spearman_rho"]}
-            maxRows={100}
-          />
-        </Section>
+        <>
+          <Section title="Spearman Rank Correlation">
+            <p className="mb-4 text-sm leading-6 text-teal-600">
+              Spearman correlations are descriptive diagnostics comparing the
+              documented fleet order with separate DGA evidence channels.
+              They are not fed back into the maintenance ranking.
+            </p>
+
+            <DataTable
+              rows={report.rank_correlation_spearman ?? []}
+              columns={[
+                "metric_a",
+                "metric_b",
+                "n",
+                "spearman_rho",
+              ]}
+              maxRows={100}
+            />
+          </Section>
+
+          <Section title="Kendall Rank Correlation">
+            <p className="mb-4 text-sm leading-6 text-teal-600">
+              Kendall correlation is shown as an additional descriptive
+              baseline. It is not used to alter the ranking policy.
+            </p>
+
+            <DataTable
+              rows={report.rank_correlation_kendall ?? []}
+              maxRows={100}
+            />
+          </Section>
+        </>
       )}
     </div>
   );
