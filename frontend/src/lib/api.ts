@@ -1,12 +1,6 @@
 // src/lib/api.ts
 import type { DgaPayload } from "@/types/dga";
 
-/**
- * Production backend ONLY.
- *
- * Do not add localhost / 127.0.0.1 fallbacks here.
- * The frontend is intentionally locked to the deployed Render backend.
- */
 const BACKEND_PREFIX =
   "https://transformer-kgen.onrender.com";
 
@@ -20,7 +14,12 @@ const PREDICTION_UPLOAD_TIMEOUT_MS = 15 * 60_000;
 const PREDICTION_POLL_INTERVAL_MS = 1_000;
 const PREDICTION_POLL_SLOW_INTERVAL_MS = 2_000;
 
-const RETRYABLE_STATUS = new Set([502, 503, 504]);
+const RETRYABLE_STATUS = new Set([
+  502,
+  503,
+  504,
+]);
+
 const MAX_NETWORK_RETRIES = 2;
 
 export class ApiError extends Error {
@@ -46,7 +45,12 @@ interface PredictionJobResponse {
   prediction_job_id?: string;
   jobId?: string;
 
-  status?: "queued" | "running" | "completed" | "failed";
+  status?:
+    | "queued"
+    | "running"
+    | "completed"
+    | "failed";
+
   message?: string;
   error?: string;
 
@@ -69,23 +73,23 @@ export function getAuthToken(): string | null {
     return null;
   }
 
-  return window.localStorage.getItem(AUTH_TOKEN_KEY);
+  return window.localStorage.getItem(
+    AUTH_TOKEN_KEY
+  );
 }
 
 function authHeaders(): Record<string, string> {
   const token = getAuthToken();
 
-  if (!token) {
-    return {};
-  }
-
-  return {
-    Authorization: `Bearer ${token}`,
-  };
+  return token
+    ? {
+        Authorization: `Bearer ${token}`,
+      }
+    : {};
 }
 
 async function parseJsonResponse(
-  res: Response,
+  res: Response
 ): Promise<Record<string, unknown>> {
   const body = await res.json().catch(() => ({}));
 
@@ -104,7 +108,7 @@ function sleep(ms: number): Promise<void> {
 
 function requestErrorMessage(
   error: unknown,
-  url: string,
+  url: string
 ): string {
   const message =
     error instanceof Error
@@ -113,15 +117,15 @@ function requestErrorMessage(
 
   if (
     /failed to fetch|networkerror|load failed|connection refused/i.test(
-      message,
+      message
     )
   ) {
     return [
       `Production backend request failed: ${message}.`,
       `Attempted URL: ${url}.`,
       `Backend: ${BACKEND_PREFIX}.`,
-      "The frontend is configured for production-only backend access.",
-      "Verify that the Render backend is running and that its CORS configuration allows this frontend origin.",
+      "The frontend is locked to the production Render backend.",
+      "Verify that the Render service is live and that CORS permits the Vercel frontend origin.",
     ].join(" ");
   }
 
@@ -134,7 +138,7 @@ function requestErrorMessage(
 async function fetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit = {},
-  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
 ): Promise<Response> {
   const controller = new AbortController();
 
@@ -159,13 +163,13 @@ async function fetchWithTimeout(
     ) {
       throw new ApiError(
         `Production backend request timed out after ${Math.round(
-          timeoutMs / 1000,
-        )} seconds. URL: ${attemptedUrl}.`,
+          timeoutMs / 1000
+        )} seconds. URL: ${attemptedUrl}.`
       );
     }
 
     throw new ApiError(
-      requestErrorMessage(error, attemptedUrl),
+      requestErrorMessage(error, attemptedUrl)
     );
   } finally {
     window.clearTimeout(timer);
@@ -175,7 +179,7 @@ async function fetchWithTimeout(
 async function fetchBackend(
   input: RequestInfo | URL,
   init: RequestInit = {},
-  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
 ): Promise<Response> {
   let lastError: unknown = null;
 
@@ -188,7 +192,7 @@ async function fetchBackend(
       const response = await fetchWithTimeout(
         input,
         init,
-        timeoutMs,
+        timeoutMs
       );
 
       if (
@@ -214,12 +218,12 @@ async function fetchBackend(
   throw lastError instanceof Error
     ? lastError
     : new ApiError(
-        "Production backend request failed.",
+        "Production backend request failed."
       );
 }
 
 async function handleAuthResponse(
-  res: Response,
+  res: Response
 ): Promise<{
   user: AuthUser;
   token: string;
@@ -227,12 +231,11 @@ async function handleAuthResponse(
   const body = await parseJsonResponse(res);
 
   if (!res.ok) {
-    const message =
+    throw new ApiError(
       typeof body.error === "string"
         ? body.error
-        : `Authentication request failed (${res.status}).`;
-
-    throw new ApiError(message);
+        : `Authentication request failed (${res.status}).`
+    );
   }
 
   if (
@@ -242,7 +245,7 @@ async function handleAuthResponse(
     typeof body.token !== "string"
   ) {
     throw new ApiError(
-      "Production backend returned an invalid authentication response.",
+      "Production backend returned an invalid authentication response."
     );
   }
 
@@ -254,7 +257,7 @@ async function handleAuthResponse(
     typeof user.name !== "string"
   ) {
     throw new ApiError(
-      "Production backend returned an invalid authenticated user.",
+      "Production backend returned an invalid authenticated user."
     );
   }
 
@@ -266,15 +269,13 @@ async function handleAuthResponse(
 
 export async function loginAccount(
   email: string,
-  password: string,
+  password: string
 ): Promise<{
   user: AuthUser;
   token: string;
 }> {
-  const url = `${BACKEND_PREFIX}/auth/login`;
-
   const res = await fetchBackend(
-    url,
+    `${BACKEND_PREFIX}/auth/login`,
     {
       method: "POST",
       headers: {
@@ -288,7 +289,7 @@ export async function loginAccount(
       cache: "no-store",
       mode: "cors",
     },
-    DEFAULT_REQUEST_TIMEOUT_MS,
+    DEFAULT_REQUEST_TIMEOUT_MS
   );
 
   return handleAuthResponse(res);
@@ -313,14 +314,13 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
         cache: "no-store",
         mode: "cors",
       },
-      20_000,
+      20_000
     );
 
     if (res.status === 401) {
-      if (typeof window !== "undefined") {
-        window.localStorage.removeItem(AUTH_TOKEN_KEY);
-      }
-
+      window.localStorage.removeItem(
+        AUTH_TOKEN_KEY
+      );
       return null;
     }
 
@@ -358,13 +358,15 @@ export async function logoutAccount(): Promise<void> {
         cache: "no-store",
         mode: "cors",
       },
-      15_000,
+      15_000
     );
   } catch {
-    // Logout is best-effort.
+    // Best effort.
   } finally {
     if (typeof window !== "undefined") {
-      window.localStorage.removeItem(AUTH_TOKEN_KEY);
+      window.localStorage.removeItem(
+        AUTH_TOKEN_KEY
+      );
     }
   }
 }
@@ -381,7 +383,7 @@ export async function resetDataset(): Promise<void> {
       cache: "no-store",
       mode: "cors",
     },
-    15_000,
+    15_000
   );
 
   if (!res.ok) {
@@ -390,7 +392,7 @@ export async function resetDataset(): Promise<void> {
     throw new ApiError(
       typeof body.error === "string"
         ? body.error
-        : `Dataset reset failed (${res.status}).`,
+        : `Dataset reset failed (${res.status}).`
     );
   }
 }
@@ -407,7 +409,7 @@ export async function checkBackendHealth(): Promise<boolean> {
         cache: "no-store",
         mode: "cors",
       },
-      HEALTH_REQUEST_TIMEOUT_MS,
+      HEALTH_REQUEST_TIMEOUT_MS
     );
 
     return res.ok;
@@ -417,7 +419,7 @@ export async function checkBackendHealth(): Promise<boolean> {
 }
 
 function extractPredictionResult(
-  body: PredictionJobResponse,
+  body: PredictionJobResponse
 ): DgaPayload | null {
   if (
     body.result &&
@@ -441,7 +443,7 @@ function extractPredictionResult(
 }
 
 function extractPredictionJobId(
-  body: PredictionJobResponse,
+  body: PredictionJobResponse
 ): string | null {
   const candidates = [
     body.job_id,
@@ -462,7 +464,7 @@ function extractPredictionJobId(
 }
 
 async function parsePredictionJobResponse(
-  res: Response,
+  res: Response
 ): Promise<PredictionJobResponse> {
   const body = await parseJsonResponse(res);
 
@@ -470,7 +472,7 @@ async function parsePredictionJobResponse(
     throw new ApiError(
       typeof body.error === "string"
         ? body.error
-        : `Production prediction request failed (${res.status}).`,
+        : `Production prediction request failed (${res.status}).`
     );
   }
 
@@ -478,14 +480,14 @@ async function parsePredictionJobResponse(
 }
 
 async function waitForPredictionJob(
-  jobId: string,
+  jobId: string
 ): Promise<DgaPayload> {
   let pollCount = 0;
 
   for (;;) {
     const res = await fetchBackend(
       `${BACKEND_PREFIX}/predict/status/${encodeURIComponent(
-        jobId,
+        jobId
       )}`,
       {
         method: "GET",
@@ -496,12 +498,12 @@ async function waitForPredictionJob(
         cache: "no-store",
         mode: "cors",
       },
-      DEFAULT_REQUEST_TIMEOUT_MS,
+      DEFAULT_REQUEST_TIMEOUT_MS
     );
 
     if (res.status === 404) {
       throw new ApiError(
-        "Production prediction job was not found or has expired.",
+        "Production prediction job was not found or has expired."
       );
     }
 
@@ -516,7 +518,7 @@ async function waitForPredictionJob(
 
       if (!result) {
         throw new ApiError(
-          "Prediction job completed but production backend returned no prediction result.",
+          "Prediction job completed but production backend returned no prediction result."
         );
       }
 
@@ -525,7 +527,8 @@ async function waitForPredictionJob(
 
     if (status === "failed") {
       throw new ApiError(
-        body.error || "Production prediction job failed.",
+        body.error ||
+          "Production prediction job failed."
       );
     }
 
@@ -535,8 +538,8 @@ async function waitForPredictionJob(
     ) {
       throw new ApiError(
         `Production backend returned an invalid prediction job status: ${String(
-          status ?? "undefined",
-        )}.`,
+          status ?? "undefined"
+        )}.`
       );
     }
 
@@ -545,18 +548,18 @@ async function waitForPredictionJob(
     await sleep(
       pollCount > 30
         ? PREDICTION_POLL_SLOW_INTERVAL_MS
-        : PREDICTION_POLL_INTERVAL_MS,
+        : PREDICTION_POLL_INTERVAL_MS
     );
   }
 }
 
 async function startPredictionJob(
-  init: RequestInit,
+  init: RequestInit
 ): Promise<DgaPayload> {
   const response = await fetchBackend(
     `${BACKEND_PREFIX}/predict`,
     init,
-    PREDICTION_UPLOAD_TIMEOUT_MS,
+    PREDICTION_UPLOAD_TIMEOUT_MS
   );
 
   const body =
@@ -595,7 +598,7 @@ async function startPredictionJob(
       keys.length
         ? `Response fields: ${keys.join(", ")}.`
         : "Response body was empty.",
-    ].join(" "),
+    ].join(" ")
   );
 }
 
@@ -604,53 +607,54 @@ let predictionInFlight:
   | null = null;
 
 export async function runPredictionFromFile(
-  file: File,
+  file: File
 ): Promise<DgaPayload> {
   if (predictionInFlight) {
     return predictionInFlight;
   }
 
   const form = new FormData();
-
   form.append("file", file);
 
-  predictionInFlight = startPredictionJob({
-    method: "POST",
-    headers: {
-      ...authHeaders(),
-    },
-    body: form,
-    cache: "no-store",
-    mode: "cors",
-  }).finally(() => {
-    predictionInFlight = null;
-  });
+  predictionInFlight =
+    startPredictionJob({
+      method: "POST",
+      headers: {
+        ...authHeaders(),
+      },
+      body: form,
+      cache: "no-store",
+      mode: "cors",
+    }).finally(() => {
+      predictionInFlight = null;
+    });
 
   return predictionInFlight;
 }
 
 export async function runPredictionFromJson(
-  rows: unknown[],
+  rows: unknown[]
 ): Promise<DgaPayload> {
   if (predictionInFlight) {
     return predictionInFlight;
   }
 
-  predictionInFlight = startPredictionJob({
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...authHeaders(),
-    },
-    body: JSON.stringify({
-      data: rows,
-    }),
-    cache: "no-store",
-    mode: "cors",
-  }).finally(() => {
-    predictionInFlight = null;
-  });
+  predictionInFlight =
+    startPredictionJob({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...authHeaders(),
+      },
+      body: JSON.stringify({
+        data: rows,
+      }),
+      cache: "no-store",
+      mode: "cors",
+    }).finally(() => {
+      predictionInFlight = null;
+    });
 
   return predictionInFlight;
 }
@@ -658,7 +662,7 @@ export async function runPredictionFromJson(
 export async function askChatBackend(
   question: string,
   context: unknown,
-  history?: ChatHistoryTurn[],
+  history?: ChatHistoryTurn[]
 ): Promise<string> {
   const res = await fetchBackend(
     `${BACKEND_PREFIX}/chat`,
@@ -677,7 +681,7 @@ export async function askChatBackend(
       cache: "no-store",
       mode: "cors",
     },
-    45_000,
+    45_000
   );
 
   if (!res.ok) {
@@ -686,7 +690,7 @@ export async function askChatBackend(
     throw new ApiError(
       typeof body.error === "string"
         ? body.error
-        : `Chat request failed (${res.status}).`,
+        : `Chat request failed (${res.status}).`
     );
   }
 
@@ -694,7 +698,7 @@ export async function askChatBackend(
 
   if (typeof body.answer !== "string") {
     throw new ApiError(
-      "Production backend returned an invalid chat response.",
+      "Production backend returned an invalid chat response."
     );
   }
 

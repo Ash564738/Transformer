@@ -182,11 +182,17 @@ export interface DgaRow {
   iec_60599_standard?: string;
   iec_60599_ratio_available?: boolean;
   iec_60599_ratio_count?: number;
-  iec_60599_ratios?: Record<string, number | null>;
+  iec_60599_ratios?: Record<
+    string,
+    number | null
+  >;
   iec_60599_interpretation_flags?: string[];
 
   ieee_delta?: Record<string, number>;
-  ieee_gas_rate_ppm_per_year?: Record<string, number>;
+  ieee_gas_rate_ppm_per_year?: Record<
+    string,
+    number
+  >;
 
   consensus_fault?: string;
   consensus_fault_traditional?: string;
@@ -418,6 +424,7 @@ export interface TransformerSummary {
   transformer_overall_severity_level?: number;
   transformer_overall_severity_label?: NativeSeverityLabel | string;
   transformer_overall_severity_score?: number;
+
   overall_score_type?: string;
   overall_score_formula?: string;
   overall_score_is_weighted?: boolean;
@@ -490,8 +497,13 @@ export interface DatasetSummary {
 
   critical_transformer_count?: number;
 
-  critical_queue_top20?: Array<Record<string, unknown>>;
-  maintenance_queue_top20?: Array<Record<string, unknown>>;
+  critical_queue_top20?: Array<
+    Record<string, unknown>
+  >;
+
+  maintenance_queue_top20?: Array<
+    Record<string, unknown>
+  >;
 
   first_priority_transformer_id?: string | null;
   first_priority_rank?: number | null;
@@ -499,7 +511,11 @@ export interface DatasetSummary {
   critical_rule?: string;
   critical_reference?: string;
 
-  fault_criticality_context_counts?: Record<string, number>;
+  fault_criticality_context_counts?: Record<
+    string,
+    number
+  >;
+
   fault_criticality_source?: string;
 
   traditional_abstain_rows?: number;
@@ -532,6 +548,7 @@ export interface DgaPayload {
   predictions: Prediction[];
 
   rows: DgaRow[];
+
   preview_rows: DgaRow[];
 
   transformer_summary: TransformerSummary[];
