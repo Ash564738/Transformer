@@ -14,12 +14,7 @@ const PREDICTION_UPLOAD_TIMEOUT_MS = 15 * 60_000;
 const PREDICTION_POLL_INTERVAL_MS = 1_000;
 const PREDICTION_POLL_SLOW_INTERVAL_MS = 2_000;
 
-const RETRYABLE_STATUS = new Set([
-  502,
-  503,
-  504,
-]);
-
+const RETRYABLE_STATUS = new Set([502, 503, 504]);
 const MAX_NETWORK_RETRIES = 2;
 
 export class ApiError extends Error {
@@ -73,9 +68,7 @@ export function getAuthToken(): string | null {
     return null;
   }
 
-  return window.localStorage.getItem(
-    AUTH_TOKEN_KEY
-  );
+  return window.localStorage.getItem(AUTH_TOKEN_KEY);
 }
 
 function authHeaders(): Record<string, string> {

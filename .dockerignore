@@ -1,20 +1,95 @@
 # .dockerignore
 .git
+.git/**
 .github
 .venv
+venv
+env
+
 __pycache__
+**/__pycache__
 *.pyc
 *.pyo
 *.pyd
+*.so
+
 .vscode
 .idea
+*.swp
+*.swo
+
 node_modules
+frontend/node_modules
 .next
+frontend/.next
+
 .env
+**/.env
+
 *.log
 logs
-catboost_info
-frontend/node_modules
-frontend/.next
 backend/logs
-backend/dataset/processed
+
+catboost_info
+backend/catboost_info
+
+.ipynb_checkpoints
+.pytest_cache
+.mypy_cache
+
+# ------------------------------------------------------------
+# Raw research datasets are LOCAL-TRAINING ONLY.
+# Render does not need them because prediction receives an
+# uploaded dataframe/file from the frontend.
+# ------------------------------------------------------------
+
+backend/dataset/*.csv
+backend/dataset/*.xlsx
+backend/dataset/*.xls
+
+# Explicitly keep pre-generated processed production artifacts.
+!backend/dataset/processed/
+!backend/dataset/processed/**
+
+# ------------------------------------------------------------
+# Training code is still kept in Git, but is not required by
+# the runtime container. Keeping it in the repository is fine;
+# excluding it from the Docker build context reduces build size.
+# ------------------------------------------------------------
+
+backend/train_unsupervised_models.py
+backend/train_supervised_models.py
+backend/run_full_experiment.py
+backend/compare_weak_supervision.py
+backend/weak_supervision.py
+backend/evaluation.py
+backend/research_analysis.py
+backend/experiment.py
+
+# Keep production code explicitly.
+!backend/app.py
+!backend/inference_service.py
+!backend/config.py
+!backend/clean_dataset.py
+!backend/consensus.py
+!backend/ranking.py
+!backend/severity.py
+!backend/feature_engineering.py
+!backend/dga_features.py
+!backend/anomaly.py
+!backend/auth.py
+!backend/data_store.py
+!backend/text2sql_chat.py
+!backend/chat_fastpath.py
+!backend/tasks.py
+!backend/celery_worker.py
+!backend/logging_config.py
+!backend/seed_user.py
+
+# ------------------------------------------------------------
+# Seed archives and research-only generated files are not
+# needed by the production API.
+# ------------------------------------------------------------
+
+backend/reports/seeds/
+backend/reports/**/*.log

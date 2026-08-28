@@ -11,6 +11,20 @@ services:
       - key: PORT
         value: "10000"
 
+      # Production inference only.
+      - key: DGA_FAST_MODE
+        value: "1"
+
+      # No runtime training.
+      - key: DGA_RUNTIME_TRAINING
+        value: "0"
+
+      # No runtime research benchmark.
+      - key: DGA_RUNTIME_RESEARCH
+        value: "0"
+
+      # Production requests can still persist data/results if the
+      # application code is configured to do so.
       - key: DGA_SAVE_DATABASE
         value: "1"
 
@@ -29,6 +43,8 @@ services:
       - key: DGA_PREDICTION_JOB_TTL
         value: "7200"
 
+      # Current app accepts configured origins and *.vercel.app.
+      # Keep wildcard for now.
       - key: DGA_CORS_ORIGINS
         value: "*"
 

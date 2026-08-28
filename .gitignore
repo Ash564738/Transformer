@@ -7,37 +7,33 @@ __pycache__/
 venv/
 env/
 *.egg-info/
+
 .pytest_cache/
 .mypy_cache/
+.ipynb_checkpoints/
 
-# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# OS
 .DS_Store
 Thumbs.db
 
-# Project data (ignore toàn bộ nội dung bên trong)
-# backend/dataset/
-# backend/models/
-# backend/reports/
-# backend/database/
-backend/logs/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# Environment
 .env
+**/.env
 
-# frontend generated
 frontend/.next/
 frontend/node_modules/
 frontend/next-env.d.ts
 frontend/tsconfig.tsbuildinfo
 
-# backend generated
+backend/logs/
 backend/catboost_info/
+
+# Do NOT ignore production artifacts:
+# backend/models/
+# backend/reports/
+# backend/dataset/processed/
+#
+# They are generated offline and then committed/pushed.

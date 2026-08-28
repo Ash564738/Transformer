@@ -14,60 +14,31 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Runtime dependencies only.
+# Training dependencies such as torch, CUDA, Snorkel, XGBoost,
+# LightGBM and CatBoost are intentionally NOT installed on Render.
 COPY backend/requirements.txt ./requirements.txt
 
 RUN pip install --no-cache-dir -r requirements.txt
 
+# This copies the already-generated production artifacts:
+#   backend/models/*
+#   backend/reports/*
+#   backend/dataset/processed/*
+#
+# It does NOT execute the research pipeline.
 COPY backend/ ./
 
-RUN mkdir -p \
-    /app/models \
-    /app/reports \
-    /app/reports/benchmark \
-    /app/dataset/processed \
-    /app/database
-
-# Build-time research publication.
+# Fail the deployment when the local/offline research artifacts were
+# not committed/pushed correctly.
 #
-# This executes the complete offline research pipeline against the
-# labeled datasets + unlabeled operational dataset bundled in the image.
-#
-# The resulting:
-#   models/*
-#   reports/*
-#   dataset/processed/*
-#   database/*
-# are therefore part of the deployed Render image and do not depend
-# on Render's ephemeral runtime filesystem.
-RUN python run_full_experiment.py \
-    --mode all \
-    --seed 42 \
-    --use-snorkel
-
-# Hard verification during image build.
-# Fail the Render deployment instead of publishing an image whose
-# experiment page would report stale/missing artifacts.
-RUN test -f /app/reports/dga_research_report.xlsx \
-    && test -f /app/reports/experiment_run_manifest.json \
-    && test -f /app/reports/benchmark/traditional_individual_benchmark.csv \
-    && test -f /app/reports/benchmark/traditional_combinations_benchmark.csv \
-    && test -f /app/reports/benchmark/traditional_ppm_coverage.csv \
-    && test -f /app/reports/benchmark/traditional_fault_class_coverage.csv \
-    && test -f /app/reports/benchmark/traditional_pairwise_agreement.csv \
-    && test -f /app/reports/benchmark/traditional_method_summary.csv \
-    && test -f /app/reports/benchmark/supervised_fault_benchmark.csv \
-    && test -f /app/reports/benchmark/weak_transfer_fault_benchmark.csv \
-    && test -f /app/reports/benchmark/weak_label_model_transfer_fault_benchmark.csv \
-    && test -f /app/reports/benchmark/weak_traditional_hybrid_benchmark.csv \
-    && test -f /app/reports/benchmark/domain_gap_absolute_vs_ratio.csv \
-    && test -f /app/reports/benchmark/domain_gap_representation_summary.csv \
-    && test -f /app/reports/benchmark/rank_correlation_spearman.csv \
-    && test -f /app/reports/benchmark/rank_correlation_kendall.csv \
-    && test -f /app/reports/benchmark/cross_dataset_transfer_grid.csv \
-    && test -f /app/models/fault_classifiers_coarse.joblib \
-    && test -f /app/models/fault_classifiers_fine.joblib \
+# Render is only the inference server. It must never train the model.
+RUN test -f /app/models/production_fault_selection.joblib \
     && test -f /app/models/training_metadata.json \
-    && test -f /app/models/production_fault_selection.joblib \
+    && test -f /app/models/fault_classifiers_fine.joblib \
+    && test -f /app/models/fault_classifiers_coarse.joblib \
+    && test -f /app/reports/experiment_run_manifest.json \
+    && test -f /app/reports/dga_research_report.xlsx \
     && test -f /app/reports/transformer_ranking.csv \
     && test -f /app/dataset/processed/dga_unlabeled_processed.parquet \
     && test -f /app/dataset/processed/transformer_ranking.parquet

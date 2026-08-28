@@ -1,2 +1,5 @@
 # .gitattributes
 backend/models/*.joblib filter=lfs diff=lfs merge=lfs -text
+backend/dataset/processed/*.parquet filter=lfs diff=lfs merge=lfs -text
+backend/reports/*.xlsx filter=lfs diff=lfs merge=lfs -text
+backend/reports/**/*.xlsx filter=lfs diff=lfs merge=lfs -text
