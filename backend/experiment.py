@@ -174,7 +174,7 @@ def _build_summary_sheet(wb, report_dir, processed_dir):
         ["Split protocol", "Train / Development / Locked Test. Development selects methods/models; locked test is never used for selection."],
         ["Primary metric", "Macro F1; accuracy, balanced accuracy, macro precision/recall, weighted F1, coverage and abstain-aware accuracy are also reported."],
         ["Label harmonization", "Spark→D1, Arc→D2, Low/Middle-temperature→T1_T2. Native benchmark labels are also preserved by source; strict fine scoring only uses the common taxonomy and ambiguity-tolerant scoring accepts T1/T2 alternatives."],
-        ["Weak supervision", "Snorkel LabelModel when available; EM fallback otherwise. No ground-truth labels from the external benchmark are used for operational weak-label training."],
+        ["Weak supervision", "Snorkel LabelModel is required. There is no EM or manual-weight fallback. No ground-truth labels from the external benchmark are used for operational weak-label training."],
         ["Student transfer", "Models trained on operational weak labels are applied unchanged to the external labeled benchmark."],
         ["Hybrid evaluation", "Agreement-only hybrid keeps a prediction only when student and unweighted traditional consensus agree exactly; disagreement becomes ABSTAIN. No numeric fusion weight."],
         ["Severity", "IEEE C57.104-2019 rule-derived Status 1/2/3. No invented Status 4 and no arbitrary weighted severity sum."],
@@ -426,7 +426,7 @@ def _build_validation_sheets(wb, report_dir, processed_dir):
     write_table(methodology, [
         ["Item", "Definition"],
         ["Traditional diagnostics", "Key Gas, IEC-style ratio, Rogers, Doernenburg, Duval Triangle and Duval Pentagon outputs are treated as noisy labeling functions/evidence generators."],
-        ["Weak supervision", "Snorkel LabelModel or EM fallback estimates latent labels from the LF matrix without external ground truth."],
+        ["Weak supervision", "Snorkel LabelModel estimates latent labels from the LF matrix without external ground truth; execution stops if Snorkel is unavailable."],
         ["Student training", "Discriminative students are fitted only on operational weak labels."],
         ["External evaluation", "External labeled benchmark is never used to train operational student models."],
         ["Fine-label mismatch", "DGA dataset labels are harmonized to the IEC fault taxonomy; T1_T2 is evaluated both strictly and with set-valued ambiguity tolerance."],
@@ -444,6 +444,8 @@ def _build_validation_sheets(wb, report_dir, processed_dir):
     if severity_file.exists():
         try:
             df = pd.read_parquet(severity_file)
+            from transformer_anonymization import anonymize_transformer_column
+            df = anonymize_transformer_column(df) if "transformer_id" in df.columns else df
             fields = ["transformer_id", "sample_day", "ieee_dga_status", "ieee_dga_status_label", "ieee_dga_status_reason", "ieee_max_standardized_exceedance", "ieee_max_status3_standardized_exceedance", "ieee_standard_trigger_count", "ieee_confirmation_required", "ieee_delta_available", "ieee_rate_available", "ieee_rate_span_months", "ieee_table2_exceeding_gases", "ieee_table4_exceeding_gases"]
             fields = [x for x in fields if x in df.columns]
             sh = wb.worksheets.add("Severity_Records")
@@ -487,6 +489,29 @@ def build_excel_report(report_dir, processed_dir, output_path):
     ranking_rows = read_csv_file(report_dir / "transformer_ranking.csv")
     if ranking_rows:
         sheet = wb.worksheets.add("Transformer_Ranking")
+        ranking_headers = ranking_rows[0]
+        source_key = "source_transformer_id"
+        if source_key in ranking_headers:
+            mapping_sheet = wb.worksheets.add("Transformer_ID_Map")
+            source_index = ranking_headers.index(source_key)
+            transformer_index = ranking_headers.index("transformer_id")
+            mapping_rows = sorted(
+                {
+                    (row[transformer_index], row[source_index])
+                    for row in ranking_rows[1:]
+                },
+                key=lambda pair: str(pair[0]),
+            )
+            write_table(
+                mapping_sheet,
+                [["Anonymous transformer ID", "Source transformer ID"]]
+                + [list(pair) for pair in mapping_rows],
+                max_width=42,
+            )
+            ranking_rows = [
+                [value for index, value in enumerate(row) if index != source_index]
+                for row in ranking_rows
+            ]
         write_table(sheet, ranking_rows, max_width=42)
     _build_validation_sheets(wb, report_dir, processed_dir)
     _build_sources_sheet(wb)

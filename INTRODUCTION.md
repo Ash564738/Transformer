@@ -1,0 +1,23 @@
+INTRODUCTION
+1. Reason for choosing the research topic
+Power transformers are one of the most important and expensive assets in an electrical grid. When one fails without warning, it can cause a large power outage, damage other equipment, and cost a lot to repair. Dissolved Gas Analysis (DGA) is the most common way to check the condition of a transformer's insulation, by measuring the gases produced when the oil and paper inside slowly break down. The problem is that the traditional DGA methods (IEC 60599, Rogers Ratio, Duval Triangle, Duval Pentagon...) often disagree with each other, and most of the DGA data collected in real operation has no confirmed fault label.
+Because of this, combining traditional DGA methods with modern machine learning, and building a real software system to monitor transformers and support maintenance decisions, is a research direction with real practical value. This is why our team chose this topic during the internship at the College of Industrial Technology (CIT), King Mongkut's University of Technology North Bangkok (KMUTNB), using a real DGA dataset provided by the Electricity Generating Authority of Thailand (EGAT).
+2. Overview of the topic
+	The topic focuses on researching, building, and evaluating a system that diagnoses and ranks the degradation level of power transformers using unlabeled DGA data. It has three main parts:
+-	Analyzing and fixing the domain gap: finding and fixing the difference in data distribution between EGAT's real operational data and the international reference dataset IEC TC10, through feature engineering (switching from absolute gas concentration to gas ratio/percentage) and removing sources of data leakage.
+-	Comparing traditional DGA labeling functions (IEC 60599, Rogers Ratio, Doernenburg, Duval Triangle 1, and Duval Pentagon 1/2), their combinations, and ML/weak-supervision alternatives on independent labeled data.
+-	Building a working software system: a Next.js/Flask dashboard with Snorkel weak supervision, IEEE rule-derived severity, unweighted evidence-based fleet ranking, and a read-only Text2SQL chatbot.
+3. Purpose of the topic
+	Find and measure the real cause of why a machine learning model trained on traditional DGA labels performs poorly outside its training data (the domain gap), and propose a fix that is backed by numbers, not just guesswork.
+Evaluate honestly the difference between "reproducing the pseudo-label" inside the training set and "real diagnostic value" when tested on an independent dataset, so we do not draw the wrong conclusion just from internal accuracy.
+Build a complete, usable software system that helps engineers monitor the whole transformer fleet, prioritize maintenance, and look up diagnostic information in a clear and simple way.
+4. Object and scope of the study
+	Object of study: Dissolved Gas Analysis (DGA) data of in-service power transformers, traditional DGA diagnostic methods, supervised and weak-supervision machine learning algorithms, and the IEC TC10 reference dataset.
+	Scope of study: EGAT's real operational dataset with 4,561 samples from 628 transformers (2017–2024), compared against 117 field-confirmed fault cases from the IEC TC10 reference dataset. The system is built as a decision-support tool. It is meant to help maintenance engineers, not replace their judgment.
+5. Implementation plan
+No.	Phase	Work done
+1	Data cleaning and preprocessing	Cleaning EGAT's raw dataset (4,563 rows x 26 columns) into a clean dataset (4,561 rows x 34 columns): handling missing values, fixing date-order errors, recomputing TCG with the standard formula, and keeping the original value of every changed column (suffix "_raw") so every change can be checked later.
+2	Diagnosing the domain gap and feature engineering	Finding out why the model scored under 24% Macro-F1 when applied to IEC TC10, and designing 12 scale-invariant features (gas ratios/percentages instead of absolute concentration) to fix it.
+3	Comparing traditional DGA labeling methods	Implementing IEC 60599, Rogers Ratio, Doernenburg, Duval Triangle 1, and Duval Pentagon 1/2; comparing individual methods and combinations by coverage, conflicts, class distribution, and labeled-benchmark performance.
+4	Training and evaluating models (Experiment B9)	Training 4 algorithms (Random Forest, XGBoost, SVM, Logistic Regression) on the labels of each method, evaluated by transferring to the independent IEC TC10 set.
+5	Building severity ranking and the dashboard/chatbot	Building IEEE rule-derived severity and unweighted lexicographic fleet ranking, alongside the dashboard, weak-supervision pipeline, and read-only Text2SQL chatbot.

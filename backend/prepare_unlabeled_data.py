@@ -91,6 +91,22 @@ def main():
     UNLABELED_PATH.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Saving unlabeled dataset to: %s", UNLABELED_PATH)
     df.to_parquet(UNLABELED_PATH, index=False)
+    # Excel is the report-facing interchange format.  Keep the machine
+    # artifact above for efficient loading, but always publish a workbook for
+    # inspection and chart preparation.
+    excel_path = UNLABELED_PATH.with_suffix(".xlsx")
+    report_df = df.copy()
+    if "transformer_id" in report_df.columns:
+        from transformer_anonymization import anonymize_transformer_column
+        report_df = anonymize_transformer_column(report_df)
+    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        report_df.to_excel(writer, sheet_name="Prepared_Unlabeled", index=False)
+        pd.DataFrame({
+            "column": df.columns,
+            "missing_count": df.isna().sum().to_numpy(),
+            "missing_ratio_percent": (df.isna().mean() * 100).round(3).to_numpy(),
+        }).to_excel(writer, sheet_name="Missing_Summary", index=False)
+    logger.info("Saved report workbook: %s", excel_path)
     logger.info("Saved %d rows.", len(df))
     logger.info("=" * 80)
     logger.info("UNLABELED DATA PREPARATION COMPLETE")

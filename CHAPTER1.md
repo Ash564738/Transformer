@@ -1,0 +1,63 @@
+CHAPTER 1. INTRODUCTION ABOUT COLLEDGE OF INDUSTRIAL TECHNOLOGY (KMUTNB)
+1.1. Internship Organization
+	Internship Organization: College of Industrial Technology, KMUTNB.
+		Address: 1518 Pracharat 1 Road, Wong Sawang Subdistrict, Bang Sue District, Bangkok 10800, Thailand.
+Email: contact@op.kmutnb.ac.th
+Website: https://www.kmutnb.ac.th/
+1.2. Introduction about College of Industrial Technology (KMUTNB)
+	The College of Industrial Technology (CIT) is a college of King Mongkut’s University of Technology North Bangkok (KMUTNB), Thailand. It was established in 1959 as the Thai-German Technical School through cooperation between Thailand and Germany. Over the years, the institution has developed and expanded its education and research in engineering and industrial technology.
+	CIT focuses on technical and engineering education, with an emphasis on combining theoretical knowledge with practical experience. Students have opportunities to learn through laboratory work, projects, and practical training, helping them apply what they learn in real-world situations. The college also works with industries and other institutions to support research and technological development.
+	The college offers programs in various fields of engineering and technology, including mechanical, electrical, civil, electronics, industrial, and other related areas. Through its educational and research activities, CIT provides students with a practical learning environment and prepares them for careers in engineering, technology, and industry.
+	During my internship at CIT, I have the opportunity to experience an international academic environment, learn more about technology and research activities, and gain practical knowledge beyond what I have learned at university.
+1.3. Objectives
+The College of Industrial Technology (CIT), KMUTNB aims to provide students with strong technical knowledge and practical skills that can be applied to real-world situations. The college focuses on combining classroom learning with hands-on experience to help students better understand their fields of study and prepare for their future careers.
+CIT also aims to promote research, innovation, and the development of new technologies. Through research projects and cooperation with industries and other educational institutions, the college provides students and staff with opportunities to gain practical experience and contribute to technological development.
+Another important objective is to develop students’ problem-solving, teamwork, communication, and creative thinking skills. CIT also encourages international cooperation and academic exchange, creating opportunities for students to learn in a diverse and international environment.
+1.4. Organization of Activities
+	FPT Software Đà Nẵng là một trong những chi nhánh lớn nhất của FPT Software, chuyên về gia công phần mềm và xuất khẩu phần mềm. Đơn vị này được thành lập vào năm 2005 và đã có những đóng góp đáng kể vào sự phát triển của ngành công nghệ thông tin tại Đà Nẵng và khu vực miền Trung. FPT Software Đà Nẵng có quy mô lớn, với đội ngũ nhân viên đông đảo và cơ sở hạ tầng hiện đại, đặc biệt là khu phức hợp FPT Complex.
+	The College of Industrial Technology (CIT), KMUTNB organizes various activities related to education, research, student development, and international cooperation. These activities are carried out through different departments and academic units, with lecturers, staff, researchers, and students working together.
+	In terms of education, CIT combines theoretical learning with practical activities such as lectures, laboratory classes, projects, and hands-on training. These activities help students apply their knowledge to real-world situations and develop practical skills for their future careers.
+	Research is also an important part of CIT’s activities. Lecturers and students participate in research projects related to engineering, industrial technology, and technological development. The college also cooperates with companies, research organizations, and universities to exchange knowledge and support practical research.
+	In addition, CIT organizes seminars, workshops, training programs, internships, and international exchange activities. One of the activities is Exchange International Day, which provides an opportunity for international and Thai students to meet, communicate, and learn more about different cultures. Through activities such as cultural sharing, presentations, and interaction between students from different countries, Exchange International Day helps create a more international and friendly learning environment at the college.
+ 
+Figure 1.1 Exchange International Day
+	These activities not only support students’ academic and professional development but also give them opportunities to improve communication skills, experience different cultures, and become more confident when working in an international environment.
+
+1.5. Field of Activities
+		The College of Industrial Technology (CIT) covers a wide range of fields in engineering, technology, science, and management. The college currently consists of 10 departments, each focusing on a specific area of education and technology.
+a. Department of Mechanical Engineering Technology
+	The department focuses on mechanical engineering and practical technologies used in manufacturing and industrial production. Its fields include machine design, tool and die design, mechatronics, and polymer processing. The department provides both theoretical knowledge and practical skills for engineering applications.
+b. Department of Electrical Engineering Technology
+	The department focuses on electrical and electronic engineering, including power systems, power electronics, machine control, and electrical maintenance. Students learn both theoretical concepts and practical applications. The department also provides education at both bachelor's and master's levels.
+c. Department of Civil and Environmental Engineering Technology
+This department focuses on civil engineering, construction technology, and environmental engineering. Its programs cover areas such as civil construction, urban development, and environmental management. The department provides education at both undergraduate and graduate levels.
+d. Department of Social and Applied Science
+	The department provides fundamental subjects that support students in different engineering programs. Its main areas include mathematics, science, social and business studies, and languages. It also provides general education courses and supports students with the basic knowledge needed for their specialized studies.
+e. Department of Industrial Engineering Technology
+	The department focuses on industrial engineering and the improvement of production processes. Students learn how to apply engineering knowledge to industrial work, technology management, and production systems. The department also emphasizes practical training and cooperation with companies.
+f. Department of Power Engineering Technology
+	The department focuses on engineering technologies related to power, energy, automotive systems, refrigeration, air conditioning, and aircraft maintenance. It offers programs from bachelor's to doctoral levels. The department also provides knowledge related to energy and automotive engineering.
+g. Department of Electronic Engineering Technology
+	The department covers electronics and digital technology, with areas including computer technology, telecommunications, broadcasting, and instrumentation and control. Students can learn about hardware, software, data processing, networks, and automation systems. The department also provides programs at both bachelor's and master's levels.
+
+h. Department of Welding Engineering Technology
+	The department specializes in welding processes, welding technology, welding inspection, tools, and quality control. Its programs include Welding Technology and Welding Engineering Technology at different educational levels. Practical training is an important part of the department's teaching activities.
+i. Department of Information and Production Technology Management
+	The department combines information technology with production and industrial management. Students learn about information systems, software, production management, and the application of IT in industrial environments. The program also includes practical training and research projects to help students apply their knowledge to real working situations.
+k. Thai-German Pre-Engineering School
+	The Thai-German Pre-Engineering School provides technical education in preparation for engineering studies. Its programs include Pre-Mechanical, Pre-Electrical and Electronic, and Pre-Civil Engineering. The school places strong emphasis on practical skills, technical knowledge, and professional development following the German technical education approach.
+1.6. Products, Solutions, and Achievements of CIT
+	The College of Industrial Technology (CIT), KMUTNB focuses on developing technologies, research projects, and practical solutions that can be applied to industry and everyday life. Its activities cover many areas, including mechanical engineering, electrical engineering, electronics, automation, information technology, energy, and industrial management. The college also encourages students and researchers to develop projects that solve real-world problems.
+a. Products and Research Projects
+	CIT has developed and supported a variety of student and research projects in engineering and technology. Some examples include an IRON-X mobile robot using ROS2, an automated and robotic parking system, and a deep audio classification system for detecting durian maturity in smart farming robots. These projects demonstrate the application of robotics, artificial intelligence, automation, and smart technology to practical problems.
+	CIT also supports research related to power transformer maintenance. Exchange students have participated in research projects focusing on developing maintenance models for power transformers, showing the college's interest in applying engineering research to electrical power systems.
+b. Solutions and Industrial Applications
+	CIT works with companies and industrial organizations to develop practical solutions and exchange technical knowledge. For example, CIT signed an academic collaboration agreement with Carel (Thailand) Co., Ltd. to support research, consultation, and knowledge exchange related to automatic control systems for commercial refrigeration.
+	The college also organizes activities that connect researchers with industry, such as factory visits and technical discussions. These activities help researchers understand actual production processes and identify opportunities for applying academic knowledge to industrial problems.
+	c. Student Projects and Innovation
+CIT provides opportunities for students to develop and present their own projects through activities such as CIT: Project & CWIE Day. The event includes project proposal presentations and cooperative education projects, allowing students to demonstrate their technical knowledge and practical skills. In 2024, several student projects received awards for outstanding performance.
+Through these activities, students can gain experience in research, project development, problem-solving, and presenting their work. This approach also helps connect classroom knowledge with real working environments.
+d. Achievements
+One of CIT's notable achievements is its success in robotics and automation competitions. In the Industrial Technology 4.0 Robotics and Automation Competition at didacta Asia 2024, CIT students won both First Place and First Runner-Up in the Industrial Workpiece Inspection Using 3D Laser Scanners category. The first-place team received the Royal Trophy presented by Her Royal Highness Princess Maha Chakri Sirindhorn.
+CIT also promotes international research collaboration. In 2024, exchange students from Vietnam and France worked together with KMUTNB students on a short-term research project related to improving urban electric train services. These activities demonstrate CIT's efforts to combine technical education, research, international cooperation, and practical applications.
+Overall, CIT's products, solutions, and achievements mainly come from its education and research activities. Through student projects, research cooperation, industrial partnerships, and international programs, CIT provides opportunities to develop technologies and practical solutions while giving students valuable experience in applying their knowledge to real-world problems.

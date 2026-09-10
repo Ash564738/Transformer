@@ -44,6 +44,7 @@ SAMPLE_COLUMNS = [
     "ieee_confirmation_required", "ieee_extreme_dga",
     "severity_score", "severity_label", "severity_label_text",
     "consensus_fault", "consensus_fault_traditional", "final_fault", "final_fault_group",
+    "fault_criticality_class", "fault_criticality_ordinal", "fault_criticality_order_source",
     "diagnostic_conflict", "mixed_components",
     "diagnostic_confidence", "diagnostic_coverage",
     "keygas_fault", "iec_fault", "rogers_fault", "doernenburg_fault",
@@ -60,13 +61,15 @@ TRANSFORMER_COLUMNS = [
     "transformer_id", "rank", "loc", "name", "latest_sample_day", "latest_score",
     "ieee_status", "status", "severity", "fault_type", "priority_score", "recommended_action",
     "ieee_dga_status", "ieee_dga_status_label", "diagnostic_confidence",
-    "anomaly_percentile", "trend_slope",
+    "anomaly_percentile", "trend_slope", "fault_criticality_class",
+    "fault_criticality_ordinal", "fault_criticality_order_source",
 ]
 SAMPLE_TEXT_COLS = {
     "transformer_id", "sample_day", "loc", "name", "ser", "codetx", "mfg",
     "ieee_dga_status_label", "ieee_dga_status_reason", "severity_label",
     "severity_label_text", "consensus_fault", "consensus_fault_traditional",
-    "final_fault", "final_fault_group", "mixed_components", "diagnostic_coverage",
+    "final_fault", "final_fault_group", "fault_criticality_class",
+    "fault_criticality_order_source", "mixed_components", "diagnostic_coverage",
     "keygas_fault", "iec_fault", "rogers_fault", "doernenburg_fault",
     "duval_triangle_fault", "duval_pentagon_p1_fault", "duval_pentagon_p2_fault",
     "fault_p1", "fault_p2", "student_fault_label", "recommended_action",
@@ -74,6 +77,7 @@ SAMPLE_TEXT_COLS = {
 TRANSFORMER_TEXT_COLS = {
     "transformer_id", "loc", "name", "latest_sample_day", "status", "severity",
     "fault_type", "recommended_action", "ieee_dga_status_label",
+    "fault_criticality_class", "fault_criticality_order_source",
 }
 
 def _column_sql(column: str, text_columns: set) -> str:
@@ -120,6 +124,9 @@ def save_payload_to_db(payload: dict) -> None:
                 "diagnostic_confidence": item.get("diagnostic_confidence", breakdown.get("diagnostic_confidence")),
                 "anomaly_percentile": item.get("anomaly_percentile", breakdown.get("anomaly_percentile")),
                 "trend_slope": item.get("trend_slope", breakdown.get("trend_slope")),
+                "fault_criticality_class": item.get("fault_criticality_class"),
+                "fault_criticality_ordinal": item.get("fault_criticality_ordinal"),
+                "fault_criticality_order_source": item.get("fault_criticality_order_source"),
             }
             transformer_rows.append(tuple(_to_sql_value(record.get(c)) for c in TRANSFORMER_COLUMNS))
         if transformer_rows:

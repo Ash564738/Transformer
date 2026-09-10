@@ -680,6 +680,11 @@ def report_experiments():
                 "ieee_rate_span_months"
             ]
             fields = [c for c in fields if c in frame.columns]
+            from transformer_anonymization import build_transformer_aliases
+            aliases = build_transformer_aliases(frame["transformer_id"].dropna().tolist())
+            frame["transformer_id"] = frame["transformer_id"].map(
+                lambda value: aliases.get(str(value), value)
+            )
             return (
                 frame[fields]
                 .replace([np.inf, -np.inf], np.nan)
@@ -715,6 +720,11 @@ def report_experiments():
     cross_dataset_transfer = read_csv("cross_dataset_transfer_grid.csv")
     rank_correlation_spearman = read_csv("rank_correlation_spearman.csv")
     ranking = read_csv("transformer_ranking.csv", benchmark=False)
+    # The source ID is retained only for the controlled Excel research mapping.
+    ranking = [
+        {key: value for key, value in row.items() if key != "source_transformer_id"}
+        for row in ranking
+    ]
     inference_metadata = read_json(processed_dir / "dga_inference_metadata.json")
     training_metadata = read_json(MODEL_DIR / "training_metadata.json")
 

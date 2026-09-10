@@ -83,9 +83,38 @@ class DiagnosticConfig:
     }
 
     FAULT_CRITICALITY_SOURCE: str = (
-        "Qualitative fault-context layer informed by the standard fault taxonomy and "
-        "transformer diagnostic literature; not a numeric severity weight and not used "
-        "to override IEEE DGA status."
+        "Qualitative fault-context layer informed by the IEC/Duval DGA fault taxonomy "
+        "and transformer diagnostic literature: D2/high-energy discharge, T3/high-temperature "
+        "thermal faults, and cellulose/carbonization are highest-concern fault contexts; "
+        "stray gassing is retained as the lowest non-normal fault evidence. This is an "
+        "ordinal tie-break context, not a numeric severity weight, failure probability, "
+        "or override of IEEE C57.104-2019 DGA Status."
+    )
+
+    FAULT_CRITICALITY_ORDER: ClassVar[Dict[str, int]] = {
+        "ABSTAIN": 0,
+        "NORMAL": 0,
+        "S": 1,
+        "PD": 2,
+        "T1": 2,
+        "THERMAL_OIL": 2,
+        "O": 2,
+        "D1": 3,
+        "T2": 3,
+        "T1_T2": 3,
+        "DT": 3,
+        "MIXED": 3,
+        "D2": 4,
+        "T3": 4,
+        "T3_H": 4,
+        "THERMAL_CELLULOSE": 4,
+        "C": 4,
+    }
+
+    FAULT_CRITICALITY_ORDER_SOURCE: str = (
+        "Source-backed ordinal DGA fault-context order for ranking tie-breaks only: "
+        "D2/T3/cellulose-carbonization > D1/T2/mixed > PD/T1/oil-thermal > "
+        "S/stray-gassing > normal/abstain. It is not a weighted severity formula."
     )
 
     BENCHMARK_FAULT_ALIASES: ClassVar[Dict[str, str]] = {
@@ -229,6 +258,7 @@ class DiagnosticConfig:
         "current rate exceedance ratio against the applicable IEEE rate threshold (when available)",
         "current delta exceedance ratio against the applicable IEEE delta threshold (when available)",
         "number of independent current IEEE trigger tables",
+        "source-backed fault criticality tie-break (D2/T3/cellulose highest, stray gassing lowest non-normal)",
         "current per-table exceedance counts",
         "historical maximum IEEE status before the current sample",
         "historical maximum concentration exceedance before the current sample",

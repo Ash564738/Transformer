@@ -12,7 +12,14 @@ from clean_dataset import clean_dataset
 from config import DATASET_DIR, MODEL_DIR, REPORT_DIR, config as cfg
 from consensus import apply_consensus, normalize_fault, unify_fault
 from logging_config import init_logging
-from ranking import build_transformer_ranking, classify_fault_criticality, fault_criticality_source, log_ranking_diagnostics
+from ranking import (
+    build_transformer_ranking,
+    classify_fault_criticality,
+    fault_criticality_ordinal,
+    fault_criticality_order_source,
+    fault_criticality_source,
+    log_ranking_diagnostics,
+)
 from severity import apply_severity
 
 init_logging()
@@ -325,6 +332,8 @@ def _combine_consensus_and_student(df):
     out["student_vs_traditional_coarse_agreement"] = traditional_active & student_active & traditional_group.eq(student_group)
     out["fault_criticality_class"] = final_fine.map(classify_fault_criticality)
     out["fault_criticality_source"] = fault_criticality_source()
+    out["fault_criticality_ordinal"] = final_fine.map(fault_criticality_ordinal)
+    out["fault_criticality_order_source"] = fault_criticality_order_source()
     return out
 
 def _load_anomaly_model():
@@ -414,10 +423,22 @@ def _write_inference_metadata(df, artifact, weak_metadata, elapsed_seconds, timi
     INFERENCE_METADATA_PATH.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
 def create_payload(df, ranking_df, comparison_df=None):
+    from transformer_anonymization import build_transformer_aliases
+
+    if ranking_df is None:
+        ranking_df = pd.DataFrame(columns=["transformer_id"])
+    aliases = build_transformer_aliases(
+        list(df.get("transformer_id", pd.Series(dtype=object)).dropna())
+        + list(ranking_df.get("transformer_id", pd.Series(dtype=object)).dropna())
+    )
+    df = df.copy()
+    ranking_df = ranking_df.copy()
+    df["transformer_id"] = df["transformer_id"].map(lambda value: aliases.get(str(value), value))
+    ranking_df["transformer_id"] = ranking_df["transformer_id"].map(lambda value: aliases.get(str(value), value))
     rows = []
     ordered = df.sort_values(["transformer_id", "sample_day"], ascending=[True, False], kind="mergesort")
     export_fields = [
-        "transformer_id", "sample_day", "loc", "name", "ser", "codetx", "mfg", "h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2",
+        "transformer_id", "sample_day", "h2", "ch4", "c2h6", "c2h4", "c2h2", "co", "co2",
         "ieee_dga_status", "ieee_dga_status_label", "ieee_dga_status_reason", "severity_label_text", "severity_source",
         "severity_score_type", "severity_is_failure_probability", "severity_composite_weighted", "severity_uses_manual_weights",
         "severity_anomaly_used", "severity_nei_used", "severity_is_not_a_health_score", "ieee_max_standardized_exceedance",
@@ -431,7 +452,7 @@ def create_payload(df, ranking_df, comparison_df=None):
         "weak_coarse_fault", "weak_coarse_fault_group", "weak_coarse_posterior_max", "weak_coarse_entropy", "weak_coarse_lf_active_count",
         "weak_coarse_lf_coverage", "weak_coarse_is_ABSTAIN", "final_fault", "final_fault_group", "final_fault_source",
         "final_fault_conflict", "final_fault_same_coarse_different_fine", "final_fault_conflict_level", "fault_criticality_class",
-        "fault_criticality_source", "keygas_fault", "iec_fault", "rogers_fault", "doernenburg_fault", "duval_triangle_fault",
+        "fault_criticality_source", "fault_criticality_ordinal", "fault_criticality_order_source", "keygas_fault", "iec_fault", "rogers_fault", "doernenburg_fault", "duval_triangle_fault",
         "duval_pentagon_p1_fault", "duval_pentagon_p2_fault", "fault_p1", "fault_p2", "student_fault_label", "student_fault_group",
         "student_fault_confidence", "student_model_name", "student_training_type", "student_feature_set", "student_used_as_fallback",
         "anomaly_percentile", "anomaly_is_severity_input", "anomaly_interpretation", "ieee_confirmation_required", "ieee_delta_available",
@@ -470,6 +491,8 @@ def create_payload(df, ranking_df, comparison_df=None):
             "fault_type": fault_type,
             "fault_group": fault_group,
             "fault_criticality_class": classify_fault_criticality(fault_type),
+            "fault_criticality_ordinal": fault_criticality_ordinal(fault_type),
+            "fault_criticality_order_source": fault_criticality_order_source(),
             "fault_source": row.get("final_fault_source", "ABSTAIN"),
             "fault_confidence": _safe_float(row.get("weak_fine_posterior_max", np.nan)),
             "fault_entropy": _safe_float(row.get("weak_fine_entropy", np.nan)),
@@ -513,6 +536,8 @@ def create_payload(df, ranking_df, comparison_df=None):
             "fault_group": fault_group,
             "fault_criticality_class": rank_row.get("fault_criticality_class", classify_fault_criticality(fault_type)),
             "fault_criticality_source": rank_row.get("fault_criticality_source", fault_criticality_source()),
+            "fault_criticality_ordinal": _safe_int(rank_row.get("fault_criticality_ordinal", fault_criticality_ordinal(fault_type))),
+            "fault_criticality_order_source": rank_row.get("fault_criticality_order_source", fault_criticality_order_source()),
             "recommended_action": rank_row.get("recommended_action", "REVIEW_DATA"),
             "reason": rank_row.get("maintenance_priority_reason", ""),
             "current_standardized_exceedance": _safe_float(rank_row.get("current_standardized_exceedance", np.nan)),
@@ -532,8 +557,7 @@ def create_payload(df, ranking_df, comparison_df=None):
             "ranking_policy": rank_row.get("ranking_policy", ""),
             "ranking_is_weighted": bool(rank_row.get("ranking_is_weighted", False)),
             "ranking_is_health_score": bool(rank_row.get("ranking_is_health_score", False)),
-            "loc": _first(rank_row, ["loc"], "") or "",
-            "name": _first(rank_row, ["name"], "") or "",
+            "ranking_uses_fault_criticality_as_tie_break": bool(rank_row.get("ranking_uses_fault_criticality_as_tie_break", True)),
             "features": {},
         })
     timeseries = {}
@@ -565,6 +589,8 @@ def create_payload(df, ranking_df, comparison_df=None):
                 "fault_type": fault,
                 "fault_group": row.get("final_fault_group", row.get("consensus_fault_group", "ABSTAIN")),
                 "fault_criticality_class": classify_fault_criticality(fault),
+                "fault_criticality_ordinal": fault_criticality_ordinal(fault),
+                "fault_criticality_order_source": fault_criticality_order_source(),
                 "severity": row.get("severity_label_text", "INSUFFICIENT_DATA"),
                 "critical_front": critical_front,
                 "critical_evidence_ratio": critical_ratio,
@@ -672,6 +698,8 @@ def _apply_production_fault_selection(df: pd.DataFrame, selection: dict) -> pd.D
         out["final_fault_is_weak_supervision"] = False
         out["fault_criticality_class"] = final.map(classify_fault_criticality)
         out["fault_criticality_source"] = fault_criticality_source()
+        out["fault_criticality_ordinal"] = final.map(fault_criticality_ordinal)
+        out["fault_criticality_order_source"] = fault_criticality_order_source()
         return out
 
     methods = tuple(str(x) for x in selection.get("methods", []))
@@ -695,6 +723,8 @@ def _apply_production_fault_selection(df: pd.DataFrame, selection: dict) -> pd.D
     out["final_fault_is_weak_supervision"] = False
     out["fault_criticality_class"] = out["final_fault"].map(classify_fault_criticality)
     out["fault_criticality_source"] = fault_criticality_source()
+    out["fault_criticality_ordinal"] = out["final_fault"].map(fault_criticality_ordinal)
+    out["fault_criticality_order_source"] = fault_criticality_order_source()
     out["student_fault_label"] = "ABSTAIN"
     out["student_fault_group"] = "ABSTAIN"
     out["student_fault_confidence"] = np.nan

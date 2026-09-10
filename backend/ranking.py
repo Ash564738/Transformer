@@ -53,8 +53,17 @@ def classify_fault_criticality(label):
     return cfg.FAULT_CRITICALITY_CONTEXT.get(fault, "UNKNOWN")
 
 
+def fault_criticality_ordinal(label):
+    fault = normalize_fault(label)
+    return int(cfg.FAULT_CRITICALITY_ORDER.get(fault, 0))
+
+
 def fault_criticality_source():
     return cfg.FAULT_CRITICALITY_SOURCE
+
+
+def fault_criticality_order_source():
+    return cfg.FAULT_CRITICALITY_ORDER_SOURCE
 
 
 def _fault_sequence(group):
@@ -177,6 +186,8 @@ def _history_fault_stats(group):
         "current_fault_group": latest_group,
         "fault_criticality_class": classify_fault_criticality(latest_fault),
         "fault_criticality_source": fault_criticality_source(),
+        "fault_criticality_ordinal": fault_criticality_ordinal(latest_fault),
+        "fault_criticality_order_source": fault_criticality_order_source(),
     }
 
 
@@ -200,6 +211,7 @@ def _evidence_key(row):
     rate_ratio = _to_float(row.get("ieee_rate_exceedance_ratio", 1.0))
     rate_ratio = rate_ratio if np.isfinite(rate_ratio) else 1.0
     triggers = int(_to_float(row.get("current_standard_trigger_count", 0)) or 0)
+    fault_order = int(_to_float(row.get("fault_criticality_ordinal", 0)) or 0)
     table2 = int(_to_float(row.get("table2_exceed_count", 0)) or 0)
     table4 = int(_to_float(row.get("table4_exceed_count", 0)) or 0)
     table3 = int(_to_float(row.get("table3_exceed_count", 0)) or 0)
@@ -219,6 +231,7 @@ def _evidence_key(row):
         rate_ratio,             # current rate evidence
         delta_ratio,            # current delta evidence
         triggers,                # number of independent IEEE trigger tables
+        fault_order,             # source-backed fault criticality tie-break only
         table2,
         table4,
         table3,
@@ -415,6 +428,8 @@ def _build_transformer_summary(transformer_id, group):
         "current_fault_group": fault_stats["current_fault_group"],
         "fault_criticality_class": fault_stats["fault_criticality_class"],
         "fault_criticality_source": fault_stats["fault_criticality_source"],
+        "fault_criticality_ordinal": fault_stats["fault_criticality_ordinal"],
+        "fault_criticality_order_source": fault_stats["fault_criticality_order_source"],
         "current_fault_posterior_max": _to_float(
             latest.get(
                 "weak_fine_posterior_max",
@@ -588,7 +603,7 @@ def build_transformer_ranking(df):
     ranking["ranking_policy"] = (
         "current IEEE status; current concentration exceedance ratio; current rate "
         "exceedance ratio; current delta exceedance ratio; independent IEEE trigger-table "
-        "count; per-table exceedance counts; historical maximum IEEE status; "
+        "count; source-backed fault criticality tie-break; per-table exceedance counts; historical maximum IEEE status; "
         "historical maximum concentration exceedance. No numeric weighting."
     )
     ranking["ranking_current_status_dominates"] = True
@@ -602,6 +617,7 @@ def build_transformer_ranking(df):
     ranking["ranking_is_health_score"] = False
     ranking["ranking_uses_record_count_as_severity"] = False
     ranking["ranking_uses_fault_criticality_as_severity"] = False
+    ranking["ranking_uses_fault_criticality_as_tie_break"] = True
 
     ranking["recommended_action"] = [
         _recommended_action(int(status))
@@ -681,5 +697,7 @@ __all__ = [
     "build_transformer_ranking",
     "log_ranking_diagnostics",
     "classify_fault_criticality",
+    "fault_criticality_ordinal",
+    "fault_criticality_order_source",
     "fault_criticality_source",
 ]

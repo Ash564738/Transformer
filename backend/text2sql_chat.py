@@ -44,8 +44,8 @@ QUERY_ERROR_REPLY = {
     "th": "เกิดข้อผิดพลาดขณะค้นหาข้อมูล",
     "en": "There was an error querying the data.",
 }
-TEXT_COLUMNS = {"transformer_id","sample_day","tested_day","loc","name","ser","codetx","mfg","severity_label","severity_label_text","status","severity","fault_type","trend","recommended_action","consensus_fault","consensus_fault_traditional","mixed_components","diagnostic_votes","diagnostic_coverage","keygas_fault","iec_fault","rogers_fault","doernenburg_fault","duval_triangle_fault","duval_pentagon_fault","duval_pentagon_p1_fault","duval_pentagon_p2_fault","fault_p1","fault_p2","event_type","tdcg_source","ieee_dga_status_label","ieee_dga_status_reason","ieee_norm_section","ieee_norm_age_bucket","ieee_table1_exceeding_gases","ieee_table2_exceeding_gases","ieee_table3_exceeding_gases","ieee_table4_exceeding_gases","student_fault_label"}
-INTEGER_COLUMNS = {"rank","critical_history_count","ieee_dga_status","tdcg_complete","has_event","ieee_confirmation_required","ieee_extreme_dga"}
+TEXT_COLUMNS = {"transformer_id","sample_day","tested_day","loc","name","ser","codetx","mfg","severity_label","severity_label_text","status","severity","fault_type","trend","recommended_action","consensus_fault","consensus_fault_traditional","mixed_components","diagnostic_votes","diagnostic_coverage","keygas_fault","iec_fault","rogers_fault","doernenburg_fault","duval_triangle_fault","duval_pentagon_fault","duval_pentagon_p1_fault","duval_pentagon_p2_fault","fault_p1","fault_p2","event_type","tdcg_source","ieee_dga_status_label","ieee_dga_status_reason","ieee_norm_section","ieee_norm_age_bucket","ieee_table1_exceeding_gases","ieee_table2_exceeding_gases","ieee_table3_exceeding_gases","ieee_table4_exceeding_gases","student_fault_label","fault_criticality_class","fault_criticality_order_source"}
+INTEGER_COLUMNS = {"rank","critical_history_count","ieee_dga_status","tdcg_complete","has_event","ieee_confirmation_required","ieee_extreme_dga","fault_criticality_ordinal"}
 COLUMN_DESCRIPTIONS = {
     "transformer_id": "Transformer identifier.",
     "sample_day": "DGA sample timestamp.",
@@ -107,7 +107,10 @@ COLUMN_DESCRIPTIONS = {
     "status": "Dashboard status: Normal, Watch, High, Critical.",
     "severity": "Legacy severity label.",
     "fault_type": "Fleet-level fault type.",
-    "priority_score": "Fleet priority score.",
+    "priority_score": "Legacy inverse fleet-rank value for sorting compatibility; not a weighted health score.",
+    "fault_criticality_class": "Qualitative current fault concern class.",
+    "fault_criticality_ordinal": "Source-backed ordinal fault-context tie-break used only after IEEE ranking evidence.",
+    "fault_criticality_order_source": "Explanation of the fault-context ordering basis.",
     "recommended_action": "Recommended maintenance action.",
     "current_severity": "Current severity component.",
     "historical_severity": "Historical severity.",
@@ -136,8 +139,8 @@ def _build_schema_description() -> str:
         blocks.append("\n".join(lines))
     blocks.append("\n".join([
         "SEMANTICS:",
-        "- transformers.priority_score = fleet risk ranking.",
-        "- transformers.rank = fleet priority rank; 1 is highest.",
+        "- transformers.rank = fleet maintenance priority rank; 1 is highest.",
+        "- transformers.priority_score is a legacy inverse-rank compatibility value, not a weighted severity score.",
         "- samples.sample_day = chronological DGA sample time.",
         "- transformer_id joins transformers and samples.",
         "- status = Normal | Watch | High | Critical.",
@@ -189,7 +192,8 @@ Never invent transformer IDs.
 Do not answer a database question with prose.
 
 IMPORTANT QUERY RULES:
-- Most critical/highest fleet risk => transformers.priority_score DESC.
+- Highest fleet maintenance priority => transformers.rank ASC.
+- Do not describe priority_score as a health score, failure probability, or weighted severity score.
 - transformer_id joins transformers and samples.
 - Time series => sample_day ASC.
 - Latest sample => sample_day DESC.

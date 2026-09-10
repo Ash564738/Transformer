@@ -26,6 +26,14 @@ RAW_LOG_FEATURES = [f"log1p_{g}" for g in DEFAULT_GASES]
 EPS = 1e-6
 
 
+def _save_report_table(df: pd.DataFrame, path: Path, sheet_name: str | None = None) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False, encoding="utf-8-sig")
+    with pd.ExcelWriter(path.with_suffix(".xlsx"), engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name=(sheet_name or path.stem)[:31], index=False)
+
+
 def _numeric_series(df: pd.DataFrame, col: str) -> pd.Series:
     if col not in df.columns:
         return pd.Series(np.nan, index=df.index, dtype=float)
@@ -128,10 +136,10 @@ def build_domain_gap_analysis(
 
     if not result.empty:
         output_dir.mkdir(parents=True, exist_ok=True)
-        result.to_csv(
+        _save_report_table(
+            result,
             output_dir / "domain_gap_absolute_vs_ratio.csv",
-            index=False,
-            encoding="utf-8-sig",
+            "Domain_Gap",
         )
 
         summary_rows = []
@@ -145,10 +153,10 @@ def build_domain_gap_analysis(
                     "max_ks": float(sub["ks_statistic"].max()),
                 }
             )
-        pd.DataFrame(summary_rows).to_csv(
+        _save_report_table(
+            pd.DataFrame(summary_rows),
             output_dir / "domain_gap_representation_summary.csv",
-            index=False,
-            encoding="utf-8-sig",
+            "Domain_Gap_Summary",
         )
 
     logger.info(
@@ -223,15 +231,15 @@ def build_rank_correlation_analysis(
     kendall = pd.DataFrame(tau_rows)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    spearman.to_csv(
+    _save_report_table(
+        spearman,
         output_dir / "rank_correlation_spearman.csv",
-        index=False,
-        encoding="utf-8-sig",
+        "Rank_Correlation_Spearman",
     )
-    kendall.to_csv(
+    _save_report_table(
+        kendall,
         output_dir / "rank_correlation_kendall.csv",
-        index=False,
-        encoding="utf-8-sig",
+        "Rank_Correlation_Kendall",
     )
 
     logger.info("Rank correlation analysis complete | transformers=%d", len(work))
@@ -352,9 +360,9 @@ def cross_dataset_transfer_grid(
 
     result = pd.DataFrame(rows)
     output_dir.mkdir(parents=True, exist_ok=True)
-    result.to_csv(
+    _save_report_table(
+        result,
         output_dir / "cross_dataset_transfer_grid.csv",
-        index=False,
-        encoding="utf-8-sig",
+        "Cross_Dataset_Transfer",
     )
     return result

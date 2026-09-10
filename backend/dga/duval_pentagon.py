@@ -138,7 +138,7 @@ def apply_duval_pentagon_dual(df: pd.DataFrame) -> pd.DataFrame:
     out["duval_pentagon_p2_active"] = (out["duval_pentagon_p2_fault"] != "ABSTAIN")
     return out
 
-def apply_duval_pentagon(df: pd.DataFrame, pentagon: str = "P2") -> pd.DataFrame:
+def apply_duval_pentagon(df: pd.DataFrame, pentagon: str = "P1") -> pd.DataFrame:
     out = apply_duval_pentagon_dual(df)
     requested = str(pentagon).strip().upper()
     if requested == "P1": out["duval_pentagon_fault"] = out["duval_pentagon_p1_fault"]

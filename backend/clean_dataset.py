@@ -68,9 +68,9 @@ def clean_year_energized(x: Any) -> float:
 def clean_temp(x: Any) -> float:
     return parse_numeric_loose(x, allow_negative=True)
 def clean_water(x: Any) -> float:
-    value = parse_numeric_loose(x, allow_negative=False)
+    value = parse_numeric_loose(x, allow_negative=True)
     if pd.isna(value): return np.nan
-    return float(value)
+    return float(abs(value))
 def clean_gas_value(x: Any) -> float:
     value = parse_numeric_loose(x, allow_negative=False)
     if pd.isna(value): return np.nan
@@ -245,6 +245,17 @@ def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR, 
         header_rows_removed = header_idx + 1
         input_description = str(input_file)
     if "sample_day" not in df.columns: raise ValueError("Missing sample_day.")
+    # Keep an immutable snapshot of source values before any normalization,
+    # correction, imputation, or recomputation.  These columns make every
+    # cleaning decision auditable in the Excel deliverable.
+    raw_snapshot_columns = [
+        "loc", "name", "codetx", "mfg", "ser", "sample_day", "tested_day",
+        "year_energized", "mva", "kv", "temp", "water",
+        *CORE_GASES, *OPTIONAL_GASES, "tdcg_raw", "nb",
+    ]
+    for col in raw_snapshot_columns:
+        if col in df.columns and f"{col}_raw" not in df.columns:
+            df[f"{col}_raw"] = df[col]
     df["sample_day"] = parse_date_series(df["sample_day"])
     if "tested_day" in df.columns: df["tested_day"] = parse_date_series(df["tested_day"])
     else: df["tested_day"] = pd.NaT
@@ -280,6 +291,19 @@ def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR, 
     if KEEP_NB:
         if "nb" in df.columns: df["nb"] = df["nb"].apply(clean_text_field)
         else: df["nb"] = None
+    # Context fields may be imputed only from the same physical transformer
+    # (and manufacturer), then from the manufacturer.  Gas measurements are
+    # deliberately not imputed because fabricated gas concentrations would
+    # create labels and severity evidence that were never observed.
+    for col in ("temp", "water", "year_energized"):
+        if col not in df.columns:
+            continue
+        grouped = df.groupby(["codetx", "mfg"], dropna=False)[col].transform("median")
+        df[col] = df[col].fillna(grouped)
+        manufacturer_median = df.groupby("mfg", dropna=False)[col].transform("median")
+        df[col] = df[col].fillna(manufacturer_median)
+        if col in {"temp", "water"}:
+            df[col] = df[col].fillna(df[col].median())
     df = df.sort_values(["transformer_id", "sample_day"]).reset_index(drop=True)
     before = len(df)
     df = df.drop_duplicates(keep="last").reset_index(drop=True)
@@ -298,7 +322,7 @@ def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR, 
     extras = [col for col in df.columns if col not in existing]
     df = df[existing + extras].copy()
     missing_summary = report_missing(df)
-    summary = {"input_file": input_description, "sheet_name": sheet_name, "original_shape": list(original_shape), "clean_shape": list(df.shape), "original_columns": original_columns, "dropped_noise_columns": [], "clean_columns": df.columns.tolist(), "duplicate_rows_removed": int(duplicate_rows_removed), "n_unique_transformers": int(df["transformer_id"].nunique(dropna=True)), "date_min": None if df["sample_day"].dropna().empty else str(df["sample_day"].min()), "date_max": None if df["sample_day"].dropna().empty else str(df["sample_day"].max()), "rows_missing_transformer_id": int(df["transformer_id"].isna().sum()), "rows_missing_sample_day": int(df["sample_day"].isna().sum()), "rows_missing_year_energized": int(df["year_energized"].isna().sum()), "rows_missing_temp": int(df["temp"].isna().sum()), "rows_missing_water": int(df["water"].isna().sum()), "rows_with_tested_before_sample_swapped": int(n_swapped), "synthetic_ser_count": int(df["ser_is_synthetic"].sum()), "core_gases": CORE_GASES, "header_rows_removed": int(header_rows_removed), "notes": {"water_negative_values_rejected": True, "temp_water_not_imputed": True, "year_energized_not_globally_imputed": True, "tdcg_recalculated_from_six_combustible_gases": True, "raw_tdcg_preserved": True, "synthetic_ser_not_used_as_transformer_id": True,
+    summary = {"input_file": input_description, "sheet_name": sheet_name, "original_shape": list(original_shape), "clean_shape": list(df.shape), "original_columns": original_columns, "dropped_noise_columns": [], "clean_columns": df.columns.tolist(), "duplicate_rows_removed": int(duplicate_rows_removed), "n_unique_transformers": int(df["transformer_id"].nunique(dropna=True)), "date_min": None if df["sample_day"].dropna().empty else str(df["sample_day"].min()), "date_max": None if df["sample_day"].dropna().empty else str(df["sample_day"].max()), "rows_missing_transformer_id": int(df["transformer_id"].isna().sum()), "rows_missing_sample_day": int(df["sample_day"].isna().sum()), "rows_missing_year_energized": int(df["year_energized"].isna().sum()), "rows_missing_temp": int(df["temp"].isna().sum()), "rows_missing_water": int(df["water"].isna().sum()), "rows_with_tested_before_sample_swapped": int(n_swapped), "synthetic_ser_count": int(df["ser_is_synthetic"].sum()), "core_gases": CORE_GASES, "header_rows_removed": int(header_rows_removed), "notes": {"water_negative_values_abs_normalized": True, "context_fields_group_imputed": True, "gas_values_not_imputed": True, "tdcg_recalculated_from_six_combustible_gases": True, "raw_tdcg_preserved": True, "raw_snapshots_preserved": True, "synthetic_ser_not_used_as_transformer_id": True,
             "codetx_is_primary_transformer_id": True,
             "ser_is_fallback_only": True, "deduplicate_exact_rows_only": True, "auto_header_detection": True, "supports_dataframe_input": True}}
     # Production API does not need artifact files on every request. Writing Parquet/CSV
@@ -318,6 +342,11 @@ def clean_dataset(input_file: Path = INPUT_FILE, output_dir: Path = OUTPUT_DIR, 
         missing_summary.to_csv(missing_csv, index=False, encoding="utf-8-sig")
         with open(summary_json, "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
+    # Excel is the stable, report-facing artifact required for every clean run.
+    with pd.ExcelWriter(output_dir / "dga_cleaned.xlsx", engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Cleaned_Data", index=False)
+        missing_summary.to_excel(writer, sheet_name="Missing_Summary", index=False)
+        pd.DataFrame([summary]).to_excel(writer, sheet_name="Cleaning_Summary", index=False)
     logger.info("Cleaning complete: %d rows, %d columns, %d transformers.", len(df), len(df.columns), df["transformer_id"].nunique())
     return df, summary
 if __name__ == "__main__":

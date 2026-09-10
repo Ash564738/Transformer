@@ -27,6 +27,7 @@
     "current rate exceedance ratio against the applicable IEEE rate threshold (when available)",
     "current delta exceedance ratio against the applicable IEEE delta threshold (when available)",
     "number of independent current IEEE trigger tables",
+    "source-backed fault criticality tie-break (D2/T3/cellulose highest, stray gassing lowest non-normal)",
     "current per-table exceedance counts",
     "historical maximum IEEE status before the current sample",
     "historical maximum concentration exceedance before the current sample"

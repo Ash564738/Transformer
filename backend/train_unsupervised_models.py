@@ -53,6 +53,17 @@ PRODUCTION_SELECTION_PATH = MODEL_DIR / "production_fault_selection.joblib"
 BENCHMARK_DIR = REPORT_DIR / "benchmark"
 MODEL_FEATURES = list(cfg.COMMON_BENCHMARK_GASES)
 
+def save_report_table(df: pd.DataFrame, csv_path: Path, sheet_name: str | None = None) -> None:
+    """Save an internal intermediate table.
+
+    The single report-facing artifact is dga_research_report.xlsx, assembled
+    by experiment.py. Keeping intermediate tables as CSV avoids publishing a
+    separate workbook for every metric while preserving reproducibility.
+    """
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+
 def set_global_seed(seed: int):
     random.seed(seed); np.random.seed(seed)
     if TORCH_AVAILABLE:
@@ -270,7 +281,7 @@ def load_labeled_csv_data() -> pd.DataFrame:
     logger.debug("load_labeled_csv_data: combined rows=%d fine_conflicts=%d coarse_conflicts=%d", len(combined), int(combined['fine_label_conflict'].sum()), int(combined['coarse_label_conflict'].sum()))
     conflict_df = combined[combined["fine_label_conflict"]].copy(); BENCHMARK_DIR.mkdir(parents=True, exist_ok=True)
     if not conflict_df.empty:
-        conflict_df.to_csv(BENCHMARK_DIR / "external_benchmark_label_conflicts.csv", index=False, encoding="utf-8-sig")
+        save_report_table(conflict_df, BENCHMARK_DIR / "external_benchmark_label_conflicts.csv", "Label_Conflicts")
     combined["duplicate_group_size"] = combined.groupby("_gas_key")["_gas_key"].transform("size"); combined["evaluation_group"] = combined["_gas_key"]
     result = combined.drop(columns=["_gas_key"]).reset_index(drop=True)
     logger.debug("load_labeled_csv_data: final rows=%d", len(result))
@@ -616,7 +627,7 @@ def benchmark_traditional_individual(labeled_df):
         if not dev_rows.empty:
             best = dev_rows.sort_values(["macro_f1", "balanced_accuracy", "coverage"], ascending=False, na_position="last").iloc[0]
             result.loc[(result["granularity"] == granularity) & (result["method"] == best["method"]), "selected_on_development"] = True
-    result.to_csv(BENCHMARK_DIR / "traditional_individual_benchmark.csv", index=False, encoding="utf-8-sig")
+    save_report_table(result, BENCHMARK_DIR / "traditional_individual_benchmark.csv", "Traditional_Individual")
     logger.debug("benchmark_traditional_individual: generated %d rows", len(result))
     return result
 
@@ -662,7 +673,7 @@ def benchmark_traditional_combinations(labeled_df, split=None):
         if not dev_rows.empty:
             best = dev_rows.sort_values(["macro_f1", "balanced_accuracy", "coverage"], ascending=False, na_position="last").iloc[0]
             result.loc[(result["granularity"] == granularity) & (result["methods"] == best["methods"]), "selected_on_development"] = True
-    result.to_csv(BENCHMARK_DIR / "traditional_combinations_benchmark.csv", index=False, encoding="utf-8-sig")
+    save_report_table(result, BENCHMARK_DIR / "traditional_combinations_benchmark.csv", "Traditional_Combinations")
     logger.debug("benchmark_traditional_combinations: generated %d rows", len(result))
     return result
 
@@ -691,7 +702,7 @@ def benchmark_traditional_ppm_bins(labeled_df):
                     "active_percent_of_method_coverage": float(count / max(int(valid.sum()), 1) * 100.0),
                 })
     result = pd.DataFrame(rows)
-    result.to_csv(BENCHMARK_DIR / "traditional_ppm_bins.csv", index=False, encoding="utf-8-sig")
+    save_report_table(result, BENCHMARK_DIR / "traditional_ppm_bins.csv", "Traditional_PPM_Bins")
     return result
 
 
@@ -704,9 +715,9 @@ def benchmark_traditional_ppm_coverage(labeled_df):
             x = pd.to_numeric(labeled_df[gas], errors="coerce"); valid = active & x.notna(); values = x[valid].to_numpy(float)
             rows.append({"method": method, "gas": gas, "active_count": int(len(values)), "coverage": float(len(values) / max(len(labeled_df), 1)), "min_ppm": float(np.min(values)) if len(values) else np.nan, "p05_ppm": float(np.quantile(values, 0.05)) if len(values) else np.nan, "median_ppm": float(np.median(values)) if len(values) else np.nan, "p95_ppm": float(np.quantile(values, 0.95)) if len(values) else np.nan, "max_ppm": float(np.max(values)) if len(values) else np.nan, "observed_range_ppm": float(np.max(values) - np.min(values)) if len(values) else np.nan})
     result = pd.DataFrame(rows)
-    result.to_csv(BENCHMARK_DIR / "traditional_ppm_coverage.csv", index=False, encoding="utf-8-sig")
+    save_report_table(result, BENCHMARK_DIR / "traditional_ppm_coverage.csv", "Traditional_PPM")
     class_coverage = empirical_fault_class_coverage(labeled_df, "fine")
-    class_coverage.to_csv(BENCHMARK_DIR / "traditional_fault_class_coverage.csv", index=False, encoding="utf-8-sig")
+    save_report_table(class_coverage, BENCHMARK_DIR / "traditional_fault_class_coverage.csv", "Class_Coverage")
     logger.debug("benchmark_traditional_ppm_coverage: generated %d rows", len(result))
     return result
 
@@ -748,7 +759,7 @@ def benchmark_supervised_models(labeled_df, seed):
         part = _benchmark_supervised_feature_mode(labeled_df, seed, mode)
         if not part.empty: parts.append(part)
     result = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
-    result.to_csv(BENCHMARK_DIR / "supervised_fault_benchmark.csv", index=False, encoding="utf-8-sig")
+    save_report_table(result, BENCHMARK_DIR / "supervised_fault_benchmark.csv", "Supervised_Reference")
     logger.debug("benchmark_supervised_models: generated %d rows", len(result))
     return result
 
@@ -941,7 +952,7 @@ def benchmark_weak_transfer(labeled_df, weak_students, seed):
             sub = result[(result["granularity"] == granularity) & (result["split"] == "development")]
             if not sub.empty:
                 best_idx = sub.sort_values(["macro_f1", "balanced_accuracy", "accuracy"], ascending=False).index[0]; best_model = result.loc[best_idx, "model"]; best_mode = result.loc[best_idx, "feature_mode"]; mask = (result["granularity"] == granularity) & (result["model"] == best_model) & (result["feature_mode"] == best_mode); result.loc[mask, "selected_on_dev"] = True
-    result.to_csv(BENCHMARK_DIR / "weak_transfer_fault_benchmark.csv", index=False, encoding="utf-8-sig")
+    save_report_table(result, BENCHMARK_DIR / "weak_transfer_fault_benchmark.csv", "Weak_Transfer")
     logger.debug("benchmark_weak_transfer: generated %d rows", len(result))
     return result
 
@@ -991,7 +1002,7 @@ def benchmark_weak_label_model_transfer(labeled_df, weak_models=None):
             rows.append({"granularity":granularity,"model":"weak_label_model","backend":payload.get("metadata",{}).get("backend","unknown"),"training_dataset":"unlabeled_operational_weak","evaluation_dataset":"external_labeled","split":split_name,"selected_on_dev":False, **metric})
     result=pd.DataFrame(rows)
     if not result.empty:
-        result.to_csv(BENCHMARK_DIR / "weak_label_model_transfer_fault_benchmark.csv", index=False, encoding="utf-8-sig")
+        save_report_table(result, BENCHMARK_DIR / "weak_label_model_transfer_fault_benchmark.csv", "Weak_Label_Transfer")
     return result
 
 
@@ -1038,13 +1049,13 @@ def benchmark_weak_traditional_hybrids(labeled_df, weak_students, seed):
                 best_idx=sub.sort_values(["macro_f1","balanced_accuracy","coverage"],ascending=False,na_position="last").index[0]
                 best=result.loc[best_idx]; mask=(result.granularity==granularity)&(result.student_model==best.student_model)&(result.feature_mode==best.feature_mode)&(result.methods==best.methods)
                 result.loc[mask,"selected_on_dev"]=True
-        result.to_csv(BENCHMARK_DIR / "weak_traditional_hybrid_benchmark.csv", index=False, encoding="utf-8-sig")
+        save_report_table(result, BENCHMARK_DIR / "weak_traditional_hybrid_benchmark.csv", "Weak_Hybrid")
     return result
 
 def benchmark_direct_supervised_transfer(unlabeled_df, labeled_df, seed):
     result = benchmark_supervised_models(labeled_df, seed)
     candidates = result[(result["split"] == "locked_test") & result["selected_on_dev"].astype(bool)] if not result.empty else pd.DataFrame()
-    candidates.to_csv(BENCHMARK_DIR / "direct_supervised_reference_selected_on_dev.csv", index=False, encoding="utf-8-sig")
+    save_report_table(candidates, BENCHMARK_DIR / "direct_supervised_reference_selected_on_dev.csv", "Direct_Supervised_Selected")
     return candidates
 
 def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
@@ -1053,7 +1064,7 @@ def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
     outputs = {}; weak_students = {"coarse": {}, "fine": {}}
     for granularity, groups in (("coarse", cfg.COARSE_FAULT_GROUPS), ("fine", cfg.BENCHMARK_FINE_CLASSES)):
         out, model, out_groups, meta, L, probabilities, pairwise = weak_supervision_pipeline(df, DEFAULT_WEAK_METHODS, groups, use_snorkel=use_snorkel, random_state=seed, granularity=granularity)
-        outputs[granularity] = out; pairwise.to_csv(BENCHMARK_DIR / f"weak_lf_pairwise_agreement_{granularity}.csv", index=False, encoding="utf-8-sig"); save_weak_supervision_artifacts(out, model, out_groups, meta, granularity=granularity); weak_students[granularity] = _train_weak_students(out, granularity, seed); del L, probabilities
+        outputs[granularity] = out; save_report_table(pairwise, BENCHMARK_DIR / f"weak_lf_pairwise_agreement_{granularity}.csv", f"Weak_LF_Agreement_{granularity}"); save_weak_supervision_artifacts(out, model, out_groups, meta, granularity=granularity); weak_students[granularity] = _train_weak_students(out, granularity, seed); del L, probabilities
     merge_keys = ["transformer_id", "sample_day"]; df = outputs["coarse"].copy(); fine_cols = [c for c in outputs["fine"].columns if c.startswith("weak_fine_")]; df = df.merge(outputs["fine"][merge_keys + fine_cols], on=merge_keys, how="left", suffixes=("", "_fine"))
     for granularity, artifacts in weak_students.items():
         for key, artifact in artifacts.items():
@@ -1069,6 +1080,10 @@ def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
                     logger.warning("Weak student confidence failed | %s | %s", granularity, key, exc_info=True)
     from severity import apply_severity
     df = apply_severity(df, nei_reference=None)
+    from transformer_anonymization import build_transformer_aliases
+    source_ids = df["transformer_id"].map(str)
+    aliases = build_transformer_aliases(source_ids.tolist())
+    df["transformer_id"] = source_ids.map(aliases)
     ranking = build_transformer_ranking(df)
 
     # Add the latest TDCG as a descriptive baseline for research rank-correlation
@@ -1081,6 +1096,12 @@ def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
     )
     if not latest_tdcg.empty:
         ranking = ranking.merge(latest_tdcg, on="transformer_id", how="left")
+    from transformer_anonymization import anonymize_transformer_column
+    reverse_aliases = {alias: source for source, alias in aliases.items()}
+    ranking["source_transformer_id"] = ranking["transformer_id"].map(
+        lambda value: reverse_aliases.get(str(value), str(value))
+    )
+    ranking = anonymize_transformer_column(ranking)
 
     log_ranking_diagnostics(ranking, 20)
 
@@ -1090,7 +1111,14 @@ def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
     _assert_unique_columns(ranking, "run_unlabeled_pipeline ranking")
     df.to_parquet(processed / "dga_unlabeled_processed.parquet", index=False)
     ranking.to_parquet(processed / "transformer_ranking.parquet", index=False)
-    ranking.to_csv(REPORT_DIR / "transformer_ranking.csv", index=False, encoding="utf-8-sig")
+    save_report_table(ranking, REPORT_DIR / "transformer_ranking.csv", "Transformer_Ranking")
+    with pd.ExcelWriter(REPORT_DIR / "transformer_ranking.xlsx", engine="openpyxl") as writer:
+        ranking.drop(columns=["source_transformer_id"], errors="ignore").to_excel(
+            writer, sheet_name="Transformer_Ranking", index=False
+        )
+        ranking[["transformer_id", "source_transformer_id"]].drop_duplicates().sort_values(
+            "transformer_id"
+        ).to_excel(writer, sheet_name="Transformer_ID_Map", index=False)
     if save_model:
         MODEL_DIR.mkdir(parents=True, exist_ok=True); joblib.dump({"models": weak_students["coarse"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_COARSE_PATH); joblib.dump({"models": weak_students["fine"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_FINE_PATH); metadata = {"seed": seed, "unlabeled_dataset": str(UNLABELED_PATH), "weak_supervision": "Snorkel LabelModel", "weak_labeling_methods": list(cfg.WEAK_LABELING_METHODS), "student_feature_modes": list(cfg.STUDENT_FEATURE_MODES), "student_model_count_coarse": len(weak_students["coarse"]), "student_model_count_fine": len(weak_students["fine"]), "severity_source": cfg.STANDARD, "severity_is_weighted": False, "severity_is_failure_probability": False, "ranking_policy": list(cfg.RANKING_POLICY), "ranking_is_weighted": False, "ranking_is_health_score": False, "benchmark_policy": "Operational unlabeled data are used for weak labels and student training only; labeled benchmark is reserved for external evaluation and locked test reporting."}; TRAINING_METADATA_PATH.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.debug("run_unlabeled_pipeline: complete final df shape=%s", df.shape)
@@ -1098,15 +1126,15 @@ def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
 
 def run_labeled_benchmark(seed):
     logger.debug("run_labeled_benchmark: start seed=%d", seed)
-    labeled = apply_consensus(load_labeled_csv_data()); individual = benchmark_traditional_individual(labeled); combinations_result = benchmark_traditional_combinations(labeled, None); ppm = benchmark_traditional_ppm_coverage(labeled); pairwise = pairwise_label_agreement(labeled); pairwise.to_csv(BENCHMARK_DIR / "traditional_pairwise_agreement.csv", index=False, encoding="utf-8-sig"); method_summary = diagnostic_method_summary(labeled); method_summary.to_csv(BENCHMARK_DIR / "traditional_method_summary.csv", index=False, encoding="utf-8-sig"); supervised = benchmark_supervised_models(labeled, seed)
-    class_coverage = empirical_fault_class_coverage(labeled, "fine"); class_coverage.to_csv(BENCHMARK_DIR / "traditional_fault_class_coverage.csv", index=False, encoding="utf-8-sig")
+    labeled = apply_consensus(load_labeled_csv_data()); individual = benchmark_traditional_individual(labeled); combinations_result = benchmark_traditional_combinations(labeled, None); ppm = benchmark_traditional_ppm_coverage(labeled); pairwise = pairwise_label_agreement(labeled); save_report_table(pairwise, BENCHMARK_DIR / "traditional_pairwise_agreement.csv", "Traditional_Pairwise"); method_summary = diagnostic_method_summary(labeled); save_report_table(method_summary, BENCHMARK_DIR / "traditional_method_summary.csv", "Method_Summary"); supervised = benchmark_supervised_models(labeled, seed)
+    class_coverage = empirical_fault_class_coverage(labeled, "fine"); save_report_table(class_coverage, BENCHMARK_DIR / "traditional_fault_class_coverage.csv", "Class_Coverage")
     benchmark = {"individual": individual, "combinations": combinations_result, "ppm_coverage": ppm, "class_coverage": class_coverage, "pairwise": pairwise, "method_summary": method_summary, "supervised": supervised}; benchmark["split_manifest"] = _write_split_manifest(labeled, seed)
     logger.debug("run_labeled_benchmark: complete")
     return benchmark
 
 def _write_split_manifest(labeled, seed):
     labels, _ = _prepare_truth(labeled); conflict = labeled.get("fine_label_conflict", pd.Series(False, index=labeled.index)).astype(bool); valid = labels.isin(cfg.BENCHMARK_FINE_CLASSES) & ~conflict; data = labeled.loc[valid].reset_index(drop=True); y = labels.loc[valid].map({c: i for i, c in enumerate(cfg.BENCHMARK_FINE_CLASSES)}).to_numpy(int); data = data.assign(evaluation_group=data["evaluation_group"].astype(str)); _, dev, test = train_dev_test_split(data, y, seed)
-    manifest = data[["source_dataset", "source_row", "fault_type_label", "evaluation_group"]].copy(); split = np.full(len(data), "train", dtype=object); split[dev] = "development"; split[test] = "locked_test"; manifest["split"] = split; manifest.to_csv(BENCHMARK_DIR / "benchmark_split_manifest.csv", index=False, encoding="utf-8-sig")
+    manifest = data[["source_dataset", "source_row", "fault_type_label", "evaluation_group"]].copy(); split = np.full(len(data), "train", dtype=object); split[dev] = "development"; split[test] = "locked_test"; manifest["split"] = split; save_report_table(manifest, BENCHMARK_DIR / "benchmark_split_manifest.csv", "Split_Manifest")
     return manifest
 
 def write_confusion_matrices(weak_transfer, supervised, labeled, seed):
@@ -1114,7 +1142,7 @@ def write_confusion_matrices(weak_transfer, supervised, labeled, seed):
     for mode in supervised["feature_mode"].unique():
         sub = supervised[(supervised["feature_mode"] == mode) & (supervised["split"] == "locked_test")]
         if sub.empty: continue
-        best = sub.sort_values(["macro_f1", "balanced_accuracy", "accuracy"], ascending=False).iloc[0]; model = build_models(seed)[best["model"]]; Xdf = build_feature_frame(data, mode, "fine"); train_mask = np.ones(len(data), dtype=bool); train_mask[test] = False; model.fit(Xdf.iloc[train_mask], y[train_mask]); pred = np.asarray(model.predict(Xdf.iloc[test])).reshape(-1); cm = confusion_matrix(y[test], pred, labels=list(range(len(cfg.BENCHMARK_FINE_CLASSES)))); out = pd.DataFrame(cm, index=cfg.BENCHMARK_FINE_CLASSES, columns=cfg.BENCHMARK_FINE_CLASSES); out.to_csv(BENCHMARK_DIR / f"confusion_supervised_{mode}.csv", encoding="utf-8-sig")
+        best = sub.sort_values(["macro_f1", "balanced_accuracy", "accuracy"], ascending=False).iloc[0]; model = build_models(seed)[best["model"]]; Xdf = build_feature_frame(data, mode, "fine"); train_mask = np.ones(len(data), dtype=bool); train_mask[test] = False; model.fit(Xdf.iloc[train_mask], y[train_mask]); pred = np.asarray(model.predict(Xdf.iloc[test])).reshape(-1); cm = confusion_matrix(y[test], pred, labels=list(range(len(cfg.BENCHMARK_FINE_CLASSES)))); out = pd.DataFrame(cm, index=cfg.BENCHMARK_FINE_CLASSES, columns=cfg.BENCHMARK_FINE_CLASSES); save_report_table(out.reset_index(names="truth_label"), BENCHMARK_DIR / f"confusion_supervised_{mode}.csv", f"Confusion_{mode}"[:31])
 
 
 def _select_production_fault_pipeline(traditional_result: pd.DataFrame, weak_transfer: pd.DataFrame, weak_students: dict, seed: int):

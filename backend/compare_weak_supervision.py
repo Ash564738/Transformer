@@ -80,6 +80,7 @@ RESULT_CSV = REPORT_DIR / "weak_supervision_snorkel_results.csv"
 ROBUSTNESS_CSV = REPORT_DIR / "weak_supervision_snorkel_repeated_evaluation.csv"
 OPERATIONAL_CSV = REPORT_DIR / "weak_supervision_snorkel_operational_stability.csv"
 TIMING_CSV = REPORT_DIR / "weak_supervision_snorkel_timing.csv"
+WEAK_REPORT_XLSX = REPORT_DIR / "weak_supervision_report.xlsx"
 SELECTION_JSON = REPORT_DIR / "weak_supervision_snorkel_selection.json"
 
 WS_MODEL_ROOT = MODEL_DIR / "weak_supervision_backends"
@@ -1552,6 +1553,11 @@ def main(argv=None) -> int:
         index=False,
         encoding="utf-8-sig",
     )
+    with pd.ExcelWriter(WEAK_REPORT_XLSX, engine="openpyxl") as writer:
+        comparison.to_excel(writer, sheet_name="Comparison", index=False)
+        repeated_development.to_excel(writer, sheet_name="Repeated_Development", index=False)
+        operational_stability.to_excel(writer, sheet_name="Operational_Stability", index=False)
+        timing.to_excel(writer, sheet_name="Timing", index=False)
 
     # ---------------------------------------------------------------
     # 10. Select best student

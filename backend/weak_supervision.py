@@ -258,6 +258,21 @@ def save_weak_supervision_artifacts(df, model, groups, metadata, output_path=Non
             f"Cannot save empty weak-supervision output for granularity={granularity}"
         )
     df.to_parquet(output_path, index=False)
+    from transformer_anonymization import anonymize_transformer_column
+    report_df = anonymize_transformer_column(df) if "transformer_id" in df.columns else df
+    with pd.ExcelWriter(output_path.with_suffix(".xlsx"), engine="openpyxl") as writer:
+        report_df.to_excel(writer, sheet_name="Weak_Labels", index=False)
+        if "transformer_id" in df.columns:
+            mapping = pd.DataFrame({
+                "Anonymous transformer ID": report_df["transformer_id"],
+                "Source transformer ID": df["transformer_id"],
+            }).drop_duplicates().sort_values("Anonymous transformer ID")
+            mapping.to_excel(writer, sheet_name="Transformer_ID_Map", index=False)
+    pd.DataFrame([metadata]).to_excel(
+        output_path.with_name(f"dga_weak_label_metadata_{granularity}.xlsx"),
+        sheet_name="Metadata",
+        index=False,
+    )
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump({"model": model, "groups": list(groups), "metadata": metadata}, MODEL_DIR / f"weak_label_model_{granularity}.joblib")
