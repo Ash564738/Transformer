@@ -76,10 +76,10 @@ RAW_UNLABELED_PATH = (
     DATASET_DIR / "DGA of Main Tank only KT 11022026_09062026.xlsx"
 )
 
-RESULT_CSV = REPORT_DIR / "weak_supervision_snorkel_results.csv"
-ROBUSTNESS_CSV = REPORT_DIR / "weak_supervision_snorkel_repeated_evaluation.csv"
-OPERATIONAL_CSV = REPORT_DIR / "weak_supervision_snorkel_operational_stability.csv"
-TIMING_CSV = REPORT_DIR / "weak_supervision_snorkel_timing.csv"
+RESULT_CSV = REPORT_DIR / "weak_supervision_snorkel_results.xlsx"
+ROBUSTNESS_CSV = REPORT_DIR / "weak_supervision_snorkel_repeated_evaluation.xlsx"
+OPERATIONAL_CSV = REPORT_DIR / "weak_supervision_snorkel_operational_stability.xlsx"
+TIMING_CSV = REPORT_DIR / "weak_supervision_snorkel_timing.xlsx"
 WEAK_REPORT_XLSX = REPORT_DIR / "weak_supervision_report.xlsx"
 SELECTION_JSON = REPORT_DIR / "weak_supervision_snorkel_selection.json"
 
@@ -1479,11 +1479,7 @@ def main(argv=None) -> int:
         ignore_index=True,
     )
 
-    comparison.to_csv(
-        RESULT_CSV,
-        index=False,
-        encoding="utf-8-sig",
-    )
+    comparison.to_excel(RESULT_CSV, sheet_name="Weak_Supervision_Comparison", index=False)
 
     # ---------------------------------------------------------------
     # 7. Repeated development evaluation
@@ -1501,11 +1497,7 @@ def main(argv=None) -> int:
         )
     )
 
-    repeated_development.to_csv(
-        ROBUSTNESS_CSV,
-        index=False,
-        encoding="utf-8-sig",
-    )
+    repeated_development.to_excel(ROBUSTNESS_CSV, sheet_name="Repeated_Development", index=False)
 
     # ---------------------------------------------------------------
     # 8. Operational stability
@@ -1516,11 +1508,7 @@ def main(argv=None) -> int:
         operational,
     )
 
-    operational_stability.to_csv(
-        OPERATIONAL_CSV,
-        index=False,
-        encoding="utf-8-sig",
-    )
+    operational_stability.to_excel(OPERATIONAL_CSV, sheet_name="Operational_Stability", index=False)
 
     # ---------------------------------------------------------------
     # 9. Timing
@@ -1548,11 +1536,7 @@ def main(argv=None) -> int:
         ]
     )
 
-    timing.to_csv(
-        TIMING_CSV,
-        index=False,
-        encoding="utf-8-sig",
-    )
+    timing.to_excel(TIMING_CSV, sheet_name="Weak_Supervision_Timing", index=False)
     with pd.ExcelWriter(WEAK_REPORT_XLSX, engine="openpyxl") as writer:
         comparison.to_excel(writer, sheet_name="Comparison", index=False)
         repeated_development.to_excel(writer, sheet_name="Repeated_Development", index=False)

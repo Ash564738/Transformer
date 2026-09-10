@@ -9,6 +9,7 @@ import { FaultDistributionChart } from "@/components/overview/fault-distribution
 import { TopTrendChart } from "@/components/overview/top-trend-chart";
 import { formatNumber } from "@/lib/utils";
 import { statusFromSummary } from "@/lib/severity";
+import { StationStatusHeatmap } from "@/components/overview/station-status-heatmap";
 
 export default function OverviewPage() {
   const payload = useDashboardStore((s) => s.payload);
@@ -32,9 +33,11 @@ export default function OverviewPage() {
         confidenceValues.length
       : null;
 
-  const status3Count = payload.transformer_summary.filter(
-    (summary) => statusFromSummary(summary) === "High"
-  ).length;
+  const status3Count =
+    payload.dataset_summary.severity_status_3 ??
+    payload.transformer_summary.filter(
+      (summary) => statusFromSummary(summary) === "High"
+    ).length;
 
   const firstPriorityId =
     payload.dataset_summary.first_priority_transformer_id ??
@@ -108,6 +111,10 @@ export default function OverviewPage() {
           <CardContent>
             <FaultDistributionChart summaries={payload.transformer_summary} rows={payload.rows} />
           </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Station condition heatmap</CardTitle></CardHeader>
+          <CardContent><StationStatusHeatmap summaries={payload.transformer_summary} /></CardContent>
         </Card>
       </div>
     </div>

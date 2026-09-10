@@ -515,6 +515,10 @@ def create_payload(df, ranking_df, comparison_df=None):
             "rank_tie": bool(rank_row.get("rank_tie", False)),
             "rank_group_size": _safe_int(rank_row.get("rank_group_size", 1), 1),
             "transformer_id": rank_row.get("transformer_id"),
+            "loc": rank_row.get("loc", ""),
+            "name": rank_row.get("name", ""),
+            "ser": rank_row.get("ser", ""),
+            "codetx": rank_row.get("codetx", ""),
             "latest_sample_day": str(rank_row.get("sample_day", "")),
             "maintenance_priority": priority,
             "maintenance_priority_ordinal": _safe_int(rank_row.get("maintenance_priority_ordinal", 0)),
@@ -604,7 +608,6 @@ def create_payload(df, ranking_df, comparison_df=None):
                 "confirmation_required": bool(row.get("ieee_confirmation_required", False)),
             })
         timeseries[str(transformer_id)] = series
-    status_series = pd.to_numeric(df.get("ieee_dga_status", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
     if ranking_df is not None and "transformer_overall_severity_label" in ranking_df.columns:
         priority_counts = ranking_df["transformer_overall_severity_label"].value_counts().reindex(["STATUS_3", "STATUS_2", "STATUS_1", "INSUFFICIENT_DATA"]).fillna(0).astype(int).to_dict()
     else:
@@ -635,10 +638,10 @@ def create_payload(df, ranking_df, comparison_df=None):
     dataset_summary = {
         "total_transformers": int(df["transformer_id"].nunique()),
         "total_rows": int(len(df)),
-        "severity_status_1": int((status_series == 1).sum()),
-        "severity_status_2": int((status_series == 2).sum()),
-        "severity_status_3": int((status_series == 3).sum()),
-        "severity_insufficient_data": int((status_series == 0).sum()),
+        "severity_status_1": int(priority_counts.get("STATUS_1", 0)),
+        "severity_status_2": int(priority_counts.get("STATUS_2", 0)),
+        "severity_status_3": int(priority_counts.get("STATUS_3", 0)),
+        "severity_insufficient_data": int(priority_counts.get("INSUFFICIENT_DATA", 0)),
         "maintenance_priority_counts": priority_counts,
         "high_risk_transformer_count": int(priority_counts.get("STATUS_3", 0)),
         "watch_transformer_count": int(priority_counts.get("STATUS_2", 0)),

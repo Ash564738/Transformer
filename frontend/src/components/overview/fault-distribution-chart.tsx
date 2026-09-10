@@ -47,6 +47,8 @@ export function FaultDistributionChart({ summaries, rows }: { summaries: Transfo
     return <p className="py-10 text-center text-sm text-teal-400">No fault data available.</p>;
   }
 
+  const chartHeight = Math.max(280, data.length * 34 + 48);
+
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -65,11 +67,11 @@ export function FaultDistributionChart({ summaries, rows }: { summaries: Transfo
         </div>
       </div>
 
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={chartHeight}>
         <BarChart data={data} layout="vertical" margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e8e5d9" horizontal={false} />
           <XAxis type="number" tick={{ fontSize: 12, fill: "#4f8f83" }} axisLine={false} tickLine={false} allowDecimals={false} />
-          <YAxis type="category" dataKey="fault" width={100} tick={{ fontSize: 12, fill: "#184843", fontWeight: 600 }} axisLine={false} tickLine={false} />
+          <YAxis type="category" dataKey="fault" width={145} tick={{ fontSize: 12, fill: "#184843", fontWeight: 600 }} axisLine={false} tickLine={false} />
           <Tooltip cursor={{ fill: "rgba(15,47,44,0.04)" }} contentStyle={{ borderRadius: 10, borderColor: "#d9d5c4", fontSize: 12 }} />
           <Bar dataKey="count" name={basis === "sample" ? "Samples" : "Transformers"} radius={[0, 6, 6, 0]} maxBarSize={20}>
             {data.map((item, index) => <Cell key={item.fault} fill={PALETTE[index % PALETTE.length]} />)}

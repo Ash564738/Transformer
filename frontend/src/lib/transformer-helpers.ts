@@ -63,7 +63,7 @@ export function topGasLabel(row: DgaRow | undefined, status?: RiskStatus): strin
 }
 
 export function stationOf(summary: TransformerSummary): string {
-  return summary.loc || summary.name || "Unassigned";
+  return summary.loc || summary.name || summary.codetx || summary.transformer_id || "Unassigned";
 }
 
 export function getStations(payload: DgaPayload | null): string[] {

@@ -38,11 +38,14 @@ REPORT_SHEETS = [
 
 def read_csv_file(path):
     path = Path(path)
+    workbook = path.with_suffix(".xlsx")
+    if workbook.exists():
+        frame = pd.read_excel(workbook)
+        return [list(frame.columns)] + frame.fillna("").astype(str).values.tolist()
     if not path.exists():
         return None
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        rows = list(csv.reader(handle))
-    return rows
+        return list(csv.reader(handle))
 
 
 def _col_name(number):
@@ -512,6 +515,17 @@ def build_excel_report(report_dir, processed_dir, output_path):
                 [value for index, value in enumerate(row) if index != source_index]
                 for row in ranking_rows
             ]
+        else:
+            ranking_workbook = report_dir / "transformer_ranking.xlsx"
+            if ranking_workbook.exists():
+                mapping_frame = pd.read_excel(ranking_workbook, sheet_name="Transformer_ID_Map")
+                mapping_sheet = wb.worksheets.add("Transformer_ID_Map")
+                write_table(
+                    mapping_sheet,
+                    [["Anonymous transformer ID", "Source transformer ID"]]
+                    + mapping_frame.fillna("").astype(str).values.tolist(),
+                    max_width=42,
+                )
         write_table(sheet, ranking_rows, max_width=42)
     _build_validation_sheets(wb, report_dir, processed_dir)
     _build_sources_sheet(wb)

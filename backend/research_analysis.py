@@ -29,7 +29,6 @@ EPS = 1e-6
 def _save_report_table(df: pd.DataFrame, path: Path, sheet_name: str | None = None) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False, encoding="utf-8-sig")
     with pd.ExcelWriter(path.with_suffix(".xlsx"), engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name=(sheet_name or path.stem)[:31], index=False)
 

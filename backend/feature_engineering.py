@@ -254,7 +254,20 @@ def _attach_feature_columns(df: pd.DataFrame, features: dict[str, pd.Series]) ->
     """Attach many feature columns in one concat to avoid DataFrame fragmentation."""
     if not features:
         return df
-    feature_frame = pd.DataFrame(features, index=df.index)
+    # Keep the first canonical definition when two feature builders expose the
+    # same derived feature.  This avoids duplicate pandas columns and makes
+    # feature provenance deterministic (ratio features are also emitted by
+    # the scale-invariant representation).
+    feature_frame = pd.DataFrame(
+        {
+            name: values
+            for name, values in features.items()
+            if name not in df.columns
+        },
+        index=df.index,
+    )
+    if feature_frame.empty:
+        return df
     return pd.concat([df, feature_frame], axis=1, copy=False)
 
 

@@ -642,14 +642,19 @@ def report_experiments():
         candidates = [benchmark_dir / filename] if benchmark else []
         candidates.append(reports_dir / filename)
         for path in candidates:
-            if not path.exists():
+            workbook = path.with_suffix(".xlsx")
+            source = workbook if workbook.exists() else path
+            if not source.exists():
                 continue
             try:
-                frame = pd.read_csv(path, encoding="utf-8-sig")
+                if source.suffix.lower() == ".xlsx":
+                    frame = pd.read_excel(source)
+                else:
+                    frame = pd.read_csv(source, encoding="utf-8-sig")
                 frame = frame.replace([np.inf, -np.inf], np.nan).where(pd.notna(frame), None)
                 return frame.to_dict(orient="records")
             except Exception:
-                logger.exception("Failed to read report: %s", path)
+                logger.exception("Failed to read report: %s", source)
                 return []
         return []
 

@@ -53,16 +53,18 @@ PRODUCTION_SELECTION_PATH = MODEL_DIR / "production_fault_selection.joblib"
 BENCHMARK_DIR = REPORT_DIR / "benchmark"
 MODEL_FEATURES = list(cfg.COMMON_BENCHMARK_GASES)
 
-def save_report_table(df: pd.DataFrame, csv_path: Path, sheet_name: str | None = None) -> None:
+def save_report_table(df: pd.DataFrame, output_path: Path, sheet_name: str | None = None) -> None:
     """Save an internal intermediate table.
 
-    The single report-facing artifact is dga_research_report.xlsx, assembled
-    by experiment.py. Keeping intermediate tables as CSV avoids publishing a
-    separate workbook for every metric while preserving reproducibility.
+    Report-facing tables are written as XLSX only.  Callers may retain their
+    historical ``.csv`` stem while the suffix is normalized here, so no CSV
+    report artifact is ever created.
     """
-    csv_path = Path(csv_path)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    excel_path = output_path.with_suffix(".xlsx")
+    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name=(sheet_name or output_path.stem)[:31], index=False)
 
 def set_global_seed(seed: int):
     random.seed(seed); np.random.seed(seed)
@@ -1111,7 +1113,6 @@ def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
     _assert_unique_columns(ranking, "run_unlabeled_pipeline ranking")
     df.to_parquet(processed / "dga_unlabeled_processed.parquet", index=False)
     ranking.to_parquet(processed / "transformer_ranking.parquet", index=False)
-    save_report_table(ranking, REPORT_DIR / "transformer_ranking.csv", "Transformer_Ranking")
     with pd.ExcelWriter(REPORT_DIR / "transformer_ranking.xlsx", engine="openpyxl") as writer:
         ranking.drop(columns=["source_transformer_id"], errors="ignore").to_excel(
             writer, sheet_name="Transformer_Ranking", index=False
@@ -1119,6 +1120,9 @@ def run_unlabeled_pipeline(seed, use_snorkel, save_model=True):
         ranking[["transformer_id", "source_transformer_id"]].drop_duplicates().sort_values(
             "transformer_id"
         ).to_excel(writer, sheet_name="Transformer_ID_Map", index=False)
+    ranking[["transformer_id", "source_transformer_id"]].drop_duplicates().sort_values(
+        "transformer_id"
+    ).to_excel(REPORT_DIR / "transformer_id_mapping.xlsx", sheet_name="Transformer_ID_Map", index=False)
     if save_model:
         MODEL_DIR.mkdir(parents=True, exist_ok=True); joblib.dump({"models": weak_students["coarse"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_COARSE_PATH); joblib.dump({"models": weak_students["fine"], "training_type": "weak_supervision_plus_discriminative_ml", "training_dataset": str(UNLABELED_PATH), "features": MODEL_FEATURES}, FAULT_MODEL_FINE_PATH); metadata = {"seed": seed, "unlabeled_dataset": str(UNLABELED_PATH), "weak_supervision": "Snorkel LabelModel", "weak_labeling_methods": list(cfg.WEAK_LABELING_METHODS), "student_feature_modes": list(cfg.STUDENT_FEATURE_MODES), "student_model_count_coarse": len(weak_students["coarse"]), "student_model_count_fine": len(weak_students["fine"]), "severity_source": cfg.STANDARD, "severity_is_weighted": False, "severity_is_failure_probability": False, "ranking_policy": list(cfg.RANKING_POLICY), "ranking_is_weighted": False, "ranking_is_health_score": False, "benchmark_policy": "Operational unlabeled data are used for weak labels and student training only; labeled benchmark is reserved for external evaluation and locked test reporting."}; TRAINING_METADATA_PATH.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.debug("run_unlabeled_pipeline: complete final df shape=%s", df.shape)
@@ -1439,14 +1443,14 @@ def _run_single_seed(args=None):
     if parsed.mode in {"benchmark", "all"}:
         required_artifacts.extend(
             [
-                "reports/benchmark/benchmark_split_manifest.csv",
-                "reports/benchmark/traditional_individual_benchmark.csv",
-                "reports/benchmark/traditional_combinations_benchmark.csv",
-                "reports/benchmark/traditional_ppm_coverage.csv",
-                "reports/benchmark/traditional_fault_class_coverage.csv",
-                "reports/benchmark/traditional_pairwise_agreement.csv",
-                "reports/benchmark/traditional_method_summary.csv",
-                "reports/benchmark/supervised_fault_benchmark.csv",
+                "reports/benchmark/benchmark_split_manifest.xlsx",
+                "reports/benchmark/traditional_individual_benchmark.xlsx",
+                "reports/benchmark/traditional_combinations_benchmark.xlsx",
+                "reports/benchmark/traditional_ppm_coverage.xlsx",
+                "reports/benchmark/traditional_fault_class_coverage.xlsx",
+                "reports/benchmark/traditional_pairwise_agreement.xlsx",
+                "reports/benchmark/traditional_method_summary.xlsx",
+                "reports/benchmark/supervised_fault_benchmark.xlsx",
             ]
         )
 
@@ -1456,7 +1460,7 @@ def _run_single_seed(args=None):
                 "models/fault_classifiers_coarse.joblib",
                 "models/fault_classifiers_fine.joblib",
                 "models/training_metadata.json",
-                "reports/transformer_ranking.csv",
+                "reports/transformer_ranking.xlsx",
                 "dataset/processed/dga_unlabeled_processed.parquet",
                 "dataset/processed/transformer_ranking.parquet",
             ]
@@ -1465,9 +1469,9 @@ def _run_single_seed(args=None):
     if parsed.mode in {"transfer", "all"}:
         required_artifacts.extend(
             [
-                "reports/benchmark/weak_transfer_fault_benchmark.csv",
-                "reports/benchmark/weak_label_model_transfer_fault_benchmark.csv",
-                "reports/benchmark/weak_traditional_hybrid_benchmark.csv",
+                "reports/benchmark/weak_transfer_fault_benchmark.xlsx",
+                "reports/benchmark/weak_label_model_transfer_fault_benchmark.xlsx",
+                "reports/benchmark/weak_traditional_hybrid_benchmark.xlsx",
                 "models/production_fault_selection.joblib",
             ]
         )
@@ -1475,11 +1479,11 @@ def _run_single_seed(args=None):
     if parsed.mode == "all":
         required_artifacts.extend(
             [
-                "reports/benchmark/domain_gap_absolute_vs_ratio.csv",
-                "reports/benchmark/domain_gap_representation_summary.csv",
-                "reports/benchmark/rank_correlation_spearman.csv",
-                "reports/benchmark/rank_correlation_kendall.csv",
-                "reports/benchmark/cross_dataset_transfer_grid.csv",
+                "reports/benchmark/domain_gap_absolute_vs_ratio.xlsx",
+                "reports/benchmark/domain_gap_representation_summary.xlsx",
+                "reports/benchmark/rank_correlation_spearman.xlsx",
+                "reports/benchmark/rank_correlation_kendall.xlsx",
+                "reports/benchmark/cross_dataset_transfer_grid.xlsx",
             ]
         )
 
@@ -1596,7 +1600,7 @@ def _snapshot_seed_outputs(seed: int):
                 shutil.copy2(source, destination_dir / source.name)
 
     for source in (
-        REPORT_DIR / "transformer_ranking.csv",
+        REPORT_DIR / "transformer_ranking.xlsx",
         REPORT_DIR / "experiment_run_manifest.json",
     ):
         if source.exists():
@@ -1607,7 +1611,7 @@ def _snapshot_seed_outputs(seed: int):
 
 
 def _aggregate_seed_csvs(seed_roots):
-    """Create long-form and mean/std summaries from archived seed CSVs."""
+    """Create long-form and mean/std summaries from archived XLSX tables."""
     import re
 
     aggregate_root = BENCHMARK_DIR / "multiseed"
@@ -1624,11 +1628,11 @@ def _aggregate_seed_csvs(seed_roots):
         bench = root / "benchmark"
         if not bench.exists():
             continue
-        for path in bench.glob("*.csv"):
+        for path in bench.glob("*.xlsx"):
             try:
-                frame = pd.read_csv(path)
+                frame = pd.read_excel(path)
             except Exception as exc:
-                logger.warning("Could not read seed CSV %s: %s", path, exc)
+                logger.warning("Could not read seed XLSX %s: %s", path, exc)
                 continue
             frame.insert(0, "seed", seed)
             collected.setdefault(path.name, []).append(frame)
@@ -1637,17 +1641,17 @@ def _aggregate_seed_csvs(seed_roots):
     for filename, frames in collected.items():
         combined = pd.concat(frames, ignore_index=True, sort=False)
         target = aggregate_root / filename
-        combined.to_csv(target, index=False, encoding="utf-8-sig")
+        combined.to_excel(target, index=False)
         long_form_paths.append(target)
 
     metric_targets = []
     preferred = {
-        "traditional_individual_benchmark.csv",
-        "traditional_combinations_benchmark.csv",
-        "supervised_fault_benchmark.csv",
-        "weak_transfer_fault_benchmark.csv",
-        "weak_label_model_transfer_fault_benchmark.csv",
-        "weak_traditional_hybrid_benchmark.csv",
+        "traditional_individual_benchmark.xlsx",
+        "traditional_combinations_benchmark.xlsx",
+        "supervised_fault_benchmark.xlsx",
+        "weak_transfer_fault_benchmark.xlsx",
+        "weak_label_model_transfer_fault_benchmark.xlsx",
+        "weak_traditional_hybrid_benchmark.xlsx",
     }
     metric_cols_all = [
         "accuracy", "balanced_accuracy", "macro_f1", "weighted_f1",
@@ -1661,7 +1665,7 @@ def _aggregate_seed_csvs(seed_roots):
         path = aggregate_root / filename
         if not path.exists():
             continue
-        frame = pd.read_csv(path)
+        frame = pd.read_excel(path)
         metric_cols = [c for c in metric_cols_all if c in frame.columns]
         key_cols = [c for c in key_cols_all if c in frame.columns]
         if "seed" not in frame.columns or not metric_cols or not key_cols:
@@ -1676,15 +1680,15 @@ def _aggregate_seed_csvs(seed_roots):
             if isinstance(col, tuple) else str(col)
             for col in aggregate.columns
         ]
-        out = aggregate_root / f"multiseed_summary_{Path(filename).stem}.csv"
-        aggregate.to_csv(out, index=False, encoding="utf-8-sig")
+        out = aggregate_root / f"multiseed_summary_{Path(filename).stem}.xlsx"
+        aggregate.to_excel(out, index=False)
         metric_targets.append(out)
 
     manifest = {
         "seed_count": len(completed_seeds),
         "seeds": sorted(set(completed_seeds)),
-        "long_form_csv_count": len(long_form_paths),
-        "metric_summary_csvs": [str(p.relative_to(REPORT_DIR)) for p in metric_targets],
+        "long_form_xlsx_count": len(long_form_paths),
+        "metric_summary_xlsx": [str(p.relative_to(REPORT_DIR)) for p in metric_targets],
         "severity_accuracy_note": (
             "Not computed: supplied labeled datasets contain fault labels but no independent severity ground truth."
         ),

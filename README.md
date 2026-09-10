@@ -92,6 +92,10 @@ coverage, model transfer, domain gap, rank correlation, validation, ranking,
 ID mapping, and chart inputs. CSV files under `reports/benchmark/` are internal
 intermediate tables used to assemble that workbook; they are not additional
 paper/report formats. T1/T2 ambiguity is retained explicitly.
+The anonymized-to-source transformer mapping is also exported explicitly as
+`backend/reports/transformer_id_mapping.xlsx` (and is included as the
+`Transformer_ID_Map` sheet in the ranking and research workbooks). Treat this
+file as restricted because it can re-identify operational assets. T1/T2 ambiguity is retained explicitly.
 
 Duval Pentagon 1 and 2 are both computed and evaluated. Pentagon 1 is the
 default traditional pentagon output because the labeled-benchmark evaluation

@@ -12,7 +12,8 @@ export function AlertBanner() {
   const dismiss = useDashboardStore((s) => s.dismissBanner);
 
   const highRiskCount = payload
-    ? payload.transformer_summary.filter(
+    ? payload.dataset_summary.high_risk_transformer_count ??
+      payload.transformer_summary.filter(
         (s) => statusFromSummary(s) === "High"
       ).length
     : 0;
