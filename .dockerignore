@@ -93,3 +93,21 @@ backend/experiment.py
 
 backend/reports/seeds/
 backend/reports/**/*.log
+
+# Training-only model ensembles. Runtime inference uses the offline-selected
+# pipeline plus the two weak-label artifacts below; these ensembles alone are
+# more than 600 MB and are not loaded by app.py/inference_service.py.
+backend/models/fault_classifiers_fine.joblib
+backend/models/fault_classifiers_coarse.joblib
+
+# Training/report intermediates not read by the Render inference service.
+# Keep the processed parquet files explicitly required by the API below.
+backend/dataset/processed/dga_weak_labels_*.parquet
+backend/dataset/processed/dga_weak_labels_*.xlsx
+backend/dataset/processed/dga_weak_label_metadata_*.json
+backend/dataset/processed/dga_weak_label_metadata_*.xlsx
+backend/dataset/processed/dga_unlabeled.parquet
+backend/dataset/processed/dga_cleaned.xlsx
+
+!backend/dataset/processed/dga_unlabeled_processed.parquet
+!backend/dataset/processed/transformer_ranking.parquet

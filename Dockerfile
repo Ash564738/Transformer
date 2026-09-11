@@ -22,7 +22,8 @@ COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # This copies the already-generated production artifacts:
-#   backend/models/*
+#   backend/models/production_fault_selection.joblib
+#   backend/models/weak_label_model_*.joblib
 #   backend/reports/*
 #   backend/dataset/processed/*
 #
@@ -35,11 +36,11 @@ COPY backend/ ./
 # Render is only the inference server. It must never train the model.
 RUN test -f /app/models/production_fault_selection.joblib \
     && test -f /app/models/training_metadata.json \
-    && test -f /app/models/fault_classifiers_fine.joblib \
-    && test -f /app/models/fault_classifiers_coarse.joblib \
+    && test -f /app/models/weak_label_model_fine.joblib \
+    && test -f /app/models/weak_label_model_coarse.joblib \
     && test -f /app/reports/experiment_run_manifest.json \
     && test -f /app/reports/dga_research_report.xlsx \
-    && test -f /app/reports/transformer_ranking.csv \
+    && test -f /app/reports/transformer_ranking.xlsx \
     && test -f /app/dataset/processed/dga_unlabeled_processed.parquet \
     && test -f /app/dataset/processed/transformer_ranking.parquet
 
