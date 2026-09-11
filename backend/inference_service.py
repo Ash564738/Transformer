@@ -435,6 +435,30 @@ def create_payload(df, ranking_df, comparison_df=None):
     ranking_df = ranking_df.copy()
     df["transformer_id"] = df["transformer_id"].map(lambda value: aliases.get(str(value), value))
     ranking_df["transformer_id"] = ranking_df["transformer_id"].map(lambda value: aliases.get(str(value), value))
+    # The ranking contract is one row per transformer.  Enforce that boundary
+    # here so sample-level rows can never inflate fleet status cards.
+    if "transformer_id" in ranking_df.columns:
+        ranking_df = ranking_df.drop_duplicates("transformer_id", keep="last").copy()
+    for frame in (df, ranking_df):
+        if {"loc", "codetx", "name"}.issubset(frame.columns):
+            loc_text = frame["loc"].astype(str).str.strip().str.lower()
+            missing_loc = frame["loc"].isna() | loc_text.isin({"", "nan", "none", "<na>"})
+            suffix_match = frame.apply(
+                lambda row: (
+                    pd.notna(row["codetx"])
+                    and pd.notna(row["name"])
+                    and str(row["name"]) != ""
+                    and str(row["codetx"]).endswith(str(row["name"]))
+                ),
+                axis=1,
+            )
+            inferred = frame.apply(
+                lambda row: str(row["codetx"])[: -len(str(row["name"]))]
+                if len(str(row["name"])) > 0
+                else "",
+                axis=1,
+            )
+            frame.loc[missing_loc & suffix_match, "loc"] = inferred
     rows = []
     ordered = df.sort_values(["transformer_id", "sample_day"], ascending=[True, False], kind="mergesort")
     export_fields = [

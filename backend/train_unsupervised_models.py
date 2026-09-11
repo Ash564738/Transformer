@@ -1132,6 +1132,7 @@ def run_labeled_benchmark(seed):
     logger.debug("run_labeled_benchmark: start seed=%d", seed)
     labeled = apply_consensus(load_labeled_csv_data()); individual = benchmark_traditional_individual(labeled); combinations_result = benchmark_traditional_combinations(labeled, None); ppm = benchmark_traditional_ppm_coverage(labeled); pairwise = pairwise_label_agreement(labeled); save_report_table(pairwise, BENCHMARK_DIR / "traditional_pairwise_agreement.csv", "Traditional_Pairwise"); method_summary = diagnostic_method_summary(labeled); save_report_table(method_summary, BENCHMARK_DIR / "traditional_method_summary.csv", "Method_Summary"); supervised = benchmark_supervised_models(labeled, seed)
     class_coverage = empirical_fault_class_coverage(labeled, "fine"); save_report_table(class_coverage, BENCHMARK_DIR / "traditional_fault_class_coverage.csv", "Class_Coverage")
+    write_confusion_matrices(pd.DataFrame(), supervised, labeled, seed)
     benchmark = {"individual": individual, "combinations": combinations_result, "ppm_coverage": ppm, "class_coverage": class_coverage, "pairwise": pairwise, "method_summary": method_summary, "supervised": supervised}; benchmark["split_manifest"] = _write_split_manifest(labeled, seed)
     logger.debug("run_labeled_benchmark: complete")
     return benchmark

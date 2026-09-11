@@ -33,6 +33,10 @@ REPORT_SHEETS = [
     ("Cross_Dataset_Transfer", "cross_dataset_transfer_grid.csv"),
     ("Weak_Supervision_Comparison", "weak_supervision_comparison.csv"),
     ("Weak_Supervision_Timing", "weak_supervision_timing.csv"),
+    ("Confusion_Gas_Only", "confusion_supervised_gas_only.csv"),
+    ("Confusion_Ratio_Only", "confusion_supervised_ratio_only.csv"),
+    ("Confusion_Gas_Plus_Ratio", "confusion_supervised_gas_plus_ratio.csv"),
+    ("Confusion_Gas_Plus_Traditional", "confusion_supervised_gas_plus_traditional.csv"),
 ]
 
 
