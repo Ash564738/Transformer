@@ -63,7 +63,9 @@ export function topGasLabel(row: DgaRow | undefined, status?: RiskStatus): strin
 }
 
 export function stationOf(summary: TransformerSummary): string {
-  return summary.loc || summary.name || summary.codetx || summary.transformer_id || "Unassigned";
+  // LOC is the station/substation field in the operational dataset.  Do not
+  // expose an anonymized transformer ID as a station fallback.
+  return String(summary.loc ?? "").trim() || "Unassigned";
 }
 
 export function getStations(payload: DgaPayload | null): string[] {

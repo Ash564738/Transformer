@@ -15,6 +15,7 @@ import {
   YAxis,
 } from "recharts";
 import { getAuthToken, getBackendUrl } from "@/lib/api";
+import { StationStatusHeatmap } from "@/components/overview/station-status-heatmap";
 
 const BACKEND_PREFIX = getBackendUrl();
 
@@ -341,7 +342,15 @@ function RankingPriorityCard({
     return null;
   }
 
-  const sortedRows = [...rows].sort(
+  const uniqueRows = Array.from(
+    new Map(
+      rows
+        .filter((row) => row.transformer_id != null)
+        .map((row) => [String(row.transformer_id), row])
+    ).values()
+  );
+
+  const sortedRows = [...uniqueRows].sort(
     (a, b) =>
       Number(a.rank ?? Number.MAX_SAFE_INTEGER) -
       Number(b.rank ?? Number.MAX_SAFE_INTEGER)
@@ -349,21 +358,21 @@ function RankingPriorityCard({
 
   const top = sortedRows[0];
 
-  const status3 = rows.filter(
+  const status3 = uniqueRows.filter(
     (row) =>
       Number(
         row.transformer_overall_severity_level
       ) === 3
   ).length;
 
-  const status2 = rows.filter(
+  const status2 = uniqueRows.filter(
     (row) =>
       Number(
         row.transformer_overall_severity_level
       ) === 2
   ).length;
 
-  const status1 = rows.filter(
+  const status1 = uniqueRows.filter(
     (row) =>
       Number(
         row.transformer_overall_severity_level
@@ -745,6 +754,18 @@ export default function ExperimentsPage() {
       />
 
       <RankingPriorityCard rows={ranking} />
+
+      <Section title="Station condition heatmap">
+        <StationStatusHeatmap summaries={ranking.map((row) => ({
+          transformer_id: String(row.transformer_id ?? ""),
+          loc: typeof row.loc === "string" ? row.loc : undefined,
+          transformer_overall_severity_level:
+            typeof row.transformer_overall_severity_level === "number" ||
+            typeof row.transformer_overall_severity_level === "string"
+              ? row.transformer_overall_severity_level
+              : null,
+        }))} />
+      </Section>
 
       <div className="flex flex-wrap gap-2">
         {tabs.map(([id, label]) => (

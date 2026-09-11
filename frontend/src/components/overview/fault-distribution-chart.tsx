@@ -47,7 +47,9 @@ export function FaultDistributionChart({ summaries, rows }: { summaries: Transfo
     return <p className="py-10 text-center text-sm text-teal-400">No fault data available.</p>;
   }
 
-  const chartHeight = Math.max(280, data.length * 34 + 48);
+  // Keep the card stable when switching Top 5/8/10/15. Labels and bars scale
+  // inside the fixed plotting area instead of making the page jump.
+  const chartHeight = 360;
 
   return (
     <div>

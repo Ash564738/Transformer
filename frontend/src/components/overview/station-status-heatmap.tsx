@@ -1,18 +1,32 @@
 "use client";
 
 import type { TransformerSummary } from "@/types/dga";
-import { STATUS_HEX, statusFromSummary } from "@/lib/severity";
+import type { RiskStatus } from "@/types/dga";
+import { STATUS_HEX } from "@/lib/severity";
 import { stationOf } from "@/lib/transformer-helpers";
 
-export function StationStatusHeatmap({ summaries }: { summaries: TransformerSummary[] }) {
-  const stations = Array.from(new Set(summaries.map(stationOf))).sort();
+export type StationStatusRecord = Pick<TransformerSummary, "loc" | "transformer_id"> & {
+  transformer_overall_severity_level?: number | string | null;
+  ieee_status?: number | string | null;
+};
+
+function statusForRecord(summary: StationStatusRecord): RiskStatus {
+  const status = Number(summary.transformer_overall_severity_level ?? summary.ieee_status ?? 0);
+  return status === 3 ? "High" : status === 2 ? "Watch" : status === 1 ? "Normal" : "Insufficient data";
+}
+
+export function StationStatusHeatmap({ summaries }: { summaries: StationStatusRecord[] }) {
+  const uniqueSummaries = Array.from(
+    new Map(summaries.map((summary) => [summary.transformer_id, summary])).values()
+  );
+  const stations = Array.from(new Set(uniqueSummaries.map((summary) => stationOf(summary as TransformerSummary)))).sort();
   const counts = new Map<string, { total: number; high: number; watch: number }>();
-  for (const summary of summaries) {
-    const station = stationOf(summary);
+  for (const summary of uniqueSummaries) {
+    const station = stationOf(summary as TransformerSummary);
     const current = counts.get(station) ?? { total: 0, high: 0, watch: 0 };
     current.total += 1;
-    if (statusFromSummary(summary) === "High") current.high += 1;
-    if (statusFromSummary(summary) === "Watch") current.watch += 1;
+    if (statusForRecord(summary) === "High") current.high += 1;
+    if (statusForRecord(summary) === "Watch") current.watch += 1;
     counts.set(station, current);
   }
   return (

@@ -725,6 +725,14 @@ def report_experiments():
     cross_dataset_transfer = read_csv("cross_dataset_transfer_grid.csv")
     rank_correlation_spearman = read_csv("rank_correlation_spearman.csv")
     ranking = read_csv("transformer_ranking.csv", benchmark=False)
+    # The ranking artifact is transformer-level. Guard the API contract against
+    # accidental duplicate rows so every consumer counts at most 628 machines.
+    ranking_by_transformer = {}
+    for row in ranking:
+        transformer_id = str(row.get("transformer_id", "")).strip()
+        if transformer_id:
+            ranking_by_transformer[transformer_id] = row
+    ranking = list(ranking_by_transformer.values())
     # The source ID is retained only for the controlled Excel research mapping.
     ranking = [
         {key: value for key, value in row.items() if key != "source_transformer_id"}

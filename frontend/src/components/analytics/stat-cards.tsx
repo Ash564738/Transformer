@@ -2,10 +2,16 @@
 "use client";
 
 import { motion } from "framer-motion";
-import type { RiskStatus, TransformerSummary } from "@/types/dga";
+import type { DatasetSummary, RiskStatus, TransformerSummary } from "@/types/dga";
 import { STATUS_ORDER, STATUS_STYLES, statusFromSummary } from "@/lib/severity";
 
-export function StatCards({ summaries }: { summaries: TransformerSummary[] }) {
+export function StatCards({
+  summaries,
+  datasetSummary,
+}: {
+  summaries: TransformerSummary[];
+  datasetSummary?: DatasetSummary;
+}) {
   const counts: Record<RiskStatus, number> = {
     Normal: 0,
     Watch: 0,
@@ -13,8 +19,19 @@ export function StatCards({ summaries }: { summaries: TransformerSummary[] }) {
     "Insufficient data": 0,
   };
 
-  for (const summary of summaries) {
+  const uniqueSummaries = Array.from(
+    new Map(summaries.map((summary) => [summary.transformer_id, summary])).values()
+  );
+
+  for (const summary of uniqueSummaries) {
     counts[statusFromSummary(summary)] += 1;
+  }
+  if (datasetSummary) {
+    counts.Normal = datasetSummary.severity_status_1 ?? counts.Normal;
+    counts.Watch = datasetSummary.severity_status_2 ?? counts.Watch;
+    counts.High = datasetSummary.severity_status_3 ?? counts.High;
+    counts["Insufficient data"] =
+      datasetSummary.severity_insufficient_data ?? counts["Insufficient data"];
   }
 
   return (
